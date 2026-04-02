@@ -7,11 +7,12 @@
 set -euo pipefail
 
 # ==================== 配置区 ====================
-HOST_IP="43.239.84.20"         # 宿主机公网 IP
-SUBNET_MASK="/26"              # 子网掩码 CIDR
-GATEWAY="43.239.84.1"          # 网关
+# 方式一：手动填写（推荐懂网络的用户）
+HOST_IP=""                     # 宿主机公网 IP，留空则自动检测
+SUBNET_MASK=""                 # 子网掩码 CIDR（如 /26），留空则自动检测
+GATEWAY=""                     # 网关，留空则自动检测
 BRIDGE_NAME="br-pub"           # 网桥名称
-PHYS_IFACE="eno1"              # 物理网卡名
+PHYS_IFACE=""                  # 物理网卡名，留空则自动检测
 DNS_SERVERS="8.8.8.8,1.1.1.1"  # DNS
 PROFILE_NAME="vm-public"       # Incus Profile 名
 VM_CPU="4"                     # 默认 CPU 核数
@@ -27,6 +28,51 @@ NC='\033[0m'
 log()  { echo -e "${GREEN}[INFO]${NC} $*"; }
 warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
 err()  { echo -e "${RED}[ERR]${NC} $*"; exit 1; }
+
+# ---------- 0. 自动检测网络参数 ----------
+detect_network() {
+    log "0. 检测网络参数..."
+
+    # 自动检测物理网卡（第一个有默认路由的非虚拟网卡）
+    if [ -z "${PHYS_IFACE}" ]; then
+        PHYS_IFACE=$(ip route show default | awk '{print $5}' | head -1)
+        [ -z "${PHYS_IFACE}" ] && err "无法检测物理网卡，请手动设置 PHYS_IFACE"
+        log "   检测到网卡: ${PHYS_IFACE}"
+    fi
+
+    # 自动检测宿主机 IP 和掩码
+    if [ -z "${HOST_IP}" ] || [ -z "${SUBNET_MASK}" ]; then
+        local ip_cidr
+        ip_cidr=$(ip -4 addr show "${PHYS_IFACE}" | awk '/inet /{print $2}' | head -1)
+        [ -z "${ip_cidr}" ] && err "无法检测 ${PHYS_IFACE} 的 IP，请手动设置 HOST_IP"
+        HOST_IP="${ip_cidr%%/*}"
+        SUBNET_MASK="/${ip_cidr##*/}"
+        log "   检测到 IP: ${HOST_IP}${SUBNET_MASK}"
+    fi
+
+    # 自动检测网关
+    if [ -z "${GATEWAY}" ]; then
+        GATEWAY=$(ip route show default dev "${PHYS_IFACE}" | awk '{print $3}' | head -1)
+        [ -z "${GATEWAY}" ] && err "无法检测网关，请手动设置 GATEWAY"
+        log "   检测到网关: ${GATEWAY}"
+    fi
+
+    # 显示最终配置
+    log "   ─────────────────────────────────"
+    log "   网卡:   ${PHYS_IFACE}"
+    log "   IP:     ${HOST_IP}${SUBNET_MASK}"
+    log "   网关:   ${GATEWAY}"
+    log "   DNS:    ${DNS_SERVERS}"
+    log "   网桥:   ${BRIDGE_NAME}"
+    log "   ─────────────────────────────────"
+
+    # 确认
+    echo ""
+    read -p "以上配置是否正确？(y/N) " -r confirm
+    if [[ ! "${confirm}" =~ ^[Yy]$ ]]; then
+        err "已取消，请修改脚本顶部配置区后重新运行"
+    fi
+}
 
 # ---------- 1. 宿主机优化 ----------
 setup_host() {
@@ -223,6 +269,7 @@ main() {
     [ "$(id -u)" -ne 0 ] && err "请使用 root 执行此脚本"
     command -v incus >/dev/null || err "Incus 未安装"
 
+    detect_network
     setup_host
     setup_bridge
     setup_profile

@@ -7,12 +7,35 @@
 set -euo pipefail
 
 # ==================== 默认配置 ====================
-GATEWAY="43.239.84.1"
-SUBNET_MASK="/26"
+# 自动从网桥检测，也可手动覆盖
+BRIDGE_NAME="br-pub"
+GATEWAY=""                     # 留空自动检测
+SUBNET_MASK=""                 # 留空自动检测
 DNS_SERVERS="8.8.8.8,1.1.1.1"
 PROFILE_NAME="vm-public"
 SWAP_SIZE="8G"
 CREDENTIAL_FILE="/root/.vm-credentials"
+
+# 自动检测网关和子网掩码
+auto_detect_network() {
+    if [ -z "${GATEWAY}" ]; then
+        GATEWAY=$(ip route show default | awk '{print $3}' | head -1)
+        [ -z "${GATEWAY}" ] && err "无法检测网关，请在脚本中手动设置 GATEWAY"
+    fi
+    if [ -z "${SUBNET_MASK}" ]; then
+        local cidr
+        cidr=$(ip -4 addr show "${BRIDGE_NAME}" 2>/dev/null | awk '/inet /{print $2}' | head -1)
+        if [ -z "${cidr}" ]; then
+            # 如果网桥没有 IP，尝试从默认路由接口检测
+            local iface
+            iface=$(ip route show default | awk '{print $5}' | head -1)
+            cidr=$(ip -4 addr show "${iface}" | awk '/inet /{print $2}' | head -1)
+        fi
+        SUBNET_MASK="/${cidr##*/}"
+        [ "${SUBNET_MASK}" = "/" ] && err "无法检测子网掩码，请手动设置 SUBNET_MASK"
+    fi
+}
+auto_detect_network
 
 # ==================== 支持的镜像 ====================
 # Linux cloud 镜像（支持 cloud-init 自动配置）
@@ -121,6 +144,12 @@ create_windows_vm() {
         incus storage volume import default "${WIN_ISO}" "${VM_NAME}-win-iso" --type=iso 2>/dev/null || true
         incus config device add "${VM_NAME}" install disk \
             pool=default source="${VM_NAME}-win-iso" boot.priority=10
+    fi
+
+    # 注册到宿主机防火墙
+    if command -v vm-firewall >/dev/null 2>&1; then
+        vm-firewall add-vm "${VM_IP}" 2>/dev/null || true
+        vm-firewall save 2>/dev/null || true
     fi
 
     # 导入 virtio 驱动 ISO
@@ -277,6 +306,13 @@ cat << 'FWDBLOCK'
 FWDBLOCK
 fi)
 USEREOF
+
+    # 注册到宿主机防火墙
+    if command -v vm-firewall >/dev/null 2>&1; then
+        vm-firewall add-vm "${VM_IP}" 2>/dev/null || true
+        vm-firewall save 2>/dev/null || true
+        log "   已注册到宿主机防火墙"
+    fi
 
     # 启动
     log "5/5 启动虚拟机..."

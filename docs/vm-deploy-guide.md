@@ -98,10 +98,29 @@ incus delete vm-node01 --force
 | L3 | port_isolation | VM 间二层隔离，互相不可达 |
 | L4 | secureboot | UEFI 安全启动 (Linux) |
 | L5 | VM 内防火墙 | UFW (Debian/Ubuntu) 或 firewalld (RHEL系) |
-| L6 | 宿主机 nftables | 全局防火墙 |
-| L7 | KVM | 硬件级隔离，独立内核 |
+| L6 | 宿主机 bridge nftables | 统一过滤所有 VM 出入流量（`vm-firewall` 管理） |
+| L7 | 宿主机 inet nftables | 保护宿主机自身 |
+| L8 | KVM | 硬件级隔离，独立内核 |
 
-## VM 内防火墙管理
+## 宿主机统一防火墙（推荐）
+
+所有 VM 的入站流量经过宿主机 nftables `bridge` 层统一过滤，**无需进入 VM 操作**。
+
+```bash
+vm-firewall status                          # 查看状态
+vm-firewall open 80                         # 所有 VM 开放 HTTP
+vm-firewall open 443                        # 所有 VM 开放 HTTPS
+vm-firewall close 80                        # 关闭全局 HTTP
+vm-firewall open-for 43.239.84.21 3306      # 仅 vm-node01 开放 MySQL
+vm-firewall close-for 43.239.84.21 3306     # 关闭
+vm-firewall add-vm 43.239.84.23             # 注册新 VM
+vm-firewall save                            # 持久化
+vm-firewall list                            # 查看完整规则
+```
+
+默认策略：所有 VM 仅开放 SSH(22)，出站全放行。
+
+## VM 内防火墙管理（可选，纵深防御）
 
 ### Ubuntu / Debian (ufw)
 
@@ -139,6 +158,24 @@ New-NetFirewallRule -DisplayName "HTTP" -Direction Inbound -Protocol TCP -LocalP
 Remove-NetFirewallRule -DisplayName "HTTP"
 Get-NetFirewallRule | Where-Object {$_.Enabled -eq 'True' -and $_.Direction -eq 'Inbound'} | Format-Table
 ```
+
+## 密码管理
+
+```bash
+# 修改 VM 密码（从宿主机执行，无需登录 VM）
+incus exec vm-node01 -- bash -c "echo 'root:新密码' | chpasswd"
+incus exec vm-node01 -- bash -c "echo 'ubuntu:新密码' | chpasswd"
+
+# 忘记密码重置
+incus exec vm-node01 -- passwd root
+incus exec vm-node01 -- passwd ubuntu
+
+# SSH 登录后自己改
+passwd              # 改当前用户
+sudo passwd root    # 改 root
+```
+
+凭据文件：`cat /root/.vm-credentials`
 
 ## 注意事项
 
