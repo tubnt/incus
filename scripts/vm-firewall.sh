@@ -71,14 +71,22 @@ case "${CMD}" in
 
     open)
         [ $# -lt 1 ] && { echo "用法: $0 open <端口>"; exit 1; }
-        nft add element ${BR_TABLE} global_tcp_ports "{ $1 }"
-        echo -e "${GREEN}已全局开放端口 $1${NC}" ;;
+        if nft list set ${BR_TABLE} global_tcp_ports >/dev/null 2>&1; then
+            nft add element ${BR_TABLE} global_tcp_ports "{ $1 }"
+            echo -e "${GREEN}已全局开放端口 $1${NC}"
+        else
+            echo -e "${YELLOW}当前为全锁模式，无全局端口集合。请用 allow 管理白名单，或用 open-for 为单台 VM 开放端口${NC}"
+        fi ;;
 
     close)
         [ $# -lt 1 ] && { echo "用法: $0 close <端口>"; exit 1; }
-        nft delete element ${BR_TABLE} global_tcp_ports "{ $1 }" 2>/dev/null \
-            && echo -e "${GREEN}已关闭全局端口 $1${NC}" \
-            || echo -e "${YELLOW}端口 $1 不在全局列表中${NC}" ;;
+        if nft list set ${BR_TABLE} global_tcp_ports >/dev/null 2>&1; then
+            nft delete element ${BR_TABLE} global_tcp_ports "{ $1 }" 2>/dev/null \
+                && echo -e "${GREEN}已关闭全局端口 $1${NC}" \
+                || echo -e "${YELLOW}端口 $1 不在全局列表中${NC}"
+        else
+            echo -e "${YELLOW}当前为全锁模式，无全局端口集合${NC}"
+        fi ;;
 
     open-for)
         [ $# -lt 2 ] && { echo "用法: $0 open-for <VM_IP> <端口>"; exit 1; }
