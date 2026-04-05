@@ -46,7 +46,8 @@
 | 多集群 | **Paymenter 多 Server** | 每个 Incus 集群/单机注册为一个 Server |
 | 用户防火墙 | **Incus ACL** | per-VM 安全组，bridge 模式支持 |
 | 专线 | **VM 内 WireGuard** | 无需 OVN，VM 层面解决 |
-| VM 磁盘加密 | **Ceph dmcrypt** | AES-NI 硬件加速，性能损耗 ~5-10%，作为卖点 |
+| VM 磁盘加密 | **Ceph dmcrypt 全盘** | AES-NI 硬件加速，损耗 ~5-10%，平台安全卖点 |
+| Ceph 副本数 | **2 副本** | SSD + 10G 恢复快（~15min），空间翻倍，后期 EC 池做备份 |
 | DDoS 防护 | **上游处理** | null route 被攻击 IP，宿主机不处理 |
 | IPv6 | **首期不做** | 后续按需添加 |
 | 自定义 ISO | **不做** | 只提供预设镜像 |
@@ -306,7 +307,7 @@ ceph osd unset noout
 ### Phase 1：基础集群（2-3 周）
 
 - [ ] setup-cluster.sh（3 节点 Incus 集群初始化）
-- [ ] deploy-ceph.sh（cephadm 部署 MON + MGR + OSD + dmcrypt）
+- [ ] deploy-ceph.sh（cephadm 部署 MON + MGR + OSD + dmcrypt + 2 副本）
 - [ ] Ceph 存储池接入 Incus
 - [ ] 网络配置模板（双 10G + VLAN 10/20/30）
 - [ ] 防火墙统一下发（bridge + inet + ceph_security）
