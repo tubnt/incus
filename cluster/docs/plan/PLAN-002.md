@@ -163,7 +163,7 @@ NIC 2 (eno2, 10G):
 | 创建 VM | Paymenter 下单 → Extension 调 Incus API |
 | 启停/重启 | Extension → `PUT /1.0/instances/{name}/state` |
 | **重装系统** | 删除旧实例 → 同 IP 创建新实例（保留 IP，全部重置）|
-| **VNC 控制台** | noVNC via WebSocket 代理层（★ Incus API 需 mTLS，浏览器无法直连，需自建代理）|
+| **Web 终端** | xterm.js + 串口 console（★ Incus VGA 是 SPICE 非 VNC，用串口终端替代）|
 | **修改密码** | Extension → `incus exec` 执行 `chpasswd` |
 | **SSH Key 管理** | 用户面板上传公钥 → 创建 VM 时 cloud-init 注入 |
 | **防火墙（安全组）** | Extension 管理 Incus ACL（REST API `/1.0/network-acls`）|
@@ -313,7 +313,7 @@ ceph osd unset noout
 | 跨机柜集群 | 单一集群限同机柜，跨区域用多集群 |
 | IPv6 | 首期不做，后续按需 |
 | 自定义 ISO | 不做，只提供预设镜像 |
-| Ceph 纠删码 | VM 磁盘用 2 副本（性能），后期备份池可用 EC（空间效率）|
+| Ceph 纠删码 | VM 磁盘用 3 副本（可靠性），后期备份池可用 EC（空间效率）|
 | rDNS | 首期不做 |
 
 ---
@@ -367,39 +367,38 @@ ceph osd unset noout
 - [ ] 自愈 webhook 服务 + 脚本
 - [ ] 审计日志（lifecycle → Loki）
 
-### Phase 4：Paymenter + 计费（2-3 周）
+### Phase 4：业务平台（详见 PLAN-003，共 4 个子阶段 7.5 周）
 
-- [ ] Paymenter Docker Compose 部署
-- [ ] Incus Server Extension 核心（创建/暂停/恢复/删除）
-- [ ] VNC 控制台集成（noVNC + WebSocket 代理层，★ 额外 1-2 周）
-- [ ] 用户防火墙（Incus ACL 管理）
-- [ ] SSH Key 管理（上传 → cloud-init 注入）
-- [ ] 快照管理（创建/恢复/删除）
-- [ ] 升降配（修改 CPU/内存）
-- [ ] 附加磁盘（Ceph RBD 卷）
-- [ ] 重装系统（删除重建，保留 IP）
-- [ ] 带宽限速设置（管理后台）
-- [ ] IP 池管理模块
-- [ ] 产品配置（规格/定价/支付网关）
-- [ ] 多集群/单机 Server 注册
-- [ ] 邮件通知（欠费/到期/维护）
-- [ ] 管理后台 2FA
-- [ ] 工单系统确认/配置
+- Phase 4A：基础部署 + 技术 Spike（1.5 周）
+- Phase 4B：Extension 核心 + 状态机（2 周）
+- Phase 4C：用户功能 + 自动备份（2.5 周）
+- Phase 4D：运营 + 自动化 + 14 项 Cron 任务（1.5 周）
 
-### Phase 5：运维完善（持续）
+### Phase 5：行业标准功能补全（持续迭代）
 
-- [ ] 备份策略（Ceph 快照 + 未来异地冷存储）
+- [ ] rDNS（反向 DNS，邮件服务器刚需，4/4 竞品有）
+- [ ] IPv6 双栈（/64 per VM，4/4 竞品有）
+- [ ] 用户级 REST API + API Token 管理（4/4 竞品有）
+- [ ] VPC / 私有网络（同用户 VM 间内网通信，4/4 竞品有）
+- [ ] Reserved IP（用户保留 IP，3/4 竞品有）
+- [ ] Rescue Mode（救援模式，3/4 竞品有）
+- [ ] Tags/Labels（资源分组，4/4 竞品有）
+- [ ] 用户级告警（CPU/带宽阈值 → 邮件，3/4 竞品有）
+- [ ] Startup Scripts 管理界面（cloud-init 脚本复用）
 - [ ] 运维手册 + 故障处理手册
-- [ ] ToS / AUP / SLA 文档
 - [ ] 安全渗透测试
 - [ ] 节点扩缩容工具
 
-### Phase 6（远期）：增值功能
+### Phase 6（远期）：增值与差异化
 
 - [ ] 用户级 MCP/AI 对话控制（网页聊天窗口 + Claude API）
 - [ ] 专线功能（WireGuard 自动化）
 - [ ] 云应用/Serverless（类似 CF Workers）
-- [ ] IPv6 双栈
+- [ ] Load Balancer
+- [ ] DNS 管理
+- [ ] Marketplace（一键应用镜像）
+- [ ] 多用户/团队 IAM
+- [ ] Object Storage（Ceph RGW，S3 兼容）
 - [ ] 异地灾备
 
 ---
