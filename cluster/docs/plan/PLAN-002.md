@@ -3,7 +3,7 @@
 - **状态**: draft
 - **创建**: 2026-04-05
 - **更新**: 2026-04-09
-- **审查**: R2（R1 修正 15 项 + R2 修正 min_size=2）
+- **审查**: R3（R1 15项 + R2 4P0+13P1 + R3 副本数3+ACL project级+dmcrypt密钥备份）
 - **关联任务**: CLUSTER-001
 
 ---
@@ -48,7 +48,7 @@
 | 用户防火墙 | **Incus ACL** | per-VM 安全组，bridge 模式支持 |
 | 专线 | **VM 内 WireGuard** | 无需 OVN，VM 层面解决 |
 | VM 磁盘加密 | **Ceph dmcrypt 全盘** | AES-NI 硬件加速，损耗 ~5-10%，平台安全卖点 |
-| Ceph 副本数 | **2 副本** | SSD + 10G 恢复快（~15min），空间翻倍，后期 EC 池做备份 |
+| Ceph 副本数 | **3 副本 size=3, min_size=2** | 业界标准，单点故障不影响 IO 且不丢数据。23 个 IP 远先于存储耗尽 |
 | DDoS 防护 | **上游处理** | null route 被攻击 IP，宿主机不处理 |
 | IPv6 | **首期不做** | 后续按需添加 |
 | 自定义 ISO | **不做** | 只提供预设镜像 |
@@ -74,10 +74,17 @@ incus config device override ${VM} eth0 \
 
 **集群新增**：
 ```bash
-# 阻断 VM 访问内部网络
+# vm_filter 表 priority=-10，先于 Incus ACL 表(priority=0)执行
+# RFC1918 drop 不会被用户 ACL allow 绕过
+nft add table bridge vm_filter
+nft add chain bridge vm_filter forward '{ type filter hook forward priority -10; policy drop; }'
+nft add rule bridge vm_filter forward ether type arp accept
+nft add rule bridge vm_filter forward ct state established,related accept
+nft add rule bridge vm_filter forward ether type ip ip protocol icmp accept
 nft add rule bridge vm_filter forward ether type ip ip daddr 10.0.0.0/8 drop
 nft add rule bridge vm_filter forward ether type ip ip daddr 172.16.0.0/12 drop
 nft add rule bridge vm_filter forward ether type ip ip daddr 192.168.0.0/16 drop
+# 白名单和 VM 出站规则...
 ```
 
 ### 模块 2：网卡硬件卸载
@@ -318,10 +325,19 @@ ceph osd unset noout
 - [ ] setup-cluster.sh（3 节点 Incus 集群初始化）
 - [ ] deploy-ceph.sh（cephadm 部署 MON + MGR + OSD）
   - OSD spec 中 `encrypted: true` 启用 dmcrypt
-  - `ceph osd pool set incus-pool size 2 min_size 2`
-    ★ 生产环境 min_size=2（宁可不可用也不丢数据。min_size=1 仅用于测试）
+  - `ceph osd pool set incus-pool size 3 min_size 2`
+    ★ 3 副本 + min_size=2：单 OSD 挂了 IO 继续且仍有 2 份保护
+    ★ size=2+min_size=2 会导致单 OSD 故障时 VM IO 阻塞（R3 验证确认）
+    ★ size=2+min_size=1 虽然 IO 不阻塞但恢复期间零冗余有丢数据风险
   - CRUSH rule 故障域设为 `host`（`osd_crush_chooseleaf_type=1`）
 - [ ] 每节点安装 `ceph-common`，确认 `/etc/ceph/ceph.conf` + keyring 就位
+- [ ] dmcrypt 密钥备份脚本（密钥存在 MON 数据库，MON 全挂=加密数据永久丢失）
+  ```bash
+  # 定期导出到集群外部安全位置
+  for key in $(ceph config-key ls | grep dm-crypt); do
+    echo "$key: $(ceph config-key get $key)"
+  done > /secure/backup/dmcrypt-keys.txt
+  ```
 - [ ] Ceph 存储池接入 Incus：
   ```bash
   incus storage create ceph-pool ceph \
@@ -483,7 +499,8 @@ network:
 
 ```
 裸容量: 5 节点 × 4 OSD × 1TB = 20 TB
-Ceph 2 副本可用: 20 / 2 × 0.80 = 8 TB
-每台 VM 50GB: 可开 ~160 台 VM
+Ceph 3 副本可用: 20 / 3 × 0.80 = 5.3 TB
+每台 VM 50GB: 可开 ~106 台 VM
 VM 可用公网 IP: 23 个（202.151.179.232-254）
+★ IP（23 个）远先于存储（106 台）耗尽，3 副本不浪费
 ```

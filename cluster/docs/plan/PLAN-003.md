@@ -555,42 +555,90 @@ PATCH /1.0/instances/{vm}
 
 ## 十、开发阶段
 
-### Phase 4A：Paymenter 基础部署（1 周）
+### Phase 4A：基础部署 + 技术 Spike（1.5 周）
 
-- [ ] Paymenter Docker Compose 部署
-- [ ] Nginx + Let's Encrypt 配置
-- [ ] WireGuard 隧道连接到 Incus 集群
-- [ ] Incus 受限证书签发（customers project）
-- [ ] 管理后台 2FA 启用
-- [ ] 基础产品/定价配置
+**技术 Spike（前 2 天，必须先做）：**
+- [ ] clone Paymenter 源码确认 Extension API 实际签名
+- [ ] 自建 Paymenter Docker 镜像（官方无镜像）
+- [ ] 受限证书操作 ACL 权限验证
+- [ ] xterm.js + Incus console API PoC
 
-### Phase 4B：Incus Extension 核心（2 周）
+**部署：**
+- [ ] Paymenter Docker Compose（含 Redis + Queue Worker + Scheduler + certbot）
+- [ ] Nginx + WAF + Let's Encrypt
+- [ ] WireGuard 隧道（PersistentKeepalive=25 + 健康检查 + 多集群路由）
+- [ ] Incus 受限证书签发（customers project + 资源配额）
+- [ ] Project 初始化：`restricted=true` + `restricted.devices.disk=allow`
+- [ ] 管理后台 + 用户端 2FA 启用
+- [ ] SPF/DKIM/DMARC 邮件配置（保证送达率）
+- [ ] 基础产品/定价配置 + ToS/AUP/隐私政策页面
 
-- [ ] Extension 骨架（IncusClient + 生命周期方法）
-- [ ] createServer（IP 池分配 + cloud-init + 安全过滤 + 带宽限速）
+### Phase 4B：Extension 核心 + 状态机（2 周）
+
+**VM 状态机：**
+```
+下单支付 → 配置中 → 创建中 → 运行中 → [用户操作/到期] → 已停止/已暂停 → 已删除
+                         ↓
+                    创建失败 → 自动退款 + 回收 IP + P1 告警
+```
+
+**核心功能：**
+- [ ] Extension 骨架（IncusClient + mTLS + 超时 30s + 重试 3 次）
+- [ ] createServer（IP 池分配 + cloud-init + 安全过滤 + 带宽限速 + 默认 ACL 放行 SSH）
+- [ ] createServer 失败回滚（退款+回收 IP+告警）
 - [ ] suspendServer / unsuspendServer / terminateServer
-- [ ] IP 池管理（分配/回收/冷却/告警）
-- [ ] 密码修改 / SSH Key 注入
-- [ ] 重装系统（删除重建保留 IP）
-- [ ] 审计日志
+- [ ] **操作并发锁**（VM 正在执行操作时拒绝其他操作）
+- [ ] **操作失败统一错误处理框架**（所有操作的回滚/重试/告警）
+- [ ] IP 池管理（分配/回收/冷却 24h/余量告警）
+- [ ] 密码修改（stdin 管道传递，不暴露命令行）/ SSH Key CRUD
+- [ ] 重装系统（可选不同 OS，保留 IP，重装前自动快照警告）
+- [ ] 审计日志（所有操作记录）
 
-### Phase 4C：用户功能（2 周）
+### Phase 4C：用户功能（2.5 周）
 
-- [ ] Console WebSocket 代理服务（Go，xterm.js + 串口 console）
-- [ ] xterm.js 前端集成（★ 非 noVNC，Incus VGA 是 SPICE 协议）
-- [ ] 用户防火墙 UI（Incus ACL 管理）
-- [ ] 快照管理（创建/恢复/删除）
-- [ ] 升降配（热升配/冷降配）
-- [ ] 附加磁盘管理
-- [ ] 资源监控图表（CPU/内存/带宽）
+- [ ] Console 代理服务（Go，xterm.js + 串口 console，独立受限证书）
+- [ ] xterm.js 前端（空闲超时 30min，最大连接 1h，并发 1）
+- [ ] 用户防火墙 UI（Incus ACL，默认 ingress drop + 放行 SSH 22）
+- [ ] 防火墙规则校验（拒绝 RFC1918 源地址，上限 50 条/VM）
+- [ ] 快照管理（创建/恢复/删除，最多 5 个/VM，恢复需停机+确认）
+- [ ] **自动备份**（★ 行业标准功能，Ceph RBD 定时快照，每日自动，保留 7 天，收费 VM 价格 20%）
+- [ ] 升降配（热升配/冷降配 + **磁盘扩容** + 禁止磁盘缩小 + 补差价逻辑）
+- [ ] 附加磁盘管理（热添加 + 提示 VM 内需格式化 + 格式化指南）
+- [ ] 资源监控图表（CPU/内存/磁盘 IO/带宽，1h/24h/7d/30d）
+- [ ] **带宽用量展示**（本月已用/配额 + 超额限速 10Mbps 提示）
+- [ ] VM 状态页面（IP/网关/规格/OS/创建时间/到期时间/SSH 命令/连接指南）
 
-### Phase 4D：运营功能（1 周）
+### Phase 4D：运营 + 自动化（1.5 周）
 
-- [ ] 邮件通知模板（注册/下单/到期/暂停/删除）
-- [ ] 到期自动处理 Cron（7/3/1 天提醒 → 暂停 → 删除）
+**邮件通知：**
+- [ ] 注册欢迎 + 邮箱验证
+- [ ] 订单确认（VM 信息，★ 密码面板内一次性显示，不邮件发送明文密码）
+- [ ] 到期提醒（D-7/D-3/D-1）+ 暂停通知（D+0）+ 删除前警告（D+5）+ 删除通知（D+7）
+- [ ] 维护/故障公告（管理员手动群发 + 面板内公告栏）
+
+**定时任务完整清单（Cron）：**
+- [ ] IP 冷却期回收（每小时）
+- [ ] 到期提醒发送（每日 09:00 UTC）
+- [ ] 到期 VM 暂停（每日 00:00 UTC，幂等）
+- [ ] 过期 VM 删除（每日 00:00 UTC，D+7，幂等）
+- [ ] 流量统计汇总（每小时，从 Incus metrics 采集）
+- [ ] 流量超额限速（每小时，超额 → `limits.ingress/egress=10Mbit`，次月 1 日恢复）
+- [ ] 自动备份执行（每日 03:00 UTC，Ceph RBD snapshot）
+- [ ] 自动备份清理（每日 04:00 UTC，保留 7 天）
+- [ ] Paymenter ↔ Incus 一致性巡检（每 6 小时，检测 VM/IP 状态不一致）
+- [ ] IP 池余量检查（每小时，<10% 告警）
+- [ ] MySQL 备份（每日 02:00 UTC）
+- [ ] dmcrypt 密钥导出备份（每日 02:30 UTC）
+- [ ] **Cron 任务自身健康监控（deadman switch → Alertmanager）**
+
+**其他：**
 - [ ] 多集群/单机 Server 注册
-- [ ] 工单系统配置
-- [ ] 支付网关配置（Stripe/PayPal）
+- [ ] 工单系统配置（分类：技术/计费/滥用）
+- [ ] 支付网关配置（Stripe/PayPal）+ 支付失败/超时 30 分钟自动取消
+- [ ] 自动续费机制（余额扣除模式 + 扣费失败重试 3 次 + 通知）
+- [ ] 管理后台功能：客户搜索、VM 全局视图、IP 池可视化、收入报表
+- [ ] 危险操作二次确认（重启/重装/删除需输入 VM 名称确认）
+- [ ] Rate Limiting（用户 Web 请求防刷 + Extension API 调用频率限制）
 
 ---
 
@@ -605,6 +653,9 @@ PATCH /1.0/instances/{vm}
 | Paymenter v1 停止维护 | 关注 v2 进展，预留迁移能力 |
 | ACL 高密度性能 | 测试环境验证 100+ VM 下的 nftables 规则性能 |
 | 到期提醒精细化 | Paymenter 内置可能不够，准备自定义 Cron |
+| Paymenter 单点故障 | 首期接受，Paymenter 挂了 VM 不受影响，仅管理/计费中断 |
+| 明文密码邮件泄露 | 密码仅面板内一次性显示，不通过邮件发送 |
+| Paymenter Docker 镜像 | 官方无镜像，需自建 Dockerfile |
 | Paymenter 故障时到期 VM 不暂停 | Paymenter 可用性监控（P1 告警）+ 恢复后追溯处理到期 VM |
 | WireGuard 隧道断线 | PersistentKeepalive=25 + 健康检查 + 备用公网 IP 白名单降级 |
 | ACL 全局作用域 | ACL 命名前缀强制（`acl-order-{id}`），Extension 代码校验防篡改 |
@@ -653,11 +704,11 @@ Extension createServer() 失败时：
 ### 用户防火墙 ACL 限制
 
 ```
-★ Incus ACL 是全局资源（非 project 级别）
-→ ACL 命名必须包含 order_id 前缀：acl-order-{order_id}
-→ Extension 代码必须校验用户只能操作自己的 ACL
-→ 受限证书能否操作 ACL 需在测试环境验证（Phase 4A 技术 Spike）
-→ 如果不能：Extension 持有两套证书（受限 + ACL 专用管理员证书）
+★ ACL 是 project 级别资源（R3 验证确认，非全局）
+→ API 调用带 `?project=customers` 参数即可隔离
+→ ACL 命名仍建议包含 order_id 前缀作为额外安全层：acl-order-{order_id}
+→ 受限证书操作 ACL 需在测试环境验证（Phase 4A 技术 Spike）
+→ 备选方案：Extension 持有两套证书（受限管实例 + 管理员管 ACL）
 
 ★ 用户 ACL 不允许设置 RFC1918 源地址（首期无内网功能）
 → Extension 逻辑校验：拒绝 source 为 10.0.0.0/8、172.16.0.0/12、192.168.0.0/16 的规则
