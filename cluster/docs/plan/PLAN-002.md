@@ -3,6 +3,7 @@
 - **状态**: draft
 - **创建**: 2026-04-05
 - **更新**: 2026-04-09
+- **审查**: R1（3 路技术验证完成，15 项修正）
 - **关联任务**: CLUSTER-001
 
 ---
@@ -40,7 +41,7 @@
 |------|------|------|
 | OVN | **不引入** | 公网 IP 直通 + 同机柜同交换机，不需要 overlay |
 | SR-IOV | **不采用** | 绕过 Incus 安全过滤层，与 IP 锁定需求冲突 |
-| 用户面板 | **Paymenter** | 开源 Laravel，客户管理+计费+工单开箱即用 |
+| 用户面板 | **Paymenter v1.x** | 开源 Laravel，客户管理+计费+工单开箱即用（v2 API 已重构，不兼容）|
 | 前端自建 | **不需要** | Paymenter 自带客户门户 |
 | 计费 | **Paymenter 内置** | 订阅/按量均支持，Stripe/PayPal 等支付网关 |
 | 多集群 | **Paymenter 多 Server** | 每个 Incus 集群/单机注册为一个 Server |
@@ -86,7 +87,10 @@ nft add rule bridge vm_filter forward ether type ip ip daddr 192.168.0.0/16 drop
 ```bash
 modprobe vhost_net
 ethtool -K br-pub gro on gso on tso on
-ip link set eno2 mtu 9000  # Ceph Cluster 网络 Jumbo Frame
+# ★ eno1 MTU 必须设为 9000（VLAN 20 Ceph Public 需要 Jumbo Frame）
+# br-pub 逻辑 MTU 1500 不影响 eno1.20 走 9000
+ip link set eno1 mtu 9000  # 物理网卡设为子接口最大 MTU
+ip link set eno2 mtu 9000  # Ceph Cluster 专用
 ```
 
 ### 模块 3：监控体系与自愈
@@ -117,7 +121,7 @@ Prometheus + Grafana + Loki + Alertmanager，Docker Compose 部署。
 | OSD 进程崩溃 | `systemctl restart ceph-osd@N` |
 | PG 降级 >5min | `ceph pg repair` |
 | 宿主机磁盘 >85% | 清理 journald + apt 缓存 |
-| Incus 节点离线 | Incus auto-healing 迁移 VM |
+| Incus 节点离线 | auto-healing **冷启动** VM（非热迁移，有 ~5min 停机）|
 
 ### 模块 4：网络隔离
 
@@ -148,13 +152,14 @@ NIC 2 (eno2, 10G):
 | 创建 VM | Paymenter 下单 → Extension 调 Incus API |
 | 启停/重启 | Extension → `PUT /1.0/instances/{name}/state` |
 | **重装系统** | 删除旧实例 → 同 IP 创建新实例（保留 IP，全部重置）|
-| **VNC 控制台** | noVNC via Incus console WebSocket |
+| **VNC 控制台** | noVNC via WebSocket 代理层（★ Incus API 需 mTLS，浏览器无法直连，需自建代理）|
 | **修改密码** | Extension → `incus exec` 执行 `chpasswd` |
 | **SSH Key 管理** | 用户面板上传公钥 → 创建 VM 时 cloud-init 注入 |
-| **防火墙（安全组）** | Extension 管理 Incus ACL |
+| **防火墙（安全组）** | Extension 管理 Incus ACL（REST API `/1.0/network-acls`）|
 | **快照** | Extension → `POST /1.0/instances/{name}/snapshots` |
-| **升降配** | 停机 → 修改 `limits.cpu` / `limits.memory` → 启动 |
-| **附加磁盘** | Extension → `incus storage volume create` + device add |
+| **升配** | **热操作**（不停机）：`incus config set` 增加 CPU/内存，VM 内核自动识别 |
+| **降配** | **需停机**：停止 → 修改 → 启动（hot-unplug 支持有限）|
+| **附加磁盘** | 热添加（不停机）→ **VM 内需手动格式化挂载**（出现为 /dev/sdb 等）|
 | **重装系统** | 删除实例 → 同 IP/同规格重建 |
 | 查看用量 | Extension 读取 Incus metrics |
 | 查看账单 | Paymenter 内置 |
@@ -235,10 +240,10 @@ IP 池数据库（Paymenter Extension 维护）：
 
 ### 模块 9（新增）：运维流程
 
-**滚动维护**（零停机更新）：
+**滚动维护**（计划内，源节点在线 → **热迁移**，用户无感）：
 
 ```bash
-# 1. 疏散节点（VM 秒级迁移到其他节点，用户无感）
+# 1. 疏散节点（热迁移，内存实时同步，VM 无停机）
 incus cluster evacuate node1
 
 # 2. 更新系统/Incus/Ceph
@@ -297,7 +302,7 @@ ceph osd unset noout
 | 跨机柜集群 | 单一集群限同机柜，跨区域用多集群 |
 | IPv6 | 首期不做，后续按需 |
 | 自定义 ISO | 不做，只提供预设镜像 |
-| Ceph 纠删码 | 首期不需要，3 副本足够 |
+| Ceph 纠删码 | VM 磁盘用 2 副本（性能），后期备份池可用 EC（空间效率）|
 | rDNS | 首期不做 |
 
 ---
@@ -307,9 +312,19 @@ ceph osd unset noout
 ### Phase 1：基础集群（2-3 周）
 
 - [ ] setup-cluster.sh（3 节点 Incus 集群初始化）
-- [ ] deploy-ceph.sh（cephadm 部署 MON + MGR + OSD + dmcrypt + 2 副本）
-- [ ] Ceph 存储池接入 Incus
-- [ ] 网络配置模板（双 10G + VLAN 10/20/30）
+- [ ] deploy-ceph.sh（cephadm 部署 MON + MGR + OSD）
+  - OSD spec 中 `encrypted: true` 启用 dmcrypt
+  - `ceph osd pool set incus-pool size 2 min_size 1`
+  - CRUSH rule 故障域设为 `host`（`osd_crush_chooseleaf_type=1`）
+- [ ] 每节点安装 `ceph-common`，确认 `/etc/ceph/ceph.conf` + keyring 就位
+- [ ] Ceph 存储池接入 Incus：
+  ```bash
+  incus storage create ceph-pool ceph \
+    source=incus-pool \
+    ceph.cluster_name=ceph \
+    ceph.user.name=admin
+  ```
+- [ ] 网络配置（netplan 模板：eno1 MTU 9000 + br-pub + VLAN 10/20 + eno2 直连）
 - [ ] 防火墙统一下发（bridge + inet + ceph_security）
 - [ ] IP 绑定 + RFC1918 阻断验证
 
@@ -335,7 +350,7 @@ ceph osd unset noout
 
 - [ ] Paymenter Docker Compose 部署
 - [ ] Incus Server Extension 核心（创建/暂停/恢复/删除）
-- [ ] VNC 控制台集成（noVNC）
+- [ ] VNC 控制台集成（noVNC + WebSocket 代理层，★ 额外 1-2 周）
 - [ ] 用户防火墙（Incus ACL 管理）
 - [ ] SSH Key 管理（上传 → cloud-init 注入）
 - [ ] 快照管理（创建/恢复/删除）
@@ -374,7 +389,8 @@ ceph osd unset noout
 |------|------|
 | Paymenter 稳定性 | 每日数据库备份 + 测试环境充分验证 |
 | Ceph 学习曲线 | cephadm 自动化 + 3 节点起步 |
-| Incus healing 误触发 | `offline_threshold=30` + 双重检测 |
+| Incus healing 误触发 | `cluster.offline_threshold=20` + `cluster.healing_threshold=300`（后者才启用自愈）|
+| auto-healing 停机 | healing 是**冷启动**（源节点已挂），VM 有 ~5min 不可用，SLA 99.9% 可覆盖 |
 | Extension 开发周期 | Phase 4 功能多，优先核心（创建/删除/启停/计费），其他迭代 |
 | IP 池耗尽 | 容量监控 + 提前采购告警 |
 | dmcrypt 性能 | AES-NI 硬件加速，实测 ~5-10% 开销，可接受 |
@@ -407,6 +423,46 @@ ceph osd unset noout
 - 裸跑 `netplan apply`（必须有安全网）
 - 直接修改 nftables 规则不备份
 - 在 bridge forward 中误 drop 宿主机返回流量（单机版踩过的坑）
+
+### netplan 配置模板（以 node1 为例）
+
+```yaml
+# /etc/netplan/01-network.yaml
+network:
+  version: 2
+  renderer: networkd
+  ethernets:
+    eno1:
+      mtu: 9000          # ★ 必须为子接口最大 MTU
+      dhcp4: false
+      dhcp6: false
+    eno2:
+      mtu: 9000
+      dhcp4: false
+      dhcp6: false
+      addresses: [10.0.30.1/24]     # Ceph Cluster 直连
+  vlans:
+    vlan10:
+      id: 10
+      link: eno1
+      mtu: 1500
+      addresses: [10.0.10.1/24]     # 管理网
+    vlan20:
+      id: 20
+      link: eno1
+      mtu: 9000
+      addresses: [10.0.20.1/24]     # Ceph Public
+  bridges:
+    br-pub:
+      interfaces: [eno1]
+      mtu: 1500
+      addresses: [202.151.179.226/27]
+      routes: [{to: default, via: 202.151.179.225}]
+      nameservers: {addresses: [1.1.1.1, 8.8.8.8]}
+      parameters: {stp: false, forward-delay: 0}
+```
+
+> 交换机需配置 trunk 模式，允许 VLAN 10/20，native VLAN 走 untagged。
 
 ### 节点规划
 
