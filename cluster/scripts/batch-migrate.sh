@@ -68,24 +68,25 @@ get_best_target() {
     local best_node=""
     local min_count=999999
 
-    # 获取所有节点及其 VM 数量
-    while IFS=, read -r node count; do
+    # 获取所有在线节点及其 VM 数量
+    # 先一次性取回全量 VM 分布，避免 N+1 查询
+    local vm_snapshot
+    vm_snapshot=$(incus list --format csv -c nL 2>/dev/null || true)
+
+    while IFS=, read -r node status; do
         node=$(echo "$node" | xargs)  # trim
-        count=$(echo "$count" | xargs)
-        if [[ "$node" != "$exclude" && "$count" -lt "$min_count" ]]; then
+        status=$(echo "$status" | xargs)
+        # 只选择 ONLINE 状态的节点，排过滤掉 OFFLINE/EVACUATED
+        if [[ "$node" == "$exclude" || "$status" != "ONLINE" ]]; then
+            continue
+        fi
+        local count
+        count=$(echo "$vm_snapshot" | awk -F, -v node="$node" '$2 == node' | wc -l)
+        if [[ "$count" -lt "$min_count" ]]; then
             min_count=$count
             best_node=$node
         fi
-    done < <(
-        # 先列出所有在线节点（VM 数为 0 的也包含）
-        incus cluster list --format csv -c n 2>/dev/null | while read -r n; do
-            n=$(echo "$n" | xargs)
-            if [[ "$n" != "$exclude" ]]; then
-                vm_count=$(incus list --format csv -c nL 2>/dev/null | awk -F, -v node="$n" '$2 == node' | wc -l)
-                echo "${n},${vm_count}"
-            fi
-        done
-    )
+    done < <(incus cluster list --format csv -c ns 2>/dev/null)
 
     if [[ -z "$best_node" ]]; then
         return 1
@@ -110,10 +111,10 @@ for i in "${!VM_LIST[@]}"; do
     vm="${VM_LIST[$i]}"
     seq=$((i + 1))
 
-    # 每次迁移前重新计算最佳目标节点
-    target=$(get_best_target "$SOURCE_NODE")
+    # 每次迁移前重新计算最佳目标节点（|| true 防止 set -e 下 return 1 直接退出脚本）
+    target=$(get_best_target "$SOURCE_NODE") || true
     if [[ -z "$target" ]]; then
-        log_error "无可用目标节点"
+        log_error "无可用目标节点（所有其他节点均不可用或 OFFLINE）"
         exit 1
     fi
 
@@ -126,7 +127,7 @@ for i in "${!VM_LIST[@]}"; do
         continue
     fi
 
-    if "${SCRIPT_DIR}/migrate-vm.sh" "$vm" --target "$target" $MIGRATE_MODE; then
+    if "${SCRIPT_DIR}/migrate-vm.sh" "$vm" --target "$target" "$MIGRATE_MODE"; then
         SUCCESS=$((SUCCESS + 1))
     else
         FAILED=$((FAILED + 1))
