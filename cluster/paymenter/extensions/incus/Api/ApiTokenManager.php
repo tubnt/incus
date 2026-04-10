@@ -159,27 +159,21 @@ class ApiTokenManager
     {
         $windowStart = now()->startOfMinute();
 
-        $record = DB::table('incus_api_rate_limits')
+        // upsert 防止并发请求竞态条件绕过限速
+        DB::statement(
+            'INSERT INTO incus_api_rate_limits (user_id, request_count, window_start) VALUES (?, 1, ?)
+             ON DUPLICATE KEY UPDATE request_count = request_count + 1',
+            [$userId, $windowStart]
+        );
+
+        $count = DB::table('incus_api_rate_limits')
             ->where('user_id', $userId)
             ->where('window_start', $windowStart)
-            ->first();
+            ->value('request_count');
 
-        if (!$record) {
-            DB::table('incus_api_rate_limits')->insert([
-                'user_id'       => $userId,
-                'request_count' => 1,
-                'window_start'  => $windowStart,
-            ]);
-            return true;
-        }
-
-        if ($record->request_count >= self::RATE_LIMIT) {
+        if ($count > self::RATE_LIMIT) {
             return false;
         }
-
-        DB::table('incus_api_rate_limits')
-            ->where('id', $record->id)
-            ->increment('request_count');
 
         return true;
     }

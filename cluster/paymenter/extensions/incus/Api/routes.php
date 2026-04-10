@@ -14,49 +14,50 @@ use Illuminate\Support\Facades\Route;
 |
 */
 
+// group 级别仅做认证 + rate limit（不传 scope 参数）
 Route::prefix('api/v1')->middleware(ApiMiddleware::class)->group(function () {
 
     // --- 实例管理 ---
     Route::get('/instances', [ApiController::class, 'listInstances'])
-        ->middleware('api.scope:instances.list');
+        ->middleware(ApiMiddleware::class . ':instances.list');
 
     Route::get('/instances/{id}', [ApiController::class, 'getInstance'])
-        ->middleware('api.scope:instances.read')
+        ->middleware(ApiMiddleware::class . ':instances.read')
         ->where('id', '[0-9]+');
 
     Route::post('/instances/{id}/actions', [ApiController::class, 'instanceAction'])
-        ->middleware('api.scope:instances.actions')
+        ->middleware(ApiMiddleware::class . ':instances.actions')
         ->where('id', '[0-9]+');
 
     // --- 快照 ---
     Route::get('/instances/{id}/snapshots', [ApiController::class, 'listSnapshots'])
-        ->middleware('api.scope:snapshots.list')
+        ->middleware(ApiMiddleware::class . ':snapshots.list')
         ->where('id', '[0-9]+');
 
     Route::post('/instances/{id}/snapshots', [ApiController::class, 'createSnapshot'])
-        ->middleware('api.scope:snapshots.create')
+        ->middleware(ApiMiddleware::class . ':snapshots.create')
         ->where('id', '[0-9]+');
 
     // --- 防火墙 ---
     Route::get('/instances/{id}/firewall', [ApiController::class, 'getFirewall'])
-        ->middleware('api.scope:firewall.read')
+        ->middleware(ApiMiddleware::class . ':firewall.read')
         ->where('id', '[0-9]+');
 
     Route::patch('/instances/{id}/firewall', [ApiController::class, 'updateFirewall'])
-        ->middleware('api.scope:firewall.write')
+        ->middleware(ApiMiddleware::class . ':firewall.write')
         ->where('id', '[0-9]+');
 
     // --- 监控 ---
     Route::get('/instances/{id}/metrics', [ApiController::class, 'getMetrics'])
-        ->middleware('api.scope:metrics.read')
+        ->middleware(ApiMiddleware::class . ':metrics.read')
         ->where('id', '[0-9]+');
 
     // --- 账户 ---
     Route::get('/account/balance', [ApiController::class, 'getBalance'])
-        ->middleware('api.scope:account.read');
+        ->middleware(ApiMiddleware::class . ':account.read');
 
     Route::get('/account/invoices', [ApiController::class, 'listInvoices'])
-        ->middleware('api.scope:account.read');
+        ->middleware(ApiMiddleware::class . ':account.read');
 
     // --- Token 自助管理（仅需基础认证，无额外 scope 要求）---
     Route::get('/tokens', [ApiController::class, 'listTokens']);

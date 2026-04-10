@@ -467,7 +467,7 @@ class ApiController extends Controller
             ->where('orders.id', $orderId)
             ->where('orders.user_id', $userId)
             ->where('order_products.server_type', 'incus')
-            ->select(['orders.id', 'order_products.vm_name', 'order_products.status'])
+            ->select(['orders.id', 'order_products.vm_name', 'order_products.status', 'order_products.os_template'])
             ->first();
     }
 

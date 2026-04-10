@@ -13,7 +13,7 @@ return new class extends Migration
             $table->unsignedBigInteger('user_id')->index();
             $table->string('name', 64);
             $table->string('token_hash', 64)->unique(); // SHA256 哈希
-            $table->string('token_prefix', 8);           // 前 8 字符，用于标识
+            $table->string('token_prefix', 14);          // "incus_" + 8 字符，用于标识
             $table->enum('permission', ['read-only', 'full-access', 'custom'])->default('read-only');
             $table->json('custom_permissions')->nullable(); // custom 模式下的细粒度权限
             $table->timestamp('last_used_at')->nullable();
