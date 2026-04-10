@@ -391,7 +391,7 @@ ceph osd unset noout
 
 ### Phase 6（远期）：增值与差异化
 
-- [ ] 用户级 MCP/AI 对话控制（网页聊天窗口 + Claude API）
+- [x] 用户级 MCP/AI 对话控制（AI Gateway 服务，WebSocket + Claude API + 9 个 MCP Tool）
 - [ ] 专线功能（WireGuard 自动化）
 - [ ] 云应用/Serverless（类似 CF Workers）
 - [ ] Load Balancer
