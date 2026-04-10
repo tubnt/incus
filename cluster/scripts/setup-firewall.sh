@@ -37,6 +37,33 @@ log_info()  { echo "[INFO]  $*"; }
 log_warn()  { echo "[WARN]  $*" >&2; }
 log_error() { echo "[ERROR] $*" >&2; }
 
+# 校验 IPv4 地址格式
+validate_ip() {
+    local ip="$1" label="$2"
+    if [[ ! "${ip}" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+        log_error "${label} 格式无效: ${ip}"
+        exit 1
+    fi
+}
+
+# 校验 CIDR 格式
+validate_cidr() {
+    local cidr="$1" label="$2"
+    if [[ ! "${cidr}" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}/[0-9]{1,2}$ ]]; then
+        log_error "${label} CIDR 格式无效: ${cidr}"
+        exit 1
+    fi
+}
+
+# 校验网卡名（仅允许字母数字和连字符）
+validate_ifname() {
+    local name="$1" label="$2"
+    if [[ ! "${name}" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+        log_error "${label} 接口名无效: ${name}"
+        exit 1
+    fi
+}
+
 usage() {
     cat <<'USAGE'
 用法:
@@ -100,6 +127,13 @@ if [[ -z "${NODE_IP}" ]]; then
     log_error "无法检测节点 IP，请使用 --node-ip 手动指定"
     exit 1
 fi
+
+# 校验所有输入参数
+validate_ip    "${NODE_IP}"      "节点 IP"
+validate_cidr  "${MGMT_NET}"     "管理网段"
+validate_cidr  "${CEPH_PUBLIC}"  "Ceph Public"
+validate_cidr  "${CEPH_CLUSTER}" "Ceph Cluster"
+validate_ifname "${BRIDGE_NAME}" "桥接设备"
 
 log_info "节点 IP: ${NODE_IP}"
 log_info "桥接设备: ${BRIDGE_NAME}"

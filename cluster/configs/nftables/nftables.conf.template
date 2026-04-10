@@ -10,8 +10,12 @@
 #   __BRIDGE_NAME__    — VM 桥接网卡名 (br-pub)
 #
 
-flush ruleset bridge
-flush ruleset inet
+# ★ 仅清除本模板管理的表，不影响 Incus ACL 等其他规则
+# 先声明表（确保存在），再删除，再重建 — 原子化替换
+table bridge vm_filter;
+delete table bridge vm_filter;
+table inet host_filter;
+delete table inet host_filter;
 
 # ============================================================
 # 第一层：bridge vm_filter（priority -10，先于 Incus ACL priority 0）
@@ -21,27 +25,34 @@ table bridge vm_filter {
     chain forward {
         type filter hook forward priority -10; policy accept;
 
+        # ★ 仅过滤 VM 桥接流量，其他桥接设备不受影响
+        meta ibrname != "__BRIDGE_NAME__" accept
+
         # ARP 放行（必须，否则 VM 无法获取网关 MAC）
         ether type arp accept
 
-        # 非 IPv4 流量不处理
-        ether type != ip accept
+        # 仅过滤 IP/IPv6，其他协议放行
+        ether type != { ip, ip6 } accept
 
         # established/related 放行
         # ★ 必须在 drop 规则之前：确保宿主机/外部返回 VM 的响应包不被误 drop
         ct state established,related accept
 
-        # ICMP 放行
+        # ICMP / ICMPv6 放行
         ip protocol icmp accept
+        ip6 nexthdr icmpv6 accept
 
-        # ★ 阻断目标为 RFC1918 私有网段的帧
+        # ★ 阻断目标为 RFC1918 私有网段的帧（IPv4）
         # priority -10 确保此规则在 Incus ACL (priority 0) 之前执行
         # 即使用户 ACL allow 也无法绕过
-        # 注意：外部 → VM 方向目标是公网 IP，不会匹配这些规则
-        # VM → RFC1918 方向被阻断，实现 VM 隔离
         ip daddr 10.0.0.0/8 counter drop
         ip daddr 172.16.0.0/12 counter drop
         ip daddr 192.168.0.0/16 counter drop
+
+        # ★ 阻断目标为 IPv6 内部网段的帧
+        # link-local + ULA 阻断，防止 IPv6 绕过 RFC1918 隔离
+        ip6 daddr fe80::/10 counter drop
+        ip6 daddr fc00::/7 counter drop
 
         # ★ 阻断 VM → 宿主机公网 IP 管理端口
         ip daddr __NODE_IP__ tcp dport { 22, 8443, 9100 } counter drop
