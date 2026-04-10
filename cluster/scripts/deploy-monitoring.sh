@@ -113,15 +113,22 @@ main() {
     # 检查 Incus 证书
     check_incus_cert
 
+    # 检查 .env 文件
+    if [ ! -f "${MONITORING_DIR}/.env" ]; then
+        error ".env 文件不存在，请从 .env.example 复制并填写实际配置"
+        error "  cp ${MONITORING_DIR}/.env.example ${MONITORING_DIR}/.env"
+        exit 1
+    fi
+
     # 启动 Docker Compose 监控栈
     info "启动监控栈..."
     cd "${MONITORING_DIR}"
     docker compose up -d
 
     info "========== 部署完成 =========="
-    info "Prometheus: http://localhost:${PROMETHEUS_PORT}"
-    info "Grafana:    http://localhost:${GRAFANA_PORT}  (默认 admin/admin)"
-    info "Loki:       http://localhost:${LOKI_PORT}"
+    info "Prometheus:   http://localhost:${PROMETHEUS_PORT}"
+    info "Grafana:      http://localhost:${GRAFANA_PORT}"
+    info "Loki:         http://localhost:${LOKI_PORT}"
     info "Alertmanager: http://localhost:${ALERTMANAGER_PORT}"
 }
 

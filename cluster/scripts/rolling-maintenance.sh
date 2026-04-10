@@ -115,12 +115,12 @@ check_ceph_health() {
 # 检查是否有其他节点已被疏散（不允许并行维护）
 check_no_parallel_maintenance() {
     local evacuated_count
-    evacuated_count=$(incus cluster list --format csv | awk -F',' '{print $4}' | grep -c "evacuated" || true)
+    evacuated_count=$(incus cluster list --format csv | awk -F',' '{print tolower($4)}' | grep -c "evacuated" || true)
 
     # 如果是 restore 操作，允许当前节点已 evacuated
     if $DO_RESTORE && ! $DO_EVACUATE; then
         local other_evacuated
-        other_evacuated=$(incus cluster list --format csv | grep "evacuated" | grep -cv "^${NODE}," || true)
+        other_evacuated=$(incus cluster list --format csv | awk -F',' 'tolower($4)=="evacuated"' | grep -cv "^${NODE}," || true)
         if [[ "$other_evacuated" -gt 0 ]]; then
             log_error "存在其他 evacuated 节点，不允许并行维护"
             exit 1
@@ -131,7 +131,7 @@ check_no_parallel_maintenance() {
     if [[ "$evacuated_count" -gt 0 ]]; then
         log_error "集群中已有 ${evacuated_count} 个节点处于 evacuated 状态"
         log_error "不允许同时维护超过 1 个节点，请先 restore 已疏散节点"
-        incus cluster list --format csv | grep "evacuated" | while IFS=',' read -r name _ _ status _; do
+        incus cluster list --format csv | awk -F',' 'tolower($4)=="evacuated"' | while IFS=',' read -r name _ _ status _; do
             log_error "  已疏散节点: ${name}"
         done
         exit 1
@@ -169,7 +169,7 @@ do_evacuate() {
     # 验证节点状态
     local node_status
     node_status=$(incus cluster list --format csv | grep "^${NODE}," | awk -F',' '{print $4}')
-    if [[ "$node_status" != "evacuated" ]]; then
+    if [[ "${node_status,,}" != "evacuated" ]]; then
         log_warn "节点状态预期为 evacuated，实际为: ${node_status}"
     fi
 
@@ -209,6 +209,9 @@ do_update() {
     ) &
     local noout_guard_pid=$!
 
+    # trap 保护：异常退出时清理 guard 进程并警告 noout 状态
+    trap 'kill "$noout_guard_pid" 2>/dev/null || true; log_warn "do_update 异常退出，noout 仍处于设置状态，请手动执行: ceph osd unset noout"' ERR
+
     # 执行系统更新
     log_info "执行系统更新: apt update && apt upgrade -y"
     apt update && apt upgrade -y
@@ -225,14 +228,23 @@ do_update() {
         # noout 仍然有效，直到 restore 阶段手动 unset
     else
         log_info "跳过重启（未指定 --reboot）"
-        # 取消 noout 超时保护（将在 restore 阶段 unset）
-        kill "$noout_guard_pid" 2>/dev/null || true
+        if $DO_RESTORE; then
+            # restore 紧接执行，由 restore 阶段 unset noout，guard 不再需要
+            kill "$noout_guard_pid" 2>/dev/null || true
+        else
+            # 无 restore 跟进，保留 guard 作为超时安全网
+            log_warn "noout 已设置且无 --restore 跟进，${NOOUT_TIMEOUT_HOURS} 小时后超时自动 unset"
+            log_warn "请及时执行 --restore 取消 noout"
+        fi
     fi
 }
 
 # ── 阶段 3: 恢复节点 ─────────────────────────────────────
 do_restore() {
     log_info "========== 阶段 3: 恢复节点 ${NODE} =========="
+
+    # restore 会触发 VM 回迁，先确认 Ceph 健康
+    check_ceph_health
 
     # 恢复节点
     log_info "执行 incus cluster restore ${NODE} ..."

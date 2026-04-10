@@ -71,7 +71,7 @@ groups:
     rules:
       # ── 节点离线 ────────────────────────────────────────
       - alert: NodeDown
-        expr: up{job="node-exporter"} == 0
+        expr: up{job="node_exporter"} == 0
         for: 1m
         labels:
           severity: warning
@@ -80,7 +80,7 @@ groups:
           description: "节点 {{ $labels.instance }} 已离线超过 1 分钟。"
 
       - alert: NodeDownCritical
-        expr: up{job="node-exporter"} == 0
+        expr: up{job="node_exporter"} == 0
         for: 5m
         labels:
           severity: critical
