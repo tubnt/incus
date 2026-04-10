@@ -73,7 +73,7 @@
                                         {{-- 释放 --}}
                                         <form method="POST"
                                               action="{{ route('extensions.incus.reserved-ip.release', $rip['id']) }}"
-                                              onsubmit="return confirm('释放后 IP 将不再保留，确认释放 {{ $rip['ip'] }}？')">
+                                              onsubmit="return confirm('释放后 IP 将不再保留，确认释放 ' + {{ Js::from($rip['ip']) }} + '？')">
                                             @csrf
                                             @method('DELETE')
                                             <button type="submit" class="btn btn-outline-danger btn-sm">释放</button>

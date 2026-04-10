@@ -63,8 +63,9 @@ class RateLimiter
     {
         $config = self::RULES[$rule] ?? null;
         if (!$config) {
-            Log::warning('[限流] 未知规则', ['rule' => $rule]);
-            return ['allowed' => true, 'remaining' => 0, 'retry_after' => null];
+            // fail-closed：未知规则默认拒绝，防止拼写错误导致限流失效
+            Log::error('[限流] 未知规则，默认拒绝', ['rule' => $rule]);
+            return ['allowed' => false, 'remaining' => 0, 'retry_after' => 60, 'limit' => 0, 'window' => 60];
         }
 
         return $this->checkWithParams($identifier, $rule, $config['max_requests'], $config['window']);

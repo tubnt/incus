@@ -47,7 +47,7 @@
                             <button
                                 type="button"
                                 class="text-blue-600 hover:text-blue-800 mr-3"
-                                onclick="openRdnsModal('{{ $ip->ip }}', '{{ $ip->rdns_hostname ?? '' }}')"
+                                onclick="openRdnsModal({{ Js::from($ip->ip) }}, {{ Js::from($ip->rdns_hostname ?? '') }})"
                             >
                                 {{ $ip->rdns_hostname ? '修改' : '设置' }}
                             </button>
@@ -59,7 +59,7 @@
                                     <button
                                         type="submit"
                                         class="text-red-600 hover:text-red-800"
-                                        onclick="return confirm('确认删除 {{ $ip->ip }} 的 rDNS 记录？')"
+                                        onclick="return confirm('确认删除 ' + {{ Js::from($ip->ip) }} + ' 的 rDNS 记录？')"
                                     >
                                         删除
                                     </button>

@@ -85,16 +85,35 @@ class ResizeManager
         // 1. 停机
         $this->stopVm($vmName);
 
-        // 2. 修改配置
-        $result = $this->client->request('PATCH', '/1.0/instances/' . $vmName . '?project=customers', [
-            'config' => [
-                'limits.cpu'    => (string) $newCpu,
-                'limits.memory' => $newMem,
-            ],
-        ]);
+        // 2. 修改配置 + 3. 启动（确保 VM 不会因中间步骤失败而持续停机）
+        try {
+            $result = $this->client->request('PATCH', '/1.0/instances/' . $vmName . '?project=customers', [
+                'config' => [
+                    'limits.cpu'    => (string) $newCpu,
+                    'limits.memory' => $newMem,
+                ],
+            ]);
+        } catch (\Throwable $e) {
+            // 配置修改失败，尝试原配置启动 VM
+            try {
+                $this->startVm($vmName);
+            } catch (\Throwable $startErr) {
+                \Log::critical("降配失败后 VM {$vmName} 启动也失败，需人工介入", [
+                    'resize_error' => $e->getMessage(),
+                    'start_error' => $startErr->getMessage(),
+                ]);
+            }
+            throw $e;
+        }
 
-        // 3. 启动
-        $this->startVm($vmName);
+        try {
+            $this->startVm($vmName);
+        } catch (\Throwable $e) {
+            \Log::critical("降配成功但 VM {$vmName} 启动失败，需人工介入", [
+                'error' => $e->getMessage(),
+            ]);
+            throw $e;
+        }
 
         return $result;
     }

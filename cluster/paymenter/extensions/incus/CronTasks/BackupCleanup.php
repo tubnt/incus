@@ -31,14 +31,20 @@ class BackupCleanup
         foreach ($expiredBackups as $backup) {
             try {
                 $client->deleteSnapshot($backup->vm_name, $backup->snapshot_name);
-
-                DB::table('backups')->where('id', $backup->id)->delete();
-
-                $cleaned++;
-                Log::info("BackupCleanup: 删除过期快照 {$backup->vm_name}/{$backup->snapshot_name}");
             } catch (\Throwable $e) {
-                Log::warning("BackupCleanup: 删除快照 {$backup->vm_name}/{$backup->snapshot_name} 失败: {$e->getMessage()}");
+                $msg = $e->getMessage();
+                // 快照已不存在（404/Not Found），仍然清理 DB 记录
+                if (str_contains($msg, '404') || str_contains($msg, 'not found') || str_contains($msg, 'Not Found')) {
+                    Log::info("BackupCleanup: 快照 {$backup->vm_name}/{$backup->snapshot_name} 已不存在，清理 DB 记录");
+                } else {
+                    Log::warning("BackupCleanup: 删除快照 {$backup->vm_name}/{$backup->snapshot_name} 失败: {$msg}");
+                    continue;
+                }
             }
+
+            DB::table('backups')->where('id', $backup->id)->delete();
+            $cleaned++;
+            Log::info("BackupCleanup: 删除过期快照 {$backup->vm_name}/{$backup->snapshot_name}");
         }
 
         if ($cleaned > 0) {

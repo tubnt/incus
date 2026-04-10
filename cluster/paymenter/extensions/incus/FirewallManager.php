@@ -231,7 +231,7 @@ class FirewallManager
             $segment = trim($segment);
             if (str_contains($segment, '-')) {
                 $parts = explode('-', $segment);
-                if (count($parts) !== 2) {
+                if (count($parts) !== 2 || !ctype_digit(trim($parts[0])) || !ctype_digit(trim($parts[1]))) {
                     throw new \InvalidArgumentException('端口范围格式错误：' . $segment);
                 }
                 $start = (int) $parts[0];
@@ -240,6 +240,9 @@ class FirewallManager
                     throw new \InvalidArgumentException('端口范围无效：' . $segment);
                 }
             } else {
+                if (!ctype_digit($segment)) {
+                    throw new \InvalidArgumentException('端口号必须为纯数字：' . $segment);
+                }
                 $p = (int) $segment;
                 if ($p < 1 || $p > 65535) {
                     throw new \InvalidArgumentException('端口号无效：' . $segment . '（有效范围 1-65535）');

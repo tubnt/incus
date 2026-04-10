@@ -24,9 +24,14 @@ class MonthlyTrafficReset
             ->where('period', $lastPeriod)
             ->get();
 
+        $succeededIds = [];
+        $failedCount = 0;
+
         foreach ($throttled as $record) {
             $order = DB::table('orders')->find($record->order_id);
             if (!$order || !($order->vm_name ?? null) || $order->status !== 'active') {
+                // 订单不存在或非活跃，安全删除记录
+                $succeededIds[] = $record->id;
                 continue;
             }
 
@@ -42,15 +47,20 @@ class MonthlyTrafficReset
                     ],
                 ]);
 
+                $succeededIds[] = $record->id;
                 Log::info("MonthlyTrafficReset: VM {$order->vm_name} 限速已解除");
             } catch (\Throwable $e) {
+                // 解除失败的记录保留，下次重试
+                $failedCount++;
                 Log::warning("MonthlyTrafficReset: 解除 VM {$order->vm_name} 限速失败: {$e->getMessage()}");
             }
         }
 
-        // 清理上月限速记录
-        DB::table('traffic_throttle')->where('period', $lastPeriod)->delete();
+        // 仅删除成功解除限速的记录，失败的保留以便重试
+        if (!empty($succeededIds)) {
+            DB::table('traffic_throttle')->whereIn('id', $succeededIds)->delete();
+        }
 
-        Log::info("MonthlyTrafficReset: {$lastPeriod} 流量重置完成，解除 {$throttled->count()} 台 VM 限速");
+        Log::info("MonthlyTrafficReset: {$lastPeriod} 流量重置完成，成功 " . count($succeededIds) . " 台，失败 {$failedCount} 台");
     }
 }

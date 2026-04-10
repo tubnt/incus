@@ -39,15 +39,16 @@ class DmcryptKeyBackup
             escapeshellarg($archivePath),
         );
 
-        putenv("BACKUP_KEY={$encryptionKey}");
-        $returnCode = 0;
-        exec($command, $output, $returnCode);
-        putenv('BACKUP_KEY');
+        // 通过 proc_open 的 env 参数隔离密钥，不污染父进程环境
+        $returnCode = $this->execWithEnv($command, ['BACKUP_KEY' => $encryptionKey]);
 
         if ($returnCode !== 0) {
             Log::error("DmcryptKeyBackup: 密钥备份失败，返回码: {$returnCode}");
             return;
         }
+
+        // 限制备份文件权限，仅 owner 可读
+        chmod($archivePath, 0600);
 
         Log::info("DmcryptKeyBackup: 密钥备份完成 → {$archivePath}");
 
@@ -61,5 +62,25 @@ class DmcryptKeyBackup
                 Log::info("DmcryptKeyBackup: 清理旧备份 {$file}");
             }
         }
+    }
+
+    /**
+     * 在隔离的环境变量中执行命令，防止密钥泄漏到父进程
+     */
+    private function execWithEnv(string $command, array $extraEnv): int
+    {
+        $env = array_merge(getenv(), $extraEnv);
+        $descriptors = [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
+        $proc = proc_open(['bash', '-c', $command], $descriptors, $pipes, null, $env);
+
+        if (!is_resource($proc)) {
+            return 1;
+        }
+
+        fclose($pipes[0]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+
+        return proc_close($proc);
     }
 }

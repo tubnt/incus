@@ -58,12 +58,16 @@ class BandwidthTracker
         if (!$record) {
             // 从 Incus 实时采集当前计数器
             $current = $this->collectCurrentBytes($vmName);
+            $total = $current['rx_bytes'] + $current['tx_bytes'];
+            $quota = $this->getQuota($vmName);
+            $percent = $quota > 0 ? round(($total / $quota) * 100, 2) : 0.0;
+
             return [
                 'rx_bytes'      => $current['rx_bytes'],
                 'tx_bytes'      => $current['tx_bytes'],
-                'total_bytes'   => $current['rx_bytes'] + $current['tx_bytes'],
-                'quota_bytes'   => $this->getQuota($vmName),
-                'usage_percent' => 0.0,
+                'total_bytes'   => $total,
+                'quota_bytes'   => $quota,
+                'usage_percent' => $percent,
                 'is_throttled'  => false,
                 'period'        => $period,
             ];
@@ -208,6 +212,7 @@ class BandwidthTracker
      */
     private function removeThrottle(string $vmName): void
     {
+        $this->validateVmName($vmName);
         $instance = $this->client->request('GET', "/1.0/instances/{$vmName}");
         $devices = $instance['metadata']['devices'] ?? [];
 

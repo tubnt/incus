@@ -30,23 +30,33 @@ class MysqlBackup
             mkdir(self::BACKUP_DIR, 0700, true);
         }
 
+        // 使用 set -o pipefail 确保 mysqldump 失败时整个管道返回错误
         $command = sprintf(
-            'mysqldump -h %s -u %s %s --single-transaction --routines --triggers | gzip > %s',
+            'set -o pipefail && mysqldump -h %s -u %s %s --single-transaction --routines --triggers | gzip > %s',
             escapeshellarg($dbHost),
             escapeshellarg($dbUser),
             escapeshellarg($dbName),
             escapeshellarg($filename),
         );
 
-        // 通过环境变量传递密码，不暴露在命令行中
-        putenv("MYSQL_PWD={$dbPass}");
-        $returnCode = 0;
-        exec($command, $output, $returnCode);
-        putenv('MYSQL_PWD');
+        // 通过 proc_open 的 env 参数隔离密码，不污染父进程环境
+        $returnCode = $this->execWithEnv($command, ['MYSQL_PWD' => $dbPass]);
 
         if ($returnCode !== 0) {
+            // 清理可能的空/损坏备份文件
+            if (file_exists($filename)) {
+                unlink($filename);
+            }
             Log::error("MysqlBackup: 备份失败，返回码: {$returnCode}");
             return;
+        }
+
+        // 限制备份文件权限
+        chmod($filename, 0600);
+
+        // 检查备份文件大小是否合理（空 gzip 约 20 字节）
+        if (filesize($filename) < 100) {
+            Log::error("MysqlBackup: 备份文件异常小（" . filesize($filename) . " 字节），可能为空备份");
         }
 
         Log::info("MysqlBackup: 备份完成 → {$filename}");
@@ -61,5 +71,25 @@ class MysqlBackup
                 Log::info("MysqlBackup: 清理旧备份 {$file}");
             }
         }
+    }
+
+    /**
+     * 在隔离的环境变量中执行命令，防止密码泄漏到父进程
+     */
+    private function execWithEnv(string $command, array $extraEnv): int
+    {
+        $env = array_merge(getenv(), $extraEnv);
+        $descriptors = [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
+        $proc = proc_open(['bash', '-c', $command], $descriptors, $pipes, null, $env);
+
+        if (!is_resource($proc)) {
+            return 1;
+        }
+
+        fclose($pipes[0]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+
+        return proc_close($proc);
     }
 }

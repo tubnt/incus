@@ -34,7 +34,7 @@
                     <span class="badge bg-secondary">{{ $vpc['member_count'] }} 台 VM</span>
                     @if($vpc['member_count'] === 0)
                     <form method="POST" action="{{ route('extensions.incus.vpc.delete', $vpc['id']) }}"
-                          onsubmit="return confirm('确认删除 VPC「{{ $vpc['name'] }}」？')">
+                          onsubmit="return confirm('确认删除 VPC「' + {{ Js::from($vpc['name']) }} + '」？')">
                         @csrf
                         @method('DELETE')
                         <button type="submit" class="btn btn-outline-danger btn-sm">
@@ -65,7 +65,7 @@
                             <td>
                                 <form method="POST"
                                       action="{{ route('extensions.incus.vpc.detach', [$vpc['id'], $member['vm_name']]) }}"
-                                      onsubmit="return confirm('确认将 {{ $member['vm_name'] }} 移出 VPC？')">
+                                      onsubmit="return confirm('确认将 ' + {{ Js::from($member['vm_name']) }} + ' 移出 VPC？')">
                                     @csrf
                                     @method('DELETE')
                                     <button type="submit" class="btn btn-outline-danger btn-sm">移除</button>

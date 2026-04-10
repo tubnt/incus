@@ -38,9 +38,11 @@ class TrafficStats
                 $bytesOut = $network['bytes_sent'] ?? 0;
                 $period = $now->format('Y-m');
 
+                // 原子 upsert：防止并发 INSERT 重复
                 $existing = DB::table('traffic_stats')
                     ->where('order_id', $order->id)
                     ->where('period', $period)
+                    ->lockForUpdate()
                     ->first();
 
                 if ($existing) {
@@ -64,15 +66,16 @@ class TrafficStats
                         ]);
                 } else {
                     // 首次记录：当前计数器值即为本月初始流量
-                    DB::table('traffic_stats')->insert([
-                        'order_id' => $order->id,
-                        'period' => $period,
-                        'bytes_in' => $bytesIn,
-                        'bytes_out' => $bytesOut,
-                        'last_counter_in' => $bytesIn,
-                        'last_counter_out' => $bytesOut,
-                        'updated_at' => $now,
-                    ]);
+                    DB::table('traffic_stats')->updateOrInsert(
+                        ['order_id' => $order->id, 'period' => $period],
+                        [
+                            'bytes_in' => $bytesIn,
+                            'bytes_out' => $bytesOut,
+                            'last_counter_in' => $bytesIn,
+                            'last_counter_out' => $bytesOut,
+                            'updated_at' => $now,
+                        ]
+                    );
                 }
             } catch (\Throwable $e) {
                 Log::warning("TrafficStats: 采集 VM {$order->vm_name} 流量失败: {$e->getMessage()}");

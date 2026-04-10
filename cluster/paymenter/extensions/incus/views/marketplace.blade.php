@@ -63,7 +63,7 @@
             @endif
 
             {{-- 部署按钮 --}}
-            <button onclick="openDeployModal('{{ $app['id'] }}', '{{ $app['name'] }}')"
+            <button onclick="openDeployModal({{ Js::from($app['id']) }}, {{ Js::from($app['name']) }})"
                     class="w-full rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-300">
                 <i class="fas fa-rocket mr-1"></i> 一键部署
             </button>

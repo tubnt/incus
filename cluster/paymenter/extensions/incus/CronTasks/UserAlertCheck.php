@@ -2,8 +2,8 @@
 
 namespace Extensions\Incus\CronTasks;
 
-use App\Extensions\Incus\UserAlertManager;
-use App\Extensions\Incus\IncusClient;
+use Extensions\Incus\UserAlertManager;
+use Extensions\Incus\IncusClient;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Log;
 
@@ -38,7 +38,7 @@ class UserAlertCheck extends Command
             Log::info('用户告警检查完成', $results);
 
             return self::SUCCESS;
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
             $this->error("告警检查异常: {$e->getMessage()}");
             Log::error('用户告警检查异常', ['error' => $e->getMessage(), 'trace' => $e->getTraceAsString()]);
             return self::FAILURE;
