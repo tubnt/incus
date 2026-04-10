@@ -1,0 +1,43 @@
+# incus-project-config.yaml — Incus customers Project 配置模板
+# 用途：文档记录 + 灾难恢复时重建 Project 配置
+# 生成方式：incus project show customers
+#
+# 安全隔离第 2 层：Project 受限模式 + 资源配额
+# 配合受限证书（--projects customers --restricted）使用
+
+config:
+  # ── 受限模式 ──
+  # restricted=true 后，Project 内的实例不能：
+  #   - 访问宿主机文件系统（除非 restricted.devices.disk=allow）
+  #   - 使用特权容器
+  #   - 修改安全相关的实例配置
+  restricted: "true"
+  restricted.devices.disk: allow
+
+  # ── 资源配额 ──
+  limits.instances: "50"
+  limits.cpu: "100"
+  limits.memory: 200GiB
+  limits.disk: 5TiB
+
+description: 租户虚拟机 Project — Paymenter 通过受限证书管理
+name: customers
+
+# ── 证书绑定说明 ──
+# 本 Project 关联两张受限证书：
+#
+# 1. Paymenter 主证书（CN=paymenter）
+#    - 权限：完整的 Project 内资源管理（创建/删除/修改实例）
+#    - 用途：Paymenter Extension 调用 Incus API
+#    - 签发：setup-restricted-cert.sh
+#
+# 2. Console 代理证书（CN=console-proxy）
+#    - 权限：Project 内资源访问（Incus 层面同 paymenter）
+#    - 用途：VNC/SPICE console 代理
+#    - 限制：代理应用层限制为 console/exec 操作
+#    - 签发：setup-console-cert.sh
+#
+# 恢复步骤：
+#   1. incus project create customers
+#   2. 逐项 incus project set customers <key>=<value>
+#   3. 重新签发并添加受限证书
