@@ -92,13 +92,18 @@ setup_https() {
 
     if [[ ! -f "${RGW_SSL_CERT}" ]]; then
         log_warn "SSL 证书文件 ${RGW_SSL_CERT} 不存在，生成自签名证书..."
+        local tmp_key tmp_cert
+        tmp_key=$(mktemp /tmp/rgw-key.XXXXXX.pem)
+        tmp_cert=$(mktemp /tmp/rgw-cert.XXXXXX.pem)
+        chmod 600 "${tmp_key}" "${tmp_cert}"
         openssl req -x509 -nodes -days 3650 \
             -newkey rsa:2048 \
-            -keyout /tmp/rgw-key.pem \
-            -out /tmp/rgw-cert.pem \
+            -keyout "${tmp_key}" \
+            -out "${tmp_cert}" \
             -subj "/CN=${S3_ENDPOINT:-localhost}"
-        cat /tmp/rgw-cert.pem /tmp/rgw-key.pem > "${RGW_SSL_CERT}"
-        rm -f /tmp/rgw-key.pem /tmp/rgw-cert.pem
+        cat "${tmp_cert}" "${tmp_key}" > "${RGW_SSL_CERT}"
+        chmod 600 "${RGW_SSL_CERT}"
+        rm -f "${tmp_key}" "${tmp_cert}"
         log_info "自签名证书已生成: ${RGW_SSL_CERT}"
     fi
 
@@ -169,10 +174,15 @@ create_admin_user() {
     access_key=$(echo "${user_info}" | python3 -c "import sys,json; print(json.load(sys.stdin)['keys'][0]['access_key'])")
     secret_key=$(echo "${user_info}" | python3 -c "import sys,json; print(json.load(sys.stdin)['keys'][0]['secret_key'])")
 
-    log_info "管理用户凭据:"
-    log_info "  Access Key: ${access_key}"
-    log_info "  Secret Key: ${secret_key}"
-    log_warn "请妥善保管以上凭据，不要泄露！"
+    # 凭据写入受限权限文件，不打印到日志/终端
+    local cred_file="/etc/ceph/rgw-admin-credentials"
+    (umask 077 && cat > "${cred_file}" <<CRED
+RGW_ADMIN_ACCESS_KEY=${access_key}
+RGW_ADMIN_SECRET_KEY=${secret_key}
+CRED
+    )
+    log_info "管理用户凭据已保存到 ${cred_file}（权限 0600）"
+    log_warn "请妥善保管凭据文件，不要泄露！"
 }
 
 # ---------- 验证 S3 连通性 ----------

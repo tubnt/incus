@@ -176,26 +176,34 @@ export DR_NEW_VIP="10.0.0.100"  # 原主站点 VIP
 
 ```bash
 # 在原从站点（当前 Primary）执行 demote
+POOL="incus-pool"
 FAILED=0
-for img in $(rbd ls incus-pool); do
-    echo "Demoting: incus-pool/${img}"
-    if ! rbd mirror image demote "incus-pool/${img}"; then
-        echo "ERROR: demote 失败 — incus-pool/${img}"
+while IFS= read -r img; do
+    echo "Demoting: ${POOL}/${img}"
+    if ! rbd mirror image demote "${POOL}/${img}"; then
+        echo "ERROR: demote 失败 — ${POOL}/${img}"
         FAILED=$((FAILED+1))
     fi
-done
-[ "$FAILED" -gt 0 ] && echo "警告: ${FAILED} 个镜像 demote 失败，请人工处理后再继续 promote" && exit 1
+done < <(rbd ls "${POOL}")
+if [ "$FAILED" -gt 0 ]; then
+    echo "严重: ${FAILED} 个镜像 demote 失败，中止操作！请人工处理后再继续 promote"
+    exit 1
+fi
+echo "所有镜像 demote 成功，请在原主站点执行 promote"
 
-# 在原主站点执行 promote
+# --- 在原主站点执行 promote（确认所有 demote 成功后再执行） ---
+POOL="incus-pool"
 FAILED=0
-for img in $(rbd ls incus-pool); do
-    echo "Promoting: incus-pool/${img}"
-    if ! rbd mirror image promote "incus-pool/${img}"; then
-        echo "ERROR: promote 失败 — incus-pool/${img}"
+while IFS= read -r img; do
+    echo "Promoting: ${POOL}/${img}"
+    if ! rbd mirror image promote "${POOL}/${img}"; then
+        echo "ERROR: promote 失败 — ${POOL}/${img}"
         FAILED=$((FAILED+1))
     fi
-done
-[ "$FAILED" -gt 0 ] && echo "警告: ${FAILED} 个镜像 promote 失败，请人工检查"
+done < <(rbd ls "${POOL}")
+if [ "$FAILED" -gt 0 ]; then
+    echo "警告: ${FAILED} 个镜像 promote 失败，请人工检查"
+fi
 ```
 
 ### 4.4 回切后检查清单

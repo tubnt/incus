@@ -61,11 +61,12 @@ enable_pool_mirroring() {
 generate_bootstrap_token() {
     log_info "生成 bootstrap token（用于远端集群注册）..."
 
-    rbd mirror pool peer bootstrap create \
+    (umask 077 && rbd mirror pool peer bootstrap create \
         --site-name primary \
-        "${DR_POOL}" > "${DR_BOOTSTRAP_TOKEN_FILE}"
+        "${DR_POOL}" > "${DR_BOOTSTRAP_TOKEN_FILE}")
+    chmod 600 "${DR_BOOTSTRAP_TOKEN_FILE}"
 
-    log_info "Bootstrap token 已保存到: ${DR_BOOTSTRAP_TOKEN_FILE}"
+    log_info "Bootstrap token 已保存到: ${DR_BOOTSTRAP_TOKEN_FILE}（权限 0600）"
     log_warn "请将此 token 文件安全传输到远端集群"
 }
 

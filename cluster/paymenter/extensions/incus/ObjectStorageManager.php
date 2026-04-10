@@ -93,18 +93,47 @@ class ObjectStorageManager
      */
     public function createBucket(string $userId, string $name): array
     {
+        // Bucket 名称校验：仅允许小写字母、数字、连字符、点，长度 3-63
+        if (!preg_match('/^[a-z0-9][a-z0-9.\-]{1,61}[a-z0-9]$/', $name)) {
+            throw new Exception("Bucket 名称不合法（仅允许小写字母、数字、连字符、点，长度 3-63）: {$name}");
+        }
+
         // 通过 S3 API 创建 bucket（使用用户凭据）
         $credentials = $this->getCredentials($userId);
 
+        // 通过环境变量传递凭据，避免出现在命令行参数中
         $command = sprintf(
-            'AWS_ACCESS_KEY_ID=%s AWS_SECRET_ACCESS_KEY=%s aws s3 mb s3://%s --endpoint-url=%s --no-verify-ssl 2>&1',
-            escapeshellarg($credentials['access_key']),
-            escapeshellarg($credentials['secret_key']),
+            'aws s3 mb s3://%s --endpoint-url=%s --no-verify-ssl 2>&1',
             escapeshellarg($name),
             escapeshellarg($this->s3Endpoint)
         );
 
-        $output = shell_exec($command);
+        $env = [
+            'AWS_ACCESS_KEY_ID'     => $credentials['access_key'],
+            'AWS_SECRET_ACCESS_KEY' => $credentials['secret_key'],
+        ];
+
+        $descriptors = [
+            0 => ['pipe', 'r'],
+            1 => ['pipe', 'w'],
+            2 => ['pipe', 'w'],
+        ];
+
+        $process = proc_open($command, $descriptors, $pipes, null, $env + $_ENV);
+        if (!is_resource($process)) {
+            throw new Exception("无法启动 aws cli 进程");
+        }
+
+        fclose($pipes[0]);
+        $output = stream_get_contents($pipes[1]);
+        fclose($pipes[1]);
+        $stderr = stream_get_contents($pipes[2]);
+        fclose($pipes[2]);
+        $returnCode = proc_close($process);
+
+        if ($returnCode !== 0) {
+            throw new Exception("创建 Bucket 失败: " . trim($output . ' ' . $stderr));
+        }
 
         Log::info("Bucket 已创建", ['uid' => $userId, 'bucket' => $name]);
 
@@ -216,19 +245,34 @@ class ObjectStorageManager
     // 内部方法
     // ----------------------------------------------------------------
 
+    /** 允许的 radosgw-admin 子命令白名单 */
+    private const ALLOWED_SUBCOMMANDS = [
+        'user create', 'user info', 'user stats',
+        'bucket list', 'bucket rm',
+        'quota enable', 'quota set',
+    ];
+
     /**
      * 执行 radosgw-admin 命令
      *
-     * @param  string $subCommand 子命令（如 "user create"）
+     * @param  string $subCommand 子命令（如 "user create"），必须在白名单内
      * @param  array  $args       参数 key-value
      * @return string 命令输出
      * @throws Exception
      */
     protected function exec(string $subCommand, array $args = []): string
     {
-        $cmd = escapeshellcmd($this->radosgwAdmin) . ' ' . $subCommand;
+        if (!in_array($subCommand, self::ALLOWED_SUBCOMMANDS, true)) {
+            throw new Exception("不允许的 radosgw-admin 子命令: {$subCommand}");
+        }
+
+        $cmd = escapeshellarg($this->radosgwAdmin) . ' ' . $subCommand;
 
         foreach ($args as $key => $value) {
+            // 参数名必须以 -- 开头，防止注入
+            if (!preg_match('/^--[a-z][a-z0-9-]*$/', $key)) {
+                throw new Exception("非法的命令参数名: {$key}");
+            }
             if ($value === null) {
                 // 无值开关参数
                 $cmd .= ' ' . $key;
