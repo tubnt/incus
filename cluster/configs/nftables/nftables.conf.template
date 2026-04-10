@@ -1,0 +1,113 @@
+#!/usr/sbin/nft -f
+#
+# Incus 集群防火墙规则模板
+#
+# 变量（由 setup-firewall.sh 替换）：
+#   __NODE_IP__        — 当前节点公网 IP
+#   __MGMT_NET__       — 管理网段 (10.0.10.0/24)
+#   __CEPH_PUBLIC__    — Ceph Public 网段 (10.0.20.0/24)
+#   __CEPH_CLUSTER__   — Ceph Cluster 网段 (10.0.30.0/24)
+#   __BRIDGE_NAME__    — VM 桥接网卡名 (br-pub)
+#
+
+flush ruleset bridge
+flush ruleset inet
+
+# ============================================================
+# 第一层：bridge vm_filter（priority -10，先于 Incus ACL priority 0）
+# 作用：VM 隔离 — 阻断 VM 访问内网 RFC1918 + 宿主机管理端口
+# ============================================================
+table bridge vm_filter {
+    chain forward {
+        type filter hook forward priority -10; policy accept;
+
+        # ARP 放行（必须，否则 VM 无法获取网关 MAC）
+        ether type arp accept
+
+        # 非 IPv4 流量不处理
+        ether type != ip accept
+
+        # established/related 放行
+        # ★ 必须在 drop 规则之前：确保宿主机/外部返回 VM 的响应包不被误 drop
+        ct state established,related accept
+
+        # ICMP 放行
+        ip protocol icmp accept
+
+        # ★ 阻断目标为 RFC1918 私有网段的帧
+        # priority -10 确保此规则在 Incus ACL (priority 0) 之前执行
+        # 即使用户 ACL allow 也无法绕过
+        # 注意：外部 → VM 方向目标是公网 IP，不会匹配这些规则
+        # VM → RFC1918 方向被阻断，实现 VM 隔离
+        ip daddr 10.0.0.0/8 counter drop
+        ip daddr 172.16.0.0/12 counter drop
+        ip daddr 192.168.0.0/16 counter drop
+
+        # ★ 阻断 VM → 宿主机公网 IP 管理端口
+        ip daddr __NODE_IP__ tcp dport { 22, 8443, 9100 } counter drop
+    }
+}
+
+# ============================================================
+# 第二层：inet host_filter（宿主机自身防护）
+# ============================================================
+table inet host_filter {
+    chain input {
+        type filter hook input priority 0; policy drop;
+
+        # loopback 放行
+        iif "lo" accept
+
+        # established/related 放行
+        ct state established,related accept
+        ct state invalid drop
+
+        # ICMP / ICMPv6 放行
+        ip protocol icmp accept
+        ip6 nexthdr icmpv6 accept
+
+        # --- 管理服务 ---
+        # SSH：所有来源（远程管理需要）
+        tcp dport 22 accept
+
+        # Incus API：仅管理网
+        ip saddr __MGMT_NET__ tcp dport 8443 accept
+
+        # node_exporter：仅管理网（Prometheus 采集）
+        ip saddr __MGMT_NET__ tcp dport 9100 accept
+
+        # --- Ceph 端口保护 ---
+        # MON: 6789, 3300 — 仅 Ceph Public 网段
+        ip saddr __CEPH_PUBLIC__ tcp dport { 3300, 6789 } accept
+
+        # OSD: 6800-7300 — Ceph Public + Ceph Cluster 网段
+        ip saddr __CEPH_PUBLIC__ tcp dport 6800-7300 accept
+        ip saddr __CEPH_CLUSTER__ tcp dport 6800-7300 accept
+
+        # MGR Dashboard/Prometheus: 9283 — 仅管理网
+        ip saddr __MGMT_NET__ tcp dport 9283 accept
+
+        # --- 集群内部通信 ---
+        # Incus 集群内部通信（管理网节点间）
+        ip saddr __MGMT_NET__ accept
+
+        # Ceph Public 网段节点间通信
+        ip saddr __CEPH_PUBLIC__ accept
+
+        # Ceph Cluster 网段节点间通信
+        ip saddr __CEPH_CLUSTER__ accept
+
+        # 默认 drop（policy）
+        counter drop
+    }
+
+    chain forward {
+        type filter hook forward priority 0; policy accept;
+        # 宿主机转发由 bridge filter 和 Incus ACL 处理
+    }
+
+    chain output {
+        type filter hook output priority 0; policy accept;
+        # 宿主机出站不限制
+    }
+}
