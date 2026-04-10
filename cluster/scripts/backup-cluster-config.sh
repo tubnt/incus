@@ -95,10 +95,10 @@ backup_incus() {
     # 全局配置
     if incus config show > "${incus_dir}/global-config.yaml" 2>/dev/null; then
         log "  ✓ 全局配置"
-        ((BACKUP_OK++))
+        ((BACKUP_OK++)) || true
     else
         warn "  ✗ 全局配置导出失败"
-        ((BACKUP_FAIL++))
+        ((BACKUP_FAIL++)) || true
     fi
 
     # Profile 列表和详情
@@ -109,10 +109,10 @@ backup_incus() {
         while IFS= read -r profile; do
             if incus profile show "$profile" > "${incus_dir}/profiles/${profile}.yaml" 2>/dev/null; then
                 log "  ✓ Profile: ${profile}"
-                ((BACKUP_OK++))
+                ((BACKUP_OK++)) || true
             else
                 warn "  ✗ Profile: ${profile}"
-                ((BACKUP_FAIL++))
+                ((BACKUP_FAIL++)) || true
             fi
         done <<< "$profiles"
     fi
@@ -125,10 +125,10 @@ backup_incus() {
         while IFS= read -r net; do
             if incus network show "$net" > "${incus_dir}/networks/${net}.yaml" 2>/dev/null; then
                 log "  ✓ 网络: ${net}"
-                ((BACKUP_OK++))
+                ((BACKUP_OK++)) || true
             else
                 warn "  ✗ 网络: ${net}"
-                ((BACKUP_FAIL++))
+                ((BACKUP_FAIL++)) || true
             fi
         done <<< "$networks"
     fi
@@ -141,10 +141,10 @@ backup_incus() {
         while IFS= read -r pool; do
             if incus storage show "$pool" > "${incus_dir}/storage/${pool}.yaml" 2>/dev/null; then
                 log "  ✓ 存储池: ${pool}"
-                ((BACKUP_OK++))
+                ((BACKUP_OK++)) || true
             else
                 warn "  ✗ 存储池: ${pool}"
-                ((BACKUP_FAIL++))
+                ((BACKUP_FAIL++)) || true
             fi
         done <<< "$pools"
     fi
@@ -152,16 +152,16 @@ backup_incus() {
     # 集群成员列表
     if incus cluster list --format=yaml > "${incus_dir}/cluster-members.yaml" 2>/dev/null; then
         log "  ✓ 集群成员列表"
-        ((BACKUP_OK++))
+        ((BACKUP_OK++)) || true
     else
         warn "  ✗ 集群成员列表（可能非集群模式）"
-        ((BACKUP_FAIL++))
+        ((BACKUP_FAIL++)) || true
     fi
 
     # 实例列表（不含运行时状态，仅配置）
     if incus list --format=yaml > "${incus_dir}/instances-list.yaml" 2>/dev/null; then
         log "  ✓ 实例列表"
-        ((BACKUP_OK++))
+        ((BACKUP_OK++)) || true
     fi
 
     # Project 配置
@@ -172,7 +172,7 @@ backup_incus() {
         while IFS= read -r proj; do
             if incus project show "$proj" > "${incus_dir}/projects/${proj}.yaml" 2>/dev/null; then
                 log "  ✓ Project: ${proj}"
-                ((BACKUP_OK++))
+                ((BACKUP_OK++)) || true
             fi
         done <<< "$projects"
     fi
@@ -185,7 +185,7 @@ backup_incus() {
         while IFS= read -r acl; do
             if incus network acl show "$acl" > "${incus_dir}/acls/${acl}.yaml" 2>/dev/null; then
                 log "  ✓ ACL: ${acl}"
-                ((BACKUP_OK++))
+                ((BACKUP_OK++)) || true
             fi
         done <<< "$acls"
     fi
@@ -207,40 +207,40 @@ backup_ceph() {
     if [[ -f /etc/ceph/ceph.conf ]]; then
         cp /etc/ceph/ceph.conf "${ceph_dir}/ceph.conf"
         log "  ✓ ceph.conf"
-        ((BACKUP_OK++))
+        ((BACKUP_OK++)) || true
     else
         warn "  ✗ /etc/ceph/ceph.conf 不存在"
-        ((BACKUP_FAIL++))
+        ((BACKUP_FAIL++)) || true
     fi
 
     # 运行时配置 dump
     if ceph config dump > "${ceph_dir}/config-dump.txt" 2>/dev/null; then
         log "  ✓ 运行时配置 (config dump)"
-        ((BACKUP_OK++))
+        ((BACKUP_OK++)) || true
     else
         warn "  ✗ 运行时配置导出失败"
-        ((BACKUP_FAIL++))
+        ((BACKUP_FAIL++)) || true
     fi
 
     # CRUSH map（文本格式）
     if ceph osd crush dump > "${ceph_dir}/crush-dump.json" 2>/dev/null; then
         log "  ✓ CRUSH map"
-        ((BACKUP_OK++))
+        ((BACKUP_OK++)) || true
     else
         warn "  ✗ CRUSH map 导出失败"
-        ((BACKUP_FAIL++))
+        ((BACKUP_FAIL++)) || true
     fi
 
     # OSD tree
     if ceph osd tree > "${ceph_dir}/osd-tree.txt" 2>/dev/null; then
         log "  ✓ OSD tree"
-        ((BACKUP_OK++))
+        ((BACKUP_OK++)) || true
     fi
 
     # 集群状态快照
     if ceph status > "${ceph_dir}/cluster-status.txt" 2>/dev/null; then
         log "  ✓ 集群状态快照"
-        ((BACKUP_OK++))
+        ((BACKUP_OK++)) || true
     fi
 
     # 存储池配置
@@ -251,7 +251,7 @@ backup_ceph() {
         while IFS= read -r pool; do
             if ceph osd pool get "$pool" all > "${ceph_dir}/pools/${pool}.txt" 2>/dev/null; then
                 log "  ✓ 存储池: ${pool}"
-                ((BACKUP_OK++))
+                ((BACKUP_OK++)) || true
             fi
         done <<< "$pools"
     fi
@@ -260,7 +260,7 @@ backup_ceph() {
     if ceph auth ls > "${ceph_dir}/auth-list.txt" 2>/dev/null; then
         chmod 600 "${ceph_dir}/auth-list.txt"
         log "  ✓ Auth 列表（已设置 600 权限）"
-        ((BACKUP_OK++))
+        ((BACKUP_OK++)) || true
     fi
 
     # Ceph keyring 文件
@@ -269,7 +269,7 @@ backup_ceph() {
             cp "$keyring" "${ceph_dir}/"
             chmod 600 "${ceph_dir}/$(basename "$keyring")"
             log "  ✓ $(basename "$keyring")"
-            ((BACKUP_OK++))
+            ((BACKUP_OK++)) || true
         fi
     done
 }
@@ -288,10 +288,10 @@ backup_nftables() {
 
     if nft list ruleset > "${nft_dir}/ruleset.nft" 2>/dev/null; then
         log "  ✓ 完整规则集"
-        ((BACKUP_OK++))
+        ((BACKUP_OK++)) || true
     else
         warn "  ✗ 规则集导出失败"
-        ((BACKUP_FAIL++))
+        ((BACKUP_FAIL++)) || true
     fi
 
     # 分表导出
@@ -313,7 +313,7 @@ backup_nftables() {
     if [[ -f /etc/nftables.conf ]]; then
         cp /etc/nftables.conf "${nft_dir}/nftables.conf"
         log "  ✓ /etc/nftables.conf"
-        ((BACKUP_OK++))
+        ((BACKUP_OK++)) || true
     fi
 }
 
@@ -329,7 +329,7 @@ backup_netplan() {
         if [[ -f "$f" ]]; then
             cp "$f" "${net_dir}/"
             log "  ✓ $(basename "$f")"
-            ((BACKUP_OK++))
+            ((BACKUP_OK++)) || true
             found=true
         fi
     done

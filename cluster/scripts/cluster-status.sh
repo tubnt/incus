@@ -117,9 +117,9 @@ for i in instances:
             if addr.get('family') == 'inet' and addr.get('scope') == 'global':
                 ips.add(addr['address'])
 
-import datetime
+from datetime import datetime, timezone
 result = {
-    'timestamp': datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
+    'timestamp': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
     'nodes': nodes,
     'total_vms': len([i for i in instances if i.get('type') == 'virtual-machine']),
     'total_containers': len([i for i in instances if i.get('type') == 'container']),

@@ -60,8 +60,10 @@ while [[ $# -gt 0 ]]; do
         --ceph-clu-targets)
             IFS=',' read -ra CEPH_CLU_TARGETS <<< "$2"; shift 2 ;;
         --disk-warn)
+            [[ "${2:-}" =~ ^[0-9]+$ ]] || { echo "错误: --disk-warn 需要整数参数"; exit 1; }
             DISK_WARN_PCT="$2"; shift 2 ;;
         --disk-crit)
+            [[ "${2:-}" =~ ^[0-9]+$ ]] || { echo "错误: --disk-crit 需要整数参数"; exit 1; }
             DISK_CRIT_PCT="$2"; shift 2 ;;
         -h|--help) usage ;;
         *) echo "未知选项: $1"; usage ;;
@@ -173,11 +175,11 @@ for child_id in host_node.get('children', []):
 
     local total=0 up=0 down=0
     while IFS=' ' read -r oid status; do
-        ((total++))
+        ((total++)) || true
         if [[ "$status" == "up" ]]; then
-            ((up++))
+            ((up++)) || true
         else
-            ((down++))
+            ((down++)) || true
         fi
     done <<< "$osd_ids"
 
@@ -204,7 +206,7 @@ check_network() {
 
     for target in "${targets[@]}"; do
         if ! ping -c 1 -W 2 "$target" >/dev/null 2>&1; then
-            ((fail_count++))
+            ((fail_count++)) || true
             fail_list="${fail_list} ${target}"
         fi
     done
