@@ -1,0 +1,47 @@
+# 交换机配置参考
+# 适用于连接 5 节点集群的交换机端口
+# ============================================================
+#
+# 每个节点 eno1 端口需要配置为 trunk 模式:
+#   - Native VLAN (untagged): 用于 br-pub 公网流量
+#   - Tagged VLAN 10: 管理网
+#   - Tagged VLAN 20: Ceph Public（需支持 Jumbo Frame MTU 9000）
+#
+# eno2 端口为直连 Ceph Cluster 网络，无需 VLAN 配置
+#   - 需支持 Jumbo Frame MTU 9000
+#
+# ============================================================
+
+# --- 通用配置（适用于主流交换机） ---
+
+# 1. 创建 VLAN
+vlan 10
+  name MGMT
+vlan 20
+  name CEPH-PUBLIC
+
+# 2. eno1 对应端口配置（以 port 1-5 为例）
+# 对每个节点端口重复此配置
+interface ethernet 1/1-5
+  switchport mode trunk
+  switchport trunk native vlan 1
+  switchport trunk allowed vlan 10,20
+  mtu 9216
+  spanning-tree portfast trunk
+  no shutdown
+
+# 3. eno2 对应端口配置（Ceph Cluster 直连）
+# 如果 eno2 经过交换机而非直连，需配置为 access 模式
+interface ethernet 2/1-5
+  switchport mode access
+  mtu 9216
+  no shutdown
+
+# ============================================================
+# 注意事项:
+# - 交换机 MTU 需设为 9216（ >= 9000 + 帧头开销）
+# - 确保 VLAN 10/20 在交换机全局已创建
+# - native VLAN 走 untagged，即 br-pub 公网流量不打 VLAN tag
+# - 如使用 LACP 聚合，需额外配置 port-channel
+# - 实际命令因交换机品牌型号不同，请参考厂商文档
+# ============================================================
