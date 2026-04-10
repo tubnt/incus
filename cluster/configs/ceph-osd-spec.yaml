@@ -1,0 +1,21 @@
+# Ceph OSD Service Specification
+# 用途: cephadm 自动发现空盘并部署 OSD
+# 部署: ceph orch apply -i ceph-osd-spec.yaml
+#
+# encrypted: true 启用 dmcrypt 全盘加密（AES-NI 硬件加速）
+# 密钥存储在 MON 数据库，务必定期备份（见 backup-dmcrypt-keys.sh）
+
+service_type: osd
+service_id: default-osds
+placement:
+  hosts:
+    - node1
+    - node2
+    - node3
+    - node4
+    - node5
+spec:
+  # 自动发现所有可用空盘
+  data_devices:
+    all: true
+  encrypted: true
