@@ -143,6 +143,11 @@ class ApiController extends Controller
                 'message' => "操作 {$action} 已提交",
                 'status'  => 'accepted',
             ], 202);
+        } catch (\InvalidArgumentException $e) {
+            return response()->json([
+                'error'   => 'validation_error',
+                'message' => $e->getMessage(),
+            ], 422);
         } finally {
             $lock->release();
         }
@@ -260,6 +265,13 @@ class ApiController extends Controller
 
         $rules = $request->input('ingress', []);
 
+        if (!is_array($rules)) {
+            return response()->json([
+                'error'   => 'validation_error',
+                'message' => 'ingress 必须是规则数组',
+            ], 422);
+        }
+
         // 规则数量限制
         if (count($rules) > 50) {
             return response()->json([
@@ -268,13 +280,60 @@ class ApiController extends Controller
             ], 422);
         }
 
-        // 校验规则：拒绝 RFC1918 源地址
-        foreach ($rules as $rule) {
+        // 校验每条规则的结构和取值
+        $allowedActions = ['allow', 'drop', 'reject'];
+        $allowedProtocols = ['tcp', 'udp', 'icmp4', 'icmp6'];
+        $allowedFields = ['action', 'source', 'destination', 'protocol', 'source_port', 'destination_port', 'description', 'state'];
+
+        foreach ($rules as $i => $rule) {
+            if (!is_array($rule)) {
+                return response()->json([
+                    'error'   => 'invalid_rule',
+                    'message' => "规则 #{$i}: 必须是对象",
+                ], 422);
+            }
+
+            // 拒绝未知字段
+            $unknownFields = array_diff(array_keys($rule), $allowedFields);
+            if (!empty($unknownFields)) {
+                return response()->json([
+                    'error'   => 'invalid_rule',
+                    'message' => "规则 #{$i}: 包含未知字段: " . implode(', ', $unknownFields),
+                ], 422);
+            }
+
+            // action 必填且合法
+            if (!isset($rule['action']) || !in_array($rule['action'], $allowedActions, true)) {
+                return response()->json([
+                    'error'   => 'invalid_rule',
+                    'message' => "规则 #{$i}: action 必须是 " . implode('/', $allowedActions),
+                ], 422);
+            }
+
+            // protocol 校验
+            if (isset($rule['protocol']) && !in_array($rule['protocol'], $allowedProtocols, true)) {
+                return response()->json([
+                    'error'   => 'invalid_rule',
+                    'message' => "规则 #{$i}: protocol 必须是 " . implode('/', $allowedProtocols),
+                ], 422);
+            }
+
+            // 拒绝 RFC1918 源地址
             if (isset($rule['source']) && $this->isRfc1918($rule['source'])) {
                 return response()->json([
                     'error'   => 'invalid_rule',
-                    'message' => '不允许使用 RFC1918 私有地址作为源地址: ' . $rule['source'],
+                    'message' => "规则 #{$i}: 不允许使用 RFC1918 私有地址作为源地址: " . $rule['source'],
                 ], 422);
+            }
+
+            // 端口格式校验（数字或范围如 80,443 或 8000-9000）
+            foreach (['source_port', 'destination_port'] as $portField) {
+                if (isset($rule[$portField]) && !preg_match('/^[0-9,\-]+$/', (string) $rule[$portField])) {
+                    return response()->json([
+                        'error'   => 'invalid_rule',
+                        'message' => "规则 #{$i}: {$portField} 格式无效",
+                    ], 422);
+                }
             }
         }
 
@@ -417,6 +476,7 @@ class ApiController extends Controller
         $name = $request->input('name');
         $permission = $request->input('permission', 'read-only');
         $customPermissions = $request->input('custom_permissions');
+        $expiryDays = $request->has('expiry_days') ? (int) $request->input('expiry_days') : null;
 
         if (empty($name) || strlen($name) > 64) {
             return response()->json([
@@ -425,8 +485,11 @@ class ApiController extends Controller
             ], 422);
         }
 
+        // 过滤 Token 名称中的控制字符
+        $name = preg_replace('/[\x00-\x1F\x7F]/u', '', $name);
+
         try {
-            $result = $this->tokenManager->createToken($userId, $name, $permission, $customPermissions);
+            $result = $this->tokenManager->createToken($userId, $name, $permission, $customPermissions, $expiryDays);
         } catch (\InvalidArgumentException $e) {
             return response()->json(['error' => 'validation_error', 'message' => $e->getMessage()], 422);
         } catch (\RuntimeException $e) {
@@ -498,9 +561,34 @@ class ApiController extends Controller
         return app(\Extensions\Incus\IncusClient::class);
     }
 
+    /** 允许重装的 OS 模板白名单 */
+    private const ALLOWED_OS_TEMPLATES = [
+        'ubuntu-22.04',
+        'ubuntu-24.04',
+        'debian-11',
+        'debian-12',
+        'rocky-8',
+        'rocky-9',
+        'alma-8',
+        'alma-9',
+        'centos-stream-9',
+        'fedora-40',
+        'arch',
+        'opensuse-15.6',
+        'windows-2022',
+        'windows-2025',
+    ];
+
     private function handleReinstall(object $instance, Request $request): array
     {
         $osTemplate = $request->input('os_template', $instance->os_template ?? 'ubuntu-24.04');
+
+        if (!in_array($osTemplate, self::ALLOWED_OS_TEMPLATES, true)) {
+            throw new \InvalidArgumentException(
+                '不支持的操作系统模板: ' . $osTemplate . '，允许: ' . implode(', ', self::ALLOWED_OS_TEMPLATES)
+            );
+        }
+
         $incusClient = $this->getIncusClient();
         $vmName = $instance->vm_name;
 

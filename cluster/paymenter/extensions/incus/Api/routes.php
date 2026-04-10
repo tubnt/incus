@@ -14,8 +14,8 @@ use Illuminate\Support\Facades\Route;
 |
 */
 
-// group 级别仅做认证 + rate limit（不传 scope 参数）
-Route::prefix('api/v1')->middleware(ApiMiddleware::class)->group(function () {
+// 每条路由独立绑定中间件（避免 group + route 双重执行导致 rate limit 双倍计数）
+Route::prefix('api/v1')->group(function () {
 
     // --- 实例管理 ---
     Route::get('/instances', [ApiController::class, 'listInstances'])
@@ -59,9 +59,12 @@ Route::prefix('api/v1')->middleware(ApiMiddleware::class)->group(function () {
     Route::get('/account/invoices', [ApiController::class, 'listInvoices'])
         ->middleware(ApiMiddleware::class . ':account.read');
 
-    // --- Token 自助管理（仅需基础认证，无额外 scope 要求）---
-    Route::get('/tokens', [ApiController::class, 'listTokens']);
-    Route::post('/tokens', [ApiController::class, 'createToken']);
+    // --- Token 自助管理（列表仅需认证，创建/吊销需要 tokens.manage 权限）---
+    Route::get('/tokens', [ApiController::class, 'listTokens'])
+        ->middleware(ApiMiddleware::class);
+    Route::post('/tokens', [ApiController::class, 'createToken'])
+        ->middleware(ApiMiddleware::class . ':tokens.manage');
     Route::delete('/tokens/{tokenId}', [ApiController::class, 'revokeToken'])
+        ->middleware(ApiMiddleware::class . ':tokens.manage')
         ->where('tokenId', '[0-9]+');
 });

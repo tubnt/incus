@@ -24,6 +24,7 @@ class ApiTokenManager
         'firewall.write',
         'metrics.read',
         'account.read',
+        'tokens.manage',
     ];
 
     /**
@@ -31,7 +32,19 @@ class ApiTokenManager
      *
      * @return array{token: string, id: int} 返回明文 token（仅此一次）和记录 ID
      */
-    public function createToken(int $userId, string $name, string $permission = 'read-only', ?array $customPermissions = null): array
+    /** Token 最长有效期（天） */
+    private const MAX_EXPIRY_DAYS = 365;
+
+    /** Token 默认有效期（天），null 表示不过期 */
+    private const DEFAULT_EXPIRY_DAYS = 90;
+
+    /**
+     * 创建 API Token
+     *
+     * @param int|null $expiryDays 有效天数，null 使用默认值，0 表示永不过期
+     * @return array{token: string, id: int} 返回明文 token（仅此一次）和记录 ID
+     */
+    public function createToken(int $userId, string $name, string $permission = 'read-only', ?array $customPermissions = null, ?int $expiryDays = null): array
     {
         if (!in_array($permission, self::VALID_PERMISSIONS, true)) {
             throw new \InvalidArgumentException("无效权限类型: {$permission}");
@@ -46,6 +59,13 @@ class ApiTokenManager
                 throw new \InvalidArgumentException('无效权限范围: ' . implode(', ', $invalid));
             }
         }
+
+        // 计算过期时间
+        $days = $expiryDays ?? self::DEFAULT_EXPIRY_DAYS;
+        if ($days < 0 || $days > self::MAX_EXPIRY_DAYS) {
+            throw new \InvalidArgumentException("有效天数必须在 0-" . self::MAX_EXPIRY_DAYS . " 之间（0 = 永不过期）");
+        }
+        $expiresAt = $days > 0 ? now()->addDays($days) : null;
 
         // 限制每用户最多 20 个 token
         $count = DB::table('incus_api_tokens')->where('user_id', $userId)->count();
@@ -64,6 +84,7 @@ class ApiTokenManager
             'token_prefix'       => $tokenPrefix,
             'permission'         => $permission,
             'custom_permissions' => $permission === 'custom' ? json_encode($customPermissions) : null,
+            'expires_at'         => $expiresAt,
             'created_at'         => now(),
             'updated_at'         => now(),
         ]);

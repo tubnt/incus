@@ -46,6 +46,7 @@
                     <th class="px-4 py-3 text-sm font-medium text-gray-600">Token 前缀</th>
                     <th class="px-4 py-3 text-sm font-medium text-gray-600">权限</th>
                     <th class="px-4 py-3 text-sm font-medium text-gray-600">最后使用</th>
+                    <th class="px-4 py-3 text-sm font-medium text-gray-600">过期时间</th>
                     <th class="px-4 py-3 text-sm font-medium text-gray-600">创建时间</th>
                     <th class="px-4 py-3 text-sm font-medium text-gray-600">操作</th>
                 </tr>
@@ -84,6 +85,17 @@
                     <td class="px-4 py-3 text-sm text-gray-500">
                         {{ $token->last_used_at ? \Carbon\Carbon::parse($token->last_used_at)->diffForHumans() : '从未使用' }}
                     </td>
+                    <td class="px-4 py-3 text-sm">
+                        @if($token->expires_at)
+                            @php $expired = \Carbon\Carbon::parse($token->expires_at)->isPast(); @endphp
+                            <span class="{{ $expired ? 'text-red-600 font-medium' : 'text-gray-500' }}">
+                                {{ \Carbon\Carbon::parse($token->expires_at)->format('Y-m-d') }}
+                                @if($expired) (已过期) @endif
+                            </span>
+                        @else
+                            <span class="text-gray-400">永不过期</span>
+                        @endif
+                    </td>
                     <td class="px-4 py-3 text-sm text-gray-500">
                         {{ \Carbon\Carbon::parse($token->created_at)->format('Y-m-d H:i') }}
                     </td>
@@ -100,7 +112,7 @@
                 </tr>
                 @empty
                 <tr>
-                    <td colspan="6" class="px-4 py-8 text-center text-gray-400">
+                    <td colspan="7" class="px-4 py-8 text-center text-gray-400">
                         暂无 API Token，点击上方按钮创建
                     </td>
                 </tr>
@@ -159,6 +171,19 @@
                         <option value="read-only">只读 — 仅查看实例、快照、监控</option>
                         <option value="full-access">完全访问 — 所有操作</option>
                         <option value="custom">自定义 — 选择具体权限</option>
+                    </select>
+                </div>
+
+                {{-- 有效期 --}}
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">有效期</label>
+                    <select name="expiry_days"
+                            class="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500">
+                        <option value="30">30 天</option>
+                        <option value="90" selected>90 天（默认）</option>
+                        <option value="180">180 天</option>
+                        <option value="365">365 天</option>
+                        <option value="0">永不过期</option>
                     </select>
                 </div>
 
