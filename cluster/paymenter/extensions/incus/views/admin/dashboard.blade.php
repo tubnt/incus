@@ -255,14 +255,14 @@
                             new Chart(ctx, {
                                 type: 'bar',
                                 data: {
-                                    labels: {!! json_encode(array_column($revenueChart, 'month')) !!},
+                                    labels: @json(array_column($revenueChart, 'month')),
                                     datasets: [{
                                         label: '新订单',
-                                        data: {!! json_encode(array_column($revenueChart, 'new_revenue')) !!},
+                                        data: @json(array_column($revenueChart, 'new_revenue')),
                                         backgroundColor: 'rgba(54, 162, 235, 0.7)',
                                     }, {
                                         label: '续费',
-                                        data: {!! json_encode(array_column($revenueChart, 'renewal_revenue')) !!},
+                                        data: @json(array_column($revenueChart, 'renewal_revenue')),
                                         backgroundColor: 'rgba(75, 192, 192, 0.7)',
                                     }],
                                 },

@@ -79,7 +79,11 @@
                          style="width: 42px; height: 36px; line-height: 36px; font-size: 12px; cursor: pointer;"
                          data-bs-toggle="tooltip"
                          data-bs-placement="top"
-                         title="{{ $addr['ip'] }}&#10;状态: {{ $addr['status'] }}{{ $addr['vm_name'] ? '&#10;VM: ' . $addr['vm_name'] : '' }}{{ $addr['cooldown_until'] ? '&#10;冷却至: ' . $addr['cooldown_until'] : '' }}">
+                         data-ip="{{ $addr['ip'] }}"
+                         data-addr-status="{{ $addr['status'] }}"
+                         data-vm-name="{{ $addr['vm_name'] ?? '' }}"
+                         data-cooldown="{{ $addr['cooldown_until'] ?? '' }}"
+                         title="{{ $addr['ip'] }} | {{ $addr['status'] }}">
                         .{{ $lastOctet }}
                     </div>
                 @endforeach
@@ -163,11 +167,30 @@
 
 @push('scripts')
 <script>
-    // 启用 Bootstrap tooltip
+    // 启用 Bootstrap tooltip（使用 data 属性构建安全内容，避免 XSS）
     document.addEventListener('DOMContentLoaded', function() {
         var tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
         tooltipTriggerList.map(function(el) {
-            return new bootstrap.Tooltip(el, { html: true });
+            var ip = el.getAttribute('data-ip') || '';
+            var status = el.getAttribute('data-addr-status') || '';
+            var vmName = el.getAttribute('data-vm-name') || '';
+            var cooldown = el.getAttribute('data-cooldown') || '';
+
+            var lines = [ip, '状态: ' + status];
+            if (vmName) lines.push('VM: ' + vmName);
+            if (cooldown) lines.push('冷却至: ' + cooldown);
+
+            // 用 textContent 安全构建 HTML 避免 XSS
+            var container = document.createElement('div');
+            lines.forEach(function(line, i) {
+                if (i > 0) container.appendChild(document.createElement('br'));
+                container.appendChild(document.createTextNode(line));
+            });
+
+            return new bootstrap.Tooltip(el, {
+                html: true,
+                title: container.innerHTML
+            });
         });
     });
 </script>

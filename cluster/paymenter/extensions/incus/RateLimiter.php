@@ -79,37 +79,55 @@ class RateLimiter
      * @param int    $window      窗口大小（秒）
      * @return array{allowed: bool, remaining: int, retry_after: int|null}
      */
+    /**
+     * Lua 脚本：原子滑动窗口限流
+     *
+     * KEYS[1] = sorted set key
+     * ARGV[1] = window_start, ARGV[2] = now, ARGV[3] = member, ARGV[4] = max_requests, ARGV[5] = expire_ttl
+     *
+     * 返回: {current_count, oldest_score}
+     */
+    private const LUA_SLIDING_WINDOW = <<<'LUA'
+redis.call('zremrangebyscore', KEYS[1], '-inf', ARGV[1])
+local count = redis.call('zcard', KEYS[1])
+if count < tonumber(ARGV[4]) then
+    redis.call('zadd', KEYS[1], ARGV[2], ARGV[3])
+    count = count + 1
+end
+redis.call('expire', KEYS[1], tonumber(ARGV[5]))
+local oldest = redis.call('zrange', KEYS[1], 0, 0, 'WITHSCORES')
+local oldest_score = 0
+if #oldest >= 2 then oldest_score = tonumber(oldest[2]) end
+return {count, tostring(oldest_score)}
+LUA;
+
     public function checkWithParams(string $identifier, string $rule, int $maxRequests, int $window): array
     {
         $key = self::KEY_PREFIX . $rule . ':' . $identifier;
         $now = microtime(true);
         $windowStart = $now - $window;
+        $member = $now . ':' . bin2hex(random_bytes(4));
 
-        // 使用 Redis pipeline 减少网络往返
-        $results = Redis::pipeline(function ($pipe) use ($key, $now, $windowStart, $window) {
-            // 移除窗口外的旧记录
-            $pipe->zremrangebyscore($key, '-inf', $windowStart);
-            // 添加当前请求（使用微秒时间戳 + 随机后缀作为 member 保证唯一性）
-            $member = $now . ':' . bin2hex(random_bytes(4));
-            $pipe->zadd($key, $now, $member);
-            // 统计窗口内的请求数
-            $pipe->zcard($key);
-            // 设置 key 过期时间（防止残留）
-            $pipe->expire($key, $window + 10);
-        });
+        // 原子 Lua 脚本：清理过期 → 检查计数 → 仅在未超限时添加
+        $results = Redis::eval(
+            self::LUA_SLIDING_WINDOW,
+            1,
+            $key,
+            (string) $windowStart,
+            (string) $now,
+            $member,
+            (string) $maxRequests,
+            (string) ($window + 10)
+        );
 
-        $currentCount = $results[2] ?? 0;
+        $currentCount = (int) ($results[0] ?? 0);
+        $oldestScore = (float) ($results[1] ?? 0);
         $allowed = $currentCount <= $maxRequests;
 
+        $retryAfter = null;
         if (!$allowed) {
-            // 不允许时，移除刚添加的记录
-            Redis::zpopmax($key);
-            $currentCount--;
-
-            // 计算最早可重试的时间
-            $oldest = Redis::zrange($key, 0, 0, 'WITHSCORES');
-            $retryAfter = !empty($oldest)
-                ? (int) ceil(reset($oldest) + $window - $now)
+            $retryAfter = $oldestScore > 0
+                ? (int) ceil($oldestScore + $window - $now)
                 : $window;
 
             Log::info('[限流] 请求被限制', [
@@ -123,7 +141,7 @@ class RateLimiter
         return [
             'allowed'     => $allowed,
             'remaining'   => max(0, $maxRequests - $currentCount),
-            'retry_after' => $allowed ? null : ($retryAfter ?? $window),
+            'retry_after' => $retryAfter,
             'limit'       => $maxRequests,
             'window'      => $window,
         ];

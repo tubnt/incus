@@ -173,23 +173,25 @@ class PaymentHandler
      */
     public function handlePaymentFailure(int $orderId, string $reason = ''): array
     {
-        $order = DB::table('orders')->where('id', $orderId)->first();
+        return DB::transaction(function () use ($orderId, $reason) {
+            $order = DB::table('orders')->where('id', $orderId)->lockForUpdate()->first();
 
-        if (!$order || $order->status !== 'pending') {
-            return ['success' => false, 'message' => '订单不存在或已处理'];
-        }
+            if (!$order || $order->status !== 'pending') {
+                return ['success' => false, 'message' => '订单不存在或已处理'];
+            }
 
-        DB::table('orders')->where('id', $orderId)->update([
-            'status'     => 'cancelled',
-            'note'       => '支付失败: ' . $reason,
-            'updated_at' => now(),
-        ]);
+            DB::table('orders')->where('id', $orderId)->update([
+                'status'     => 'cancelled',
+                'note'       => '支付失败: ' . $reason,
+                'updated_at' => now(),
+            ]);
 
-        $this->logPayment($orderId, 'payment_failed', 0, null, ['reason' => $reason]);
+            $this->logPayment($orderId, 'payment_failed', 0, null, ['reason' => $reason]);
 
-        Log::info('[支付] 订单支付失败已取消', ['order_id' => $orderId, 'reason' => $reason]);
+            Log::info('[支付] 订单支付失败已取消', ['order_id' => $orderId, 'reason' => $reason]);
 
-        return ['success' => true, 'message' => '订单已取消'];
+            return ['success' => true, 'message' => '订单已取消'];
+        });
     }
 
     /**
@@ -203,32 +205,46 @@ class PaymentHandler
     {
         $cutoff = now()->subSeconds(self::PAYMENT_TIMEOUT);
 
-        $timedOutOrders = DB::table('orders')
+        $timedOutOrderIds = DB::table('orders')
             ->where('status', 'pending')
             ->where('created_at', '<', $cutoff)
-            ->get();
+            ->pluck('id');
 
         $count = 0;
-        foreach ($timedOutOrders as $order) {
-            DB::table('orders')->where('id', $order->id)->update([
-                'status'     => 'cancelled',
-                'note'       => '支付超时自动取消（30 分钟）',
-                'updated_at' => now(),
-            ]);
+        foreach ($timedOutOrderIds as $orderId) {
+            // 逐单事务 + 行锁，防止与 handlePaymentSuccess 竞争
+            $cancelled = DB::transaction(function () use ($orderId) {
+                $order = DB::table('orders')->where('id', $orderId)->lockForUpdate()->first();
 
-            $this->logPayment($order->id, 'payment_timeout', 0);
+                // 二次检查状态，可能已被支付回调处理
+                if (!$order || $order->status !== 'pending') {
+                    return false;
+                }
 
-            // 回收预分配的 IP（如有）
-            DB::table('ip_addresses')
-                ->where('order_id', $order->id)
-                ->where('status', 'allocated')
-                ->update([
-                    'status'   => 'available',
-                    'vm_name'  => null,
-                    'order_id' => null,
+                DB::table('orders')->where('id', $orderId)->update([
+                    'status'     => 'cancelled',
+                    'note'       => '支付超时自动取消（30 分钟）',
+                    'updated_at' => now(),
                 ]);
 
-            $count++;
+                $this->logPayment($orderId, 'payment_timeout', 0);
+
+                // 回收预分配的 IP（如有）
+                DB::table('ip_addresses')
+                    ->where('order_id', $orderId)
+                    ->where('status', 'allocated')
+                    ->update([
+                        'status'   => 'available',
+                        'vm_name'  => null,
+                        'order_id' => null,
+                    ]);
+
+                return true;
+            });
+
+            if ($cancelled) {
+                $count++;
+            }
         }
 
         if ($count > 0) {
