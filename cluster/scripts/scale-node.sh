@@ -98,9 +98,11 @@ send_notify() {
         return 0
     fi
     local message="$1"
+    local json_payload
+    json_payload=$(jq -n --arg text "[Incus 集群] $message" '{text: $text}')
     curl -s -X POST "$NOTIFY_WEBHOOK" \
         -H 'Content-Type: application/json' \
-        -d "{\"text\": \"[Incus 集群] ${message}\"}" \
+        -d "$json_payload" \
         --max-time 10 || warn "通知发送失败"
 }
 
@@ -329,14 +331,21 @@ update_firewall_add() {
         return 0
     fi
 
-    if grep -q "$ip" "$FIREWALL_WHITELIST" 2>/dev/null; then
+    local escaped_ip="${ip//./\\.}"
+    if grep -qP "(^|[,\s])${escaped_ip}([,\s]|$)" "$FIREWALL_WHITELIST" 2>/dev/null; then
         log "IP ${ip} 已在防火墙白名单中"
         return 0
     fi
 
-    # 在 elements 行尾追加 IP
-    sed -i "s/}$/,\\n            ${ip},\\n        }/" "$FIREWALL_WHITELIST" 2>/dev/null || \
-        echo "        ${ip}," >> "$FIREWALL_WHITELIST"
+    # 在 elements 块的末尾花括号前插入新 IP（仅匹配 set 块内缩进的 }）
+    sed -i "/^[[:space:]]*elements[[:space:]]*=/{
+        :loop
+        /}/! { N; b loop }
+        s/\([[:space:]]*\)}/\1    ${ip},\n\1}/
+    }" "$FIREWALL_WHITELIST" 2>/dev/null || {
+        warn "sed 插入失败，请手动编辑 ${FIREWALL_WHITELIST}"
+        return 1
+    }
 
     nft -f "$FIREWALL_WHITELIST" 2>/dev/null || warn "nftables 重载失败，请手动检查"
     log "防火墙白名单已添加: ${ip}"
@@ -348,7 +357,9 @@ update_firewall_remove() {
         return 0
     fi
 
-    sed -i "/${ip}/d" "$FIREWALL_WHITELIST" 2>/dev/null || true
+    # 转义 IP 中的点，完整匹配避免误删（如 1.1 不会删 1.10）
+    local escaped_ip="${ip//./\\.}"
+    sed -i "/^[[:space:]]*${escaped_ip}[,[:space:]]*$/d" "$FIREWALL_WHITELIST" 2>/dev/null || true
     nft -f "$FIREWALL_WHITELIST" 2>/dev/null || warn "nftables 重载失败"
     log "防火墙白名单已移除: ${ip}"
 }

@@ -35,7 +35,6 @@
                     </td>
                     <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
                         @switch($alert->metric)
-                            @case('cpu_percent')    CPU 使用率 @break
                             @case('memory_percent') 内存使用率 @break
                             @case('bandwidth_in')   入站带宽 @break
                             @case('bandwidth_out')  出站带宽 @break
@@ -117,7 +116,6 @@
                     <label class="block text-sm font-medium text-gray-700 mb-1">监控指标</label>
                     <select name="metric" required
                             class="w-full border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500">
-                        <option value="cpu_percent">CPU 使用率 (%)</option>
                         <option value="memory_percent">内存使用率 (%)</option>
                         <option value="bandwidth_in">入站带宽 (bytes)</option>
                         <option value="bandwidth_out">出站带宽 (bytes)</option>

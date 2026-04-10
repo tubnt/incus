@@ -15,9 +15,8 @@ use Illuminate\Support\Facades\Log;
  */
 class UserAlertManager
 {
-    /** 支持的监控指标 */
+    /** 支持的监控指标（cpu_percent 需要两次采样计算差值，Incus API 仅返回累计纳秒，暂不支持） */
     private const VALID_METRICS = [
-        'cpu_percent',
         'memory_percent',
         'bandwidth_in',
         'bandwidth_out',
@@ -246,7 +245,6 @@ class UserAlertManager
         }
 
         return [
-            'cpu_percent'    => $cpu['usage'] ?? 0, // nanoseconds — 需 Prometheus 计算百分比
             'memory_percent' => $memTotal > 0 ? round($memUsage / $memTotal * 100, 2) : 0,
             'bandwidth_in'   => $rxBytes,
             'bandwidth_out'  => $txBytes,
@@ -302,7 +300,6 @@ class UserAlertManager
     private function metricLabel(string $metric): string
     {
         return match ($metric) {
-            'cpu_percent'    => 'CPU 使用率 (%)',
             'memory_percent' => '内存使用率 (%)',
             'bandwidth_in'   => '入站带宽 (bytes)',
             'bandwidth_out'  => '出站带宽 (bytes)',
@@ -338,8 +335,64 @@ class UserAlertManager
                 "不支持的渠道: {$channel}，可选: email, webhook"
             );
         }
-        if ($channel === 'webhook' && empty($webhookUrl)) {
-            throw new \InvalidArgumentException('webhook 渠道必须提供 webhook_url');
+        if ($channel === 'webhook') {
+            if (empty($webhookUrl)) {
+                throw new \InvalidArgumentException('webhook 渠道必须提供 webhook_url');
+            }
+            $this->validateWebhookUrl($webhookUrl);
+        }
+    }
+
+    /**
+     * 校验 webhook URL，防止 SSRF 攻击
+     */
+    private function validateWebhookUrl(string $url): void
+    {
+        $parsed = parse_url($url);
+        if ($parsed === false || !isset($parsed['scheme'], $parsed['host'])) {
+            throw new \InvalidArgumentException('webhook_url 格式无效');
+        }
+
+        // 仅允许 HTTPS
+        if (strtolower($parsed['scheme']) !== 'https') {
+            throw new \InvalidArgumentException('webhook_url 仅允许 https 协议');
+        }
+
+        $host = $parsed['host'];
+
+        // 解析域名为 IP
+        $ip = filter_var($host, FILTER_VALIDATE_IP) ? $host : gethostbyname($host);
+        if ($ip === $host && !filter_var($host, FILTER_VALIDATE_IP)) {
+            throw new \InvalidArgumentException('webhook_url 域名无法解析');
+        }
+
+        // 禁止内网/回环/link-local 地址
+        $forbidden = [
+            '127.0.0.0/8',      // 回环
+            '10.0.0.0/8',       // RFC1918
+            '172.16.0.0/12',    // RFC1918
+            '192.168.0.0/16',   // RFC1918
+            '169.254.0.0/16',   // link-local
+            '100.64.0.0/10',    // CGN
+            '0.0.0.0/8',       // 本地
+            '::1/128',          // IPv6 回环
+            'fc00::/7',         // IPv6 ULA
+            'fe80::/10',        // IPv6 link-local
+        ];
+
+        $ipLong = ip2long($ip);
+        if ($ipLong !== false) {
+            foreach ($forbidden as $cidr) {
+                if (str_contains($cidr, ':')) {
+                    continue; // 跳过 IPv6 CIDR（当前 IP 是 v4）
+                }
+                [$subnet, $bits] = explode('/', $cidr);
+                $subnetLong = ip2long($subnet);
+                $mask = -1 << (32 - (int) $bits);
+                if (($ipLong & $mask) === ($subnetLong & $mask)) {
+                    throw new \InvalidArgumentException('webhook_url 不允许指向内网/回环/link-local 地址');
+                }
+            }
         }
     }
 

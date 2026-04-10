@@ -13,7 +13,6 @@ return new class extends Migration
             $table->unsignedBigInteger('user_id');
             $table->string('vm_name', 64);
             $table->enum('metric', [
-                'cpu_percent',
                 'memory_percent',
                 'bandwidth_in',
                 'bandwidth_out',
