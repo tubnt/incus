@@ -1,0 +1,12 @@
+{
+    "id": "lamp",
+    "name": "LAMP Stack",
+    "description": "Linux + Apache + MySQL + PHP 经典 Web 开发环境",
+    "icon": "fas fa-server",
+    "image": "images:ubuntu/22.04",
+    "min_cpu": 1,
+    "min_memory": "1024MiB",
+    "min_disk": "15GiB",
+    "cloud_init": "apt-get install -y apache2 mysql-server php php-mysql php-curl php-gd php-xml php-mbstring php-zip composer\nsystemctl enable apache2 mysql\nsystemctl start apache2 mysql\nmysql -e \"ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '$(openssl rand -base64 24)'; FLUSH PRIVILEGES;\"\na2enmod rewrite\nsystemctl restart apache2",
+    "ports": [80, 443, 3306]
+}

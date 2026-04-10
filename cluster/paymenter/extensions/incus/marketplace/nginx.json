@@ -1,0 +1,12 @@
+{
+    "id": "nginx",
+    "name": "Nginx",
+    "description": "高性能 Web 服务器和反向代理，预配置 SSL 支持和优化参数",
+    "icon": "fas fa-globe",
+    "image": "images:ubuntu/22.04",
+    "min_cpu": 1,
+    "min_memory": "512MiB",
+    "min_disk": "10GiB",
+    "cloud_init": "apt-get install -y nginx certbot python3-certbot-nginx\nsystemctl enable nginx\nsystemctl start nginx\nmkdir -p /var/www/html /etc/nginx/sites-available /etc/nginx/ssl\nopenssl dhparam -out /etc/nginx/ssl/dhparam.pem 2048\ncat > /etc/nginx/conf.d/security.conf << 'CONF'\nserver_tokens off;\nadd_header X-Content-Type-Options nosniff;\nadd_header X-Frame-Options SAMEORIGIN;\nadd_header X-XSS-Protection \"1; mode=block\";\nCONF\nsystemctl restart nginx",
+    "ports": [80, 443]
+}

@@ -1,0 +1,12 @@
+{
+    "id": "wordpress",
+    "name": "WordPress",
+    "description": "最流行的开源内容管理系统，适用于博客、企业官网和电商网站",
+    "icon": "fab fa-wordpress",
+    "image": "images:ubuntu/22.04",
+    "min_cpu": 2,
+    "min_memory": "2048MiB",
+    "min_disk": "20GiB",
+    "cloud_init": "apt-get install -y apache2 php php-mysql php-curl php-gd php-xml php-mbstring mariadb-server\nsystemctl enable apache2 mariadb\nsystemctl start apache2 mariadb\nmysql -e \"CREATE DATABASE wordpress; CREATE USER 'wp_user'@'localhost' IDENTIFIED BY '$(openssl rand -base64 24)'; GRANT ALL ON wordpress.* TO 'wp_user'@'localhost'; FLUSH PRIVILEGES;\"\ncd /var/www/html && wget -q https://wordpress.org/latest.tar.gz && tar xzf latest.tar.gz --strip-components=1 && rm latest.tar.gz\nchown -R www-data:www-data /var/www/html",
+    "ports": [80, 443]
+}

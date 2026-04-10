@@ -1,0 +1,12 @@
+{
+    "id": "postgresql",
+    "name": "PostgreSQL 16",
+    "description": "高性能开源关系型数据库，支持 JSON、全文搜索和地理空间查询",
+    "icon": "fas fa-database",
+    "image": "images:ubuntu/22.04",
+    "min_cpu": 2,
+    "min_memory": "2048MiB",
+    "min_disk": "20GiB",
+    "cloud_init": "sh -c 'echo \"deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main\" > /etc/apt/sources.list.d/pgdg.list'\ncurl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor -o /etc/apt/trusted.gpg.d/postgresql.gpg\napt-get update\napt-get install -y postgresql-16 postgresql-client-16\nsystemctl enable postgresql\nsystemctl start postgresql\nsu - postgres -c \"psql -c \\\"ALTER USER postgres PASSWORD '$(openssl rand -base64 24)';\\\"\"",
+    "ports": [5432]
+}

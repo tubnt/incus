@@ -1,0 +1,12 @@
+{
+    "id": "nodejs",
+    "name": "Node.js",
+    "description": "Node.js 20 LTS 运行环境，预装 npm、yarn 和 PM2 进程管理器",
+    "icon": "fab fa-node-js",
+    "image": "images:ubuntu/22.04",
+    "min_cpu": 1,
+    "min_memory": "1024MiB",
+    "min_disk": "15GiB",
+    "cloud_init": "curl -fsSL https://deb.nodesource.com/setup_20.x | bash -\napt-get install -y nodejs build-essential\nnpm install -g yarn pm2\npm2 startup systemd\nmkdir -p /opt/app && chown -R ubuntu:ubuntu /opt/app",
+    "ports": [3000, 8080]
+}
