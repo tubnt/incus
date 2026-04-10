@@ -126,16 +126,16 @@ class UserOperations
     /**
      * 修改 root 密码
      *
-     * 通过 incus exec 执行 chpasswd
+     * 通过 incus exec 执行 chpasswd，密码经 stdin 传递，不记录输出
      */
     public function changePassword(string $vmName, int $orderId, string $newPassword): array
     {
         return VmOperationLock::withLock($vmName, 'change_password', function () use ($vmName, $orderId, $newPassword) {
             try {
                 $result = $this->client->post("/1.0/instances/{$vmName}/exec", [
-                    'command'      => ['chpasswd'],
+                    'command'            => ['chpasswd'],
                     'wait-for-websocket' => false,
-                    'record-output'      => true,
+                    'record-output'      => false,
                     'stdin-data'         => "root:{$newPassword}\n",
                 ]);
 
@@ -152,21 +152,38 @@ class UserOperations
     /**
      * 添加 SSH 公钥
      *
-     * 追加到 /root/.ssh/authorized_keys
+     * 通过 stdin 传递公钥内容写入 authorized_keys，避免 shell 注入
      */
     public function addSshKey(string $vmName, int $orderId, string $publicKey): array
     {
         return VmOperationLock::withLock($vmName, 'add_ssh_key', function () use ($vmName, $orderId, $publicKey) {
             try {
-                $safeKey = str_replace("'", "", $publicKey);
+                // 验证公钥格式：仅允许单行、合法字符的 SSH 公钥
+                $trimmed = trim($publicKey);
+                if (!preg_match('/^(ssh-rsa|ssh-ed25519|ecdsa-sha2-nistp\d+|sk-ssh-ed25519@openssh\.com|sk-ecdsa-sha2-nistp256@openssh\.com)\s+[A-Za-z0-9+\/=]+(\s+\S+)?$/', $trimmed)) {
+                    throw new \InvalidArgumentException('SSH 公钥格式无效');
+                }
 
-                $result = $this->client->post("/1.0/instances/{$vmName}/exec", [
-                    'command' => [
-                        'bash', '-c',
-                        "mkdir -p /root/.ssh && chmod 700 /root/.ssh && echo '{$safeKey}' >> /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys",
-                    ],
+                // 先确保 .ssh 目录存在
+                $this->client->post("/1.0/instances/{$vmName}/exec", [
+                    'command'            => ['bash', '-c', 'mkdir -p /root/.ssh && chmod 700 /root/.ssh'],
                     'wait-for-websocket' => false,
-                    'record-output'      => true,
+                    'record-output'      => false,
+                ]);
+
+                // 通过 stdin 传递公钥，避免 shell 拼接
+                $result = $this->client->post("/1.0/instances/{$vmName}/exec", [
+                    'command'            => ['tee', '-a', '/root/.ssh/authorized_keys'],
+                    'wait-for-websocket' => false,
+                    'record-output'      => false,
+                    'stdin-data'         => $trimmed . "\n",
+                ]);
+
+                // 修正权限
+                $this->client->post("/1.0/instances/{$vmName}/exec", [
+                    'command'            => ['chmod', '600', '/root/.ssh/authorized_keys'],
+                    'wait-for-websocket' => false,
+                    'record-output'      => false,
                 ]);
 
                 AuditLogger::success('add_ssh_key', $vmName, $orderId);
@@ -193,13 +210,16 @@ class UserOperations
         // 计算 CIDR 前缀
         $cidr = $this->netmaskToCidr($netmask);
 
+        // 预先 hash 密码，避免明文存储在 cloud-init 配置中
+        $hashedPassword = password_hash($password, PASSWORD_BCRYPT);
+
         $cloudInit = [
             'hostname'          => $hostname,
             'manage_etc_hosts'  => true,
             'chpasswd'          => [
                 'expire' => false,
                 'users'  => [
-                    ['name' => 'root', 'password' => $password, 'type' => 'text'],
+                    ['name' => 'root', 'password' => $hashedPassword, 'type' => 'hash'],
                 ],
             ],
             'ssh_pwauth'        => true,

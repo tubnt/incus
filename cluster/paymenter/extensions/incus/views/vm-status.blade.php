@@ -194,7 +194,7 @@
                     <div class="mb-3">
                         <label class="form-label">请输入 VM 名称 <strong>{{ $vm['name'] }}</strong> 以确认</label>
                         <input type="text" class="form-control" name="confirm_name" required
-                               pattern="{{ preg_quote($vm['name'], '/') }}"
+                               pattern="{{ preg_replace('/[.*+?^${}()|[\]\\\\]/', '\\\\$0', $vm['name']) }}"
                                placeholder="{{ $vm['name'] }}">
                     </div>
                 </div>

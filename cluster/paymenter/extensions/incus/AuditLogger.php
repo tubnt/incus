@@ -15,13 +15,16 @@ class AuditLogger
 {
     private const CHANNEL = 'incus-audit';
 
+    /** 禁止出现在审计日志中的字段名 */
+    private const SENSITIVE_KEYS = ['password', 'passwd', 'secret', 'token', 'credential', 'private_key'];
+
     /**
      * 记录审计日志
      *
      * @param string $action    操作类型（create/suspend/unsuspend/terminate/reboot/reinstall/...）
      * @param string $vmName    VM 名称
      * @param int|null $orderId 订单 ID
-     * @param array $details    附加信息
+     * @param array $details    附加信息（敏感字段自动脱敏）
      * @param string $result    操作结果（success/failed）
      * @param int|null $userId  操作者 ID（null 则自动获取当前用户）
      */
@@ -43,7 +46,7 @@ class AuditLogger
             'result'    => $result,
             'ip'        => request()?->ip(),
             'timestamp' => now()->toIso8601String(),
-            'details'   => $details,
+            'details'   => self::redactSensitive($details),
         ];
 
         $message = sprintf(
@@ -76,5 +79,21 @@ class AuditLogger
     public static function failure(string $action, string $vmName, ?int $orderId = null, array $details = []): void
     {
         self::log($action, $vmName, $orderId, $details, 'failed');
+    }
+
+    /**
+     * 递归脱敏 details 中的敏感字段
+     */
+    private static function redactSensitive(array $data): array
+    {
+        foreach ($data as $key => &$value) {
+            if (is_string($key) && in_array(strtolower($key), self::SENSITIVE_KEYS, true)) {
+                $value = '***REDACTED***';
+            } elseif (is_array($value)) {
+                $value = self::redactSensitive($value);
+            }
+        }
+        unset($value);
+        return $data;
     }
 }

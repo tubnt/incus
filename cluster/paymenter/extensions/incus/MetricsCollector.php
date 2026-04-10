@@ -17,9 +17,19 @@ class MetricsCollector
         '30d' => 2592000,
     ];
 
+    /** Incus 实例名允许的字符 */
+    private const NAME_PATTERN = '/^[a-zA-Z0-9][a-zA-Z0-9\-]{0,62}$/';
+
     public function __construct(IncusClient $client)
     {
         $this->client = $client;
+    }
+
+    private function validateVmName(string $vmName): void
+    {
+        if (!preg_match(self::NAME_PATTERN, $vmName)) {
+            throw new \InvalidArgumentException("VM 名称格式无效: '{$vmName}'");
+        }
     }
 
     /**
@@ -31,6 +41,7 @@ class MetricsCollector
      */
     public function getVmMetrics(string $vmName, string $range = '1h'): array
     {
+        $this->validateVmName($vmName);
         if (!isset(self::TIME_RANGES[$range])) {
             throw new \InvalidArgumentException(
                 "不支持的时间范围 '{$range}'，可选值：" . implode('/', array_keys(self::TIME_RANGES))
@@ -145,6 +156,7 @@ class MetricsCollector
      */
     public function getMetricsSummary(string $vmName): array
     {
+        // getVmMetrics 内部已验证 vmName
         $metrics = $this->getVmMetrics($vmName, '1h');
 
         // 内存

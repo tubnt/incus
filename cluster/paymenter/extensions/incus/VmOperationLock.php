@@ -24,15 +24,15 @@ class VmOperationLock
      * @param string $vmName   VM 名称
      * @param string $operation 当前操作名称（用于诊断）
      * @param int $ttl          锁超时秒数
-     * @return string 锁令牌（用于释放）
+     * @return string 锁 owner 标识（用于安全释放）
      * @throws RuntimeException 获取锁失败时抛出
      */
     public static function acquire(string $vmName, string $operation, int $ttl = self::DEFAULT_TTL): string
     {
         $key = self::KEY_PREFIX . $vmName;
-        $token = bin2hex(random_bytes(16));
+        $owner = bin2hex(random_bytes(16));
 
-        $lock = Cache::lock($key, $ttl);
+        $lock = Cache::lock($key, $ttl, $owner);
 
         if (!$lock->get()) {
             $existing = Cache::get($key . ':info');
@@ -45,23 +45,30 @@ class VmOperationLock
         // 存储锁信息用于诊断
         Cache::put($key . ':info', [
             'operation' => $operation,
-            'token'     => $token,
+            'owner'     => $owner,
             'locked_at' => now()->toIso8601String(),
         ], $ttl);
 
-        return $token;
+        return $owner;
     }
 
     /**
-     * 释放 VM 操作锁
+     * 释放 VM 操作锁（验证 owner，防止释放他人持有的锁）
      *
      * @param string $vmName VM 名称
+     * @param string $owner  acquire() 返回的 owner 标识
      */
-    public static function release(string $vmName): void
+    public static function release(string $vmName, string $owner): void
     {
         $key = self::KEY_PREFIX . $vmName;
 
-        Cache::lock($key)->forceRelease();
+        $info = Cache::get($key . ':info');
+        if ($info && ($info['owner'] ?? '') !== $owner) {
+            // owner 不匹配 — 锁已因 TTL 过期后被其他操作获取，不可释放
+            return;
+        }
+
+        Cache::lock($key, 0, $owner)->release();
         Cache::forget($key . ':info');
     }
 
@@ -77,12 +84,12 @@ class VmOperationLock
      */
     public static function withLock(string $vmName, string $operation, callable $callback, int $ttl = self::DEFAULT_TTL): mixed
     {
-        self::acquire($vmName, $operation, $ttl);
+        $owner = self::acquire($vmName, $operation, $ttl);
 
         try {
             return $callback();
         } finally {
-            self::release($vmName);
+            self::release($vmName, $owner);
         }
     }
 

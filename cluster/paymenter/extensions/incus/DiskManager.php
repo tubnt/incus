@@ -12,10 +12,23 @@ class DiskManager
     private IncusClient $client;
     private string $storagePool;
 
+    /** Incus 实例/设备名允许的字符：字母、数字、连字符 */
+    private const NAME_PATTERN = '/^[a-zA-Z0-9][a-zA-Z0-9\-]{0,62}$/';
+
     public function __construct(IncusClient $client, string $storagePool = 'ceph-pool')
     {
         $this->client = $client;
         $this->storagePool = $storagePool;
+    }
+
+    /**
+     * 验证实例/设备名称格式，防止路径注入
+     */
+    private function validateName(string $name, string $label): void
+    {
+        if (!preg_match(self::NAME_PATTERN, $name)) {
+            throw new \InvalidArgumentException("{$label} 格式无效，仅允许字母、数字和连字符: '{$name}'");
+        }
     }
 
     /**
@@ -29,6 +42,11 @@ class DiskManager
      */
     public function addDisk(string $vmName, int $size, string $diskName = ''): array
     {
+        $this->validateName($vmName, 'VM 名称');
+        if ($diskName !== '') {
+            $this->validateName($diskName, '磁盘设备名');
+        }
+
         if ($size < 1 || $size > 2000) {
             throw new \InvalidArgumentException('磁盘大小必须在 1-2000 GiB 之间');
         }
@@ -86,6 +104,9 @@ class DiskManager
      */
     public function removeDisk(string $vmName, string $diskName): void
     {
+        $this->validateName($vmName, 'VM 名称');
+        $this->validateName($diskName, '磁盘设备名');
+
         // 1. 获取实例配置，找到对应的卷名
         $instance = $this->client->request('GET', "/1.0/instances/{$vmName}");
         $devices = $instance['metadata']['devices'] ?? [];
@@ -108,11 +129,16 @@ class DiskManager
             'devices' => $devices,
         ]);
 
-        // 3. 删除存储卷
+        // 3. 删除存储卷（设备已分离，卷删除失败时记录错误避免孤儿卷静默丢失）
         if ($volumeName !== '') {
-            $this->client->request('DELETE',
-                "/1.0/storage-pools/{$pool}/volumes/custom/{$volumeName}"
-            );
+            try {
+                $this->client->request('DELETE',
+                    "/1.0/storage-pools/{$pool}/volumes/custom/{$volumeName}"
+                );
+            } catch (\Exception $e) {
+                \Log::error("磁盘设备已分离但卷删除失败，可能产生孤儿卷: pool={$pool}, volume={$volumeName}: " . $e->getMessage());
+                throw new \RuntimeException("磁盘设备已移除，但存储卷 '{$volumeName}' 删除失败，请手动清理: " . $e->getMessage());
+            }
         }
     }
 
@@ -124,6 +150,7 @@ class DiskManager
      */
     public function listDisks(string $vmName): array
     {
+        $this->validateName($vmName, 'VM 名称');
         $instance = $this->client->request('GET', "/1.0/instances/{$vmName}");
         $devices = $instance['metadata']['devices'] ?? [];
         $disks = [];

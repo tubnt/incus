@@ -20,9 +20,19 @@ class BandwidthTracker
     /** 带宽记录表 */
     private const TABLE = 'bandwidth_usage';
 
+    /** Incus 实例名允许的字符 */
+    private const NAME_PATTERN = '/^[a-zA-Z0-9][a-zA-Z0-9\-]{0,62}$/';
+
     public function __construct(IncusClient $client)
     {
         $this->client = $client;
+    }
+
+    private function validateVmName(string $vmName): void
+    {
+        if (!preg_match(self::NAME_PATTERN, $vmName)) {
+            throw new \InvalidArgumentException("VM 名称格式无效: '{$vmName}'");
+        }
     }
 
     /**
@@ -37,6 +47,7 @@ class BandwidthTracker
      */
     public function getMonthlyUsage(string $vmName): array
     {
+        $this->validateVmName($vmName);
         $period = date('Y-m');
 
         $record = DB::table(self::TABLE)
@@ -103,6 +114,7 @@ class BandwidthTracker
      */
     public function applyThrottle(string $vmName): void
     {
+        $this->validateVmName($vmName);
         $instance = $this->client->request('GET', "/1.0/instances/{$vmName}");
         $devices = $instance['metadata']['devices'] ?? [];
 
@@ -143,8 +155,11 @@ class BandwidthTracker
      */
     public function resetMonthly(): void
     {
+        // 只处理上月被限速的记录，避免重复处理历史数据或误触当月记录
+        $previousMonth = date('Y-m', strtotime('first day of last month'));
         $throttled = DB::table(self::TABLE)
             ->where('is_throttled', true)
+            ->where('period', $previousMonth)
             ->get();
 
         foreach ($throttled as $record) {
