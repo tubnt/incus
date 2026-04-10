@@ -14,6 +14,7 @@ config:
   restricted: "true"
   restricted.devices.disk: allow
   restricted.devices.nic: block
+  restricted.networks: block
 
   # ── 资源配额 ──
   limits.instances: "50"

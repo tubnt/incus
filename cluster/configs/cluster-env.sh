@@ -65,7 +65,7 @@ GARP_RETRY=2                   # GARP 重试轮数
 GARP_RETRY_DELAY=1             # 重试间隔（秒）
 
 # ==================== 通用 ====================
-DNS_SERVERS="1.1.1.1,8.8.8.8"
+DNS_SERVERS="223.5.5.5,8.8.8.8"
 SSH_USER="root"
 
 # ==================== 辅助函数 ====================
@@ -116,4 +116,16 @@ get_osd_nodes() {
       echo "${parts[0]}"
     fi
   done
+}
+
+# ==================== 公共日志函数 ====================
+# 多个脚本 source 此文件后使用，统一定义避免重复
+log_info()  { echo -e "\033[0;32m[INFO]\033[0m  $(date '+%Y-%m-%d %H:%M:%S') $*"; }
+log_warn()  { echo -e "\033[1;33m[WARN]\033[0m  $(date '+%Y-%m-%d %H:%M:%S') $*" >&2; }
+log_error() { echo -e "\033[0;31m[ERROR]\033[0m $(date '+%Y-%m-%d %H:%M:%S') $*" >&2; }
+log_ok()    { echo -e "\033[0;32m[OK]\033[0m    $(date '+%Y-%m-%d %H:%M:%S') $*"; }
+
+# 命令存在性检查
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1
 }

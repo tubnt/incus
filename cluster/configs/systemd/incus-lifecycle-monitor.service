@@ -15,7 +15,7 @@ NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
-ReadOnlyPaths=/
+# 注：ProtectSystem=strict 已将文件系统设为只读，无需额外 ReadOnlyPaths=/
 
 # 日志
 StandardOutput=journal

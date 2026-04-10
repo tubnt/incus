@@ -5,6 +5,10 @@ groups:
   - name: incus_cluster
     rules:
       # ── Incus 集群节点离线 ──────────────────────────────
+      # ⚠ 部署前须验证实际指标名：
+      #   curl -sk --cert metrics.crt --key metrics.key \
+      #     https://<node-ip>:8444/1.0/metrics | grep -i "cluster\|member"
+      # 若实际指标为 incus_cluster_member_status 则需修改此处
       - alert: IncusNodeOffline
         expr: incus_node_status != 1
         for: 1m

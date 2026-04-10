@@ -86,6 +86,16 @@ groups:
           summary: "Ceph PG 持续降级"
           description: "已有 {{ $value }} 个 PG 降级超过 15 分钟，数据冗余受到威胁，需要立即处理。"
 
+      # ── MON Quorum 丢失 ─────────────────────────────────
+      - alert: CephMonQuorumLost
+        expr: ceph_mon_quorum_status != 1
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Ceph MON 失去 Quorum"
+          description: "MON {{ $labels.ceph_daemon }} 已脱离 Quorum 超过 1 分钟，3 节点集群中任一 MON 丢失即有 Quorum 风险。"
+
       # ── Ceph 集群健康 ──────────────────────────────────
       - alert: CephHealthWarning
         expr: ceph_health_status == 1

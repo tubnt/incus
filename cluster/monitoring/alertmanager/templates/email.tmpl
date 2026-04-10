@@ -30,14 +30,14 @@
       <tr><th>告警名称</th><td>{{ .Labels.alertname }}</td></tr>
       <tr><th>级别</th><td>{{ .Labels.severity }}</td></tr>
       <tr><th>节点</th><td>{{ .Labels.instance }}{{ if .Labels.node }} ({{ .Labels.node }}){{ end }}</td></tr>
-      <tr><th>当前值</th><td>{{ if .Annotations.description }}{{ .Annotations.description }}{{ else }}N/A{{ end }}</td></tr>
+      <tr><th>当前值</th><td>{{ if .Annotations.description }}{{ .Annotations.description | html }}{{ else }}N/A{{ end }}</td></tr>
       <tr><th>触发时间</th><td>{{ .StartsAt.Local.Format "2006-01-02 15:04:05" }}</td></tr>
       {{ if eq .Status "resolved" }}
       <tr><th>恢复时间</th><td>{{ .EndsAt.Local.Format "2006-01-02 15:04:05" }}</td></tr>
       {{ end }}
     </table>
     {{ if .Annotations.summary }}
-    <p><strong>摘要：</strong>{{ .Annotations.summary }}</p>
+    <p><strong>摘要：</strong>{{ .Annotations.summary | html }}</p>
     {{ end }}
   </div>
   {{ end }}

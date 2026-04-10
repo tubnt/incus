@@ -57,8 +57,10 @@ incus list --project customers
 # 查看 VM 详情
 incus info <vm> --project customers
 
-# 查看 VM 资源使用
+# 查看节点资源总览
 incus info --resources
+# 查看指定 VM 资源使用
+incus info <vm> --project customers --resources
 ```
 
 ### 2.2 Ceph 存储
@@ -281,7 +283,7 @@ bash scripts/backup-dmcrypt-keys.sh
 ```bash
 # 备份（在 Paymenter 所在机器上）
 # 先加载环境变量（MYSQL_ROOT_PASSWORD 在 Paymenter 的 .env 中定义）
-source paymenter/.env
+source /opt/paymenter/.env
 docker exec paymenter-db mysqldump -u root -p"${MYSQL_ROOT_PASSWORD}" \
   paymenter > /backup/paymenter-$(date +%Y%m%d).sql
 

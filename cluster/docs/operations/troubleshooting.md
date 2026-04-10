@@ -58,7 +58,9 @@ ping 202.151.179.XXX   # 公网
 ping 10.0.10.X         # 管理网
 
 # 2. 尝试通过 IPMI/BMC 重启（如果有）
-ipmitool -H <bmc-ip> -U admin -P <password> power cycle
+# IPMI_PASSWORD 从密码管理器获取，避免明文出现在 bash 历史
+export IPMI_PASSWORD='<从密码管理器获取>'
+ipmitool -H <bmc-ip> -U admin -E power cycle
 
 # 3. 如果无法恢复，手动疏散
 incus cluster evacuate <故障节点>

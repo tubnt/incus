@@ -10,14 +10,24 @@ ExecStart=/opt/incus-cluster/cluster/scripts/self-healing-webhook.sh
 Restart=on-failure
 RestartSec=10
 
+# 以专用用户运行，减少攻击面（需提前创建: useradd -r -s /sbin/nologin incus-webhook）
+# 所需 sudo 权限通过 /etc/sudoers.d/incus-webhook 精细授权
+User=incus-webhook
+Group=incus-webhook
+
 # 环境变量
 Environment=WEBHOOK_PORT=9095
 Environment=WEBHOOK_BIND=127.0.0.1
 Environment=ALLOWED_IPS=127.0.0.1
+# Webhook 认证令牌 — 防止本地 SSRF 伪造请求
+# 实际值在 /etc/default/self-healing-webhook 或 EnvironmentFile 中配置
+Environment=WEBHOOK_AUTH_TOKEN=
+EnvironmentFile=-/etc/default/self-healing-webhook
 
 # 安全加固
 NoNewPrivileges=yes
-ProtectSystem=full
+ProtectSystem=strict
+ReadWritePaths=/var/log
 ProtectHome=yes
 PrivateTmp=yes
 

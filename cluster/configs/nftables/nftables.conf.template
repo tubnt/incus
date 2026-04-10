@@ -98,15 +98,19 @@ table inet host_filter {
         # MGR Dashboard/Prometheus: 9283 — 仅管理网
         ip saddr __MGMT_NET__ tcp dport 9283 accept
 
+        # --- WireGuard ---
+        udp dport 51820 accept
+
         # --- 集群内部通信 ---
-        # Incus 集群内部通信（管理网节点间）
-        ip saddr __MGMT_NET__ accept
+        # ★ 绑定物理接口，防止公网口源 IP 欺骗绕过（anti-spoofing）
+        # 管理网仅从 VLAN 10 接口进入
+        iif "eno1.10" ip saddr __MGMT_NET__ accept
 
-        # Ceph Public 网段节点间通信
-        ip saddr __CEPH_PUBLIC__ accept
+        # Ceph Public 仅从 VLAN 20 接口进入
+        iif "eno1.20" ip saddr __CEPH_PUBLIC__ accept
 
-        # Ceph Cluster 网段节点间通信
-        ip saddr __CEPH_CLUSTER__ accept
+        # Ceph Cluster 仅从 eno2 接口进入
+        iif "eno2" ip saddr __CEPH_CLUSTER__ accept
 
         # 默认 drop（policy）
         counter drop
@@ -115,6 +119,8 @@ table inet host_filter {
     chain forward {
         type filter hook forward priority 0; policy accept;
         # 宿主机转发由 bridge filter 和 Incus ACL 处理
+        # 丢弃无效连接追踪包，防止非法包穿透
+        ct state invalid drop
     }
 
     chain output {

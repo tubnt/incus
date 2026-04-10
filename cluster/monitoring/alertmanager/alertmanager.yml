@@ -78,7 +78,7 @@ receivers:
     webhook_configs:
       - url: "${ALERT_WEBHOOK_URL}"
         send_resolved: true
-        max_alerts: 0
+        max_alerts: 20
         http_config:
           authorization:
             credentials: "${ALERT_WEBHOOK_TOKEN}"
@@ -98,5 +98,6 @@ receivers:
           Subject: "[P1 警告] {{ .GroupLabels.alertname }} - {{ .Status }}"
         html: '{{ template "email.html" . }}'
 
-  # P2: 空接收器（仅 Grafana 面板展示）
+  # P2: 空接收器（仅 Grafana 面板展示，不发送通知）
   - name: p2-silence
+    webhook_configs: []

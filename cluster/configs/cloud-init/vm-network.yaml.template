@@ -1,11 +1,14 @@
-#cloud-config
 # VM 网络配置模板（静态 IP）
-# 变量: ${IP}, ${SUBNET_MASK}, ${GATEWAY}, ${DNS1}, ${DNS2}
+# 用途：通过 incus launch --config user.network-config= 注入
+# 变量: ${IP}, ${PREFIX_LENGTH}（CIDR 前缀长度，如 27）, ${GATEWAY}, ${DNS1}, ${DNS2}
+#
+# ⚠ 注意：此文件是 network-config 格式，不能以 #cloud-config 开头
+#   #cloud-config 仅用于 user-data，误用会导致 cloud-init 解析失败
 network:
   version: 2
   ethernets:
     enp5s0:
-      addresses: [${IP}/${SUBNET_MASK}]
+      addresses: [${IP}/${PREFIX_LENGTH}]
       routes:
         - to: default
           via: ${GATEWAY}
