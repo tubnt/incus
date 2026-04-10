@@ -42,6 +42,13 @@ check_prerequisites() {
 # ============================================================
 generate_keypair() {
     local name="$1"
+
+    # 防止路径穿越：名称仅允许字母数字._-
+    if [[ ! "$name" =~ ^[a-zA-Z0-9._-]+$ ]]; then
+        log_error "密钥名称包含非法字符: ${name}（仅允许字母数字._-）"
+        exit 1
+    fi
+
     local key_dir="${WG_CONFIG_DIR}/keys"
     mkdir -p "$key_dir"
     chmod 700 "$key_dir"
@@ -49,13 +56,15 @@ generate_keypair() {
     if [[ -f "${key_dir}/${name}.key" ]]; then
         log_warn "密钥已存在: ${name}，跳过生成"
     else
-        wg genkey | tee "${key_dir}/${name}.key" | wg pubkey > "${key_dir}/${name}.pub"
+        # 私钥直接写入文件，不经过 stdout，防止泄露
+        wg genkey > "${key_dir}/${name}.key"
         chmod 600 "${key_dir}/${name}.key"
+        wg pubkey < "${key_dir}/${name}.key" > "${key_dir}/${name}.pub"
         log_info "已生成密钥对: ${name}"
     fi
 
-    echo "私钥: ${key_dir}/${name}.key"
-    echo "公钥: $(cat "${key_dir}/${name}.pub")"
+    log_info "密钥路径: ${key_dir}/${name}.key"
+    log_info "公钥: $(cat "${key_dir}/${name}.pub")"
 }
 
 # ============================================================
@@ -101,8 +110,10 @@ add_peer() {
         log_error "公钥格式无效: ${peer_pubkey}（应为 44 字符 Base64）"
         exit 1
     fi
-    if [[ ! "$peer_endpoint" =~ ^[a-zA-Z0-9._:-]+$ ]]; then
-        log_error "Endpoint 格式无效: ${peer_endpoint}"
+    # Endpoint 必须是 host 或 IP（不含端口），端口由 WG_PORT 统一指定
+    if [[ ! "$peer_endpoint" =~ ^[a-zA-Z0-9._-]+$ ]] && \
+       [[ ! "$peer_endpoint" =~ ^\[?[0-9a-fA-F:]+\]?$ ]]; then
+        log_error "Endpoint 格式无效: ${peer_endpoint}（应为主机名或 IP，不含端口）"
         exit 1
     fi
     if [[ ! "$peer_allowed_ips" =~ ^[0-9a-fA-F.:,/ ]+$ ]]; then
@@ -134,6 +145,12 @@ EOF
 setup_server() {
     local node_name="${1:?用法: setup-server <节点名> <隧道IP>}"
     local wg_address="${2:?用法: setup-server <节点名> <隧道IP>}"
+
+    # 节点名校验（generate_keypair 内部也会校验，此处提前报错给出更明确的上下文）
+    if [[ ! "$node_name" =~ ^[a-zA-Z0-9._-]+$ ]]; then
+        log_error "节点名称包含非法字符: ${node_name}（仅允许字母数字._-）"
+        exit 1
+    fi
 
     log_info "生成 ${node_name} 端密钥..."
     generate_keypair "$node_name"

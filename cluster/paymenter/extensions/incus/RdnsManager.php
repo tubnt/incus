@@ -459,6 +459,11 @@ class RdnsManager
 
     private function route53ChangeBatchXml(string $action, string $name, string $value, int $ttl): string
     {
+        // 白名单校验 action，防御性编程防止 XML 注入
+        if (!in_array($action, ['CREATE', 'DELETE', 'UPSERT'], true)) {
+            throw new \InvalidArgumentException("非法的 Route53 action: {$action}");
+        }
+
         $name = htmlspecialchars($name, ENT_XML1, 'UTF-8');
         $value = htmlspecialchars($value, ENT_XML1, 'UTF-8');
 
