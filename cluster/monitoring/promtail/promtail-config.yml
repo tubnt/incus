@@ -1,0 +1,31 @@
+server:
+  http_listen_port: 9080
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  # ── syslog ──
+  - job_name: syslog
+    static_configs:
+      - targets: [localhost]
+        labels:
+          job: syslog
+          node_name: ${HOSTNAME}
+          __path__: /var/log/syslog
+
+  # ── journald ──
+  - job_name: journal
+    journal:
+      max_age: 12h
+      labels:
+        job: journal
+        node_name: ${HOSTNAME}
+    relabel_configs:
+      - source_labels: ["__journal__systemd_unit"]
+        target_label: unit
+      - source_labels: ["__journal_priority_keyword"]
+        target_label: priority

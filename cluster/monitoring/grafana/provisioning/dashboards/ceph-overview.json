@@ -1,0 +1,127 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "title": "集群存储使用率",
+      "type": "gauge",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 75 },
+              { "color": "red", "value": 85 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "ceph_cluster_total_used_bytes / ceph_cluster_total_bytes * 100",
+          "legendFormat": "使用率"
+        }
+      ]
+    },
+    {
+      "title": "OSD 状态",
+      "type": "stat",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "" },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "options": { "0": { "text": "Down", "color": "red" }, "1": { "text": "Up", "color": "green" } }, "type": "value" }
+          ]
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "ceph_osd_up",
+          "legendFormat": "{{ ceph_daemon }}"
+        }
+      ]
+    },
+    {
+      "title": "集群 IOPS",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "" },
+      "fieldConfig": {
+        "defaults": { "unit": "iops" },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(ceph_osd_op_r[5m]))",
+          "legendFormat": "读 IOPS"
+        },
+        {
+          "expr": "sum(rate(ceph_osd_op_w[5m]))",
+          "legendFormat": "写 IOPS"
+        }
+      ]
+    },
+    {
+      "title": "PG 状态",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "" },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "ceph_pg_active",
+          "legendFormat": "active"
+        },
+        {
+          "expr": "ceph_pg_degraded",
+          "legendFormat": "degraded"
+        },
+        {
+          "expr": "ceph_pg_undersized",
+          "legendFormat": "undersized"
+        }
+      ]
+    },
+    {
+      "title": "OSD 延迟",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "" },
+      "fieldConfig": {
+        "defaults": { "unit": "ms" },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "avg(ceph_osd_apply_latency_ms)",
+          "legendFormat": "apply 延迟"
+        },
+        {
+          "expr": "avg(ceph_osd_commit_latency_ms)",
+          "legendFormat": "commit 延迟"
+        }
+      ]
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["ceph", "overview"],
+  "templating": { "list": [] },
+  "time": { "from": "now-1h", "to": "now" },
+  "title": "Ceph 概览",
+  "uid": "ceph-overview"
+}

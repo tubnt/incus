@@ -1,0 +1,106 @@
+groups:
+  # ── 节点资源告警 ──
+  - name: node_alerts
+    rules:
+      - alert: NodeCpuHigh
+        expr: 100 - (avg by(node_name) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "节点 {{ $labels.node_name }} CPU 使用率过高"
+          description: "CPU 使用率 {{ $value | printf \"%.1f\" }}% 持续超过 80%"
+
+      - alert: NodeCpuCritical
+        expr: 100 - (avg by(node_name) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 95
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "节点 {{ $labels.node_name }} CPU 使用率严重过高"
+          description: "CPU 使用率 {{ $value | printf \"%.1f\" }}% 持续超过 95%"
+
+      - alert: NodeMemoryHigh
+        expr: (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "节点 {{ $labels.node_name }} 内存使用率过高"
+          description: "内存使用率 {{ $value | printf \"%.1f\" }}%"
+
+      - alert: NodeMemoryCritical
+        expr: (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100 > 95
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "节点 {{ $labels.node_name }} 内存严重不足"
+          description: "内存使用率 {{ $value | printf \"%.1f\" }}%"
+
+      - alert: NodeDiskHigh
+        expr: (1 - node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}) * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "节点 {{ $labels.node_name }} 磁盘空间不足"
+          description: "根分区使用率 {{ $value | printf \"%.1f\" }}%"
+
+      - alert: NodeDown
+        expr: up{job="node_exporter"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "节点 {{ $labels.node_name }} 不可达"
+          description: "node_exporter 无法采集超过 2 分钟"
+
+  # ── Ceph 告警 ──
+  - name: ceph_alerts
+    rules:
+      - alert: CephStorageHigh
+        expr: ceph_cluster_total_used_bytes / ceph_cluster_total_bytes * 100 > 75
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Ceph 存储使用率超过 75%"
+          description: "当前使用率 {{ $value | printf \"%.1f\" }}%"
+
+      - alert: CephStorageCritical
+        expr: ceph_cluster_total_used_bytes / ceph_cluster_total_bytes * 100 > 85
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Ceph 存储使用率超过 85%，需要扩容"
+          description: "当前使用率 {{ $value | printf \"%.1f\" }}%"
+
+      - alert: CephOsdDown
+        expr: ceph_osd_up == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Ceph OSD {{ $labels.ceph_daemon }} 宕机"
+
+      - alert: CephPgDegraded
+        expr: ceph_pg_degraded > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Ceph 存在降级 PG"
+          description: "降级 PG 数量: {{ $value }}"
+
+  # ── Incus 告警 ──
+  - name: incus_alerts
+    rules:
+      - alert: IncusNodeDown
+        expr: up{job="incus"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Incus 节点 {{ $labels.node_name }} metrics 不可达"

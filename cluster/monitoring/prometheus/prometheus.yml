@@ -1,0 +1,112 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+scrape_configs:
+  # ── Prometheus 自身 ──
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # ── node_exporter（5 节点宿主机指标） ──
+  - job_name: node_exporter
+    static_configs:
+      - targets:
+          - 202.151.179.226:9100
+          - 202.151.179.227:9100
+          - 202.151.179.228:9100
+          - 202.151.179.229:9100
+          - 202.151.179.230:9100
+        labels:
+          cluster: incus-prod
+    relabel_configs:
+      - source_labels: [__address__]
+        regex: "202.151.179.226:.*"
+        target_label: node_name
+        replacement: node1
+      - source_labels: [__address__]
+        regex: "202.151.179.227:.*"
+        target_label: node_name
+        replacement: node2
+      - source_labels: [__address__]
+        regex: "202.151.179.228:.*"
+        target_label: node_name
+        replacement: node3
+      - source_labels: [__address__]
+        regex: "202.151.179.229:.*"
+        target_label: node_name
+        replacement: node4
+      - source_labels: [__address__]
+        regex: "202.151.179.230:.*"
+        target_label: node_name
+        replacement: node5
+
+  # ── Ceph MGR Prometheus 模块 ──
+  - job_name: ceph
+    static_configs:
+      - targets:
+          - 202.151.179.226:9283
+          - 202.151.179.227:9283
+          - 202.151.179.228:9283
+        labels:
+          cluster: incus-prod
+    relabel_configs:
+      - source_labels: [__address__]
+        regex: "202.151.179.226:.*"
+        target_label: node_name
+        replacement: node1
+      - source_labels: [__address__]
+        regex: "202.151.179.227:.*"
+        target_label: node_name
+        replacement: node2
+      - source_labels: [__address__]
+        regex: "202.151.179.228:.*"
+        target_label: node_name
+        replacement: node3
+
+  # ── Incus /1.0/metrics（mTLS） ──
+  - job_name: incus
+    scheme: https
+    tls_config:
+      cert_file: /etc/prometheus/incus-cert/metrics.crt
+      key_file: /etc/prometheus/incus-cert/metrics.key
+      # Incus 自签证书，跳过 CA 验证
+      insecure_skip_verify: true
+    static_configs:
+      - targets:
+          - 202.151.179.226:8444
+          - 202.151.179.227:8444
+          - 202.151.179.228:8444
+          - 202.151.179.229:8444
+          - 202.151.179.230:8444
+        labels:
+          cluster: incus-prod
+    relabel_configs:
+      - source_labels: [__address__]
+        regex: "202.151.179.226:.*"
+        target_label: node_name
+        replacement: node1
+      - source_labels: [__address__]
+        regex: "202.151.179.227:.*"
+        target_label: node_name
+        replacement: node2
+      - source_labels: [__address__]
+        regex: "202.151.179.228:.*"
+        target_label: node_name
+        replacement: node3
+      - source_labels: [__address__]
+        regex: "202.151.179.229:.*"
+        target_label: node_name
+        replacement: node4
+      - source_labels: [__address__]
+        regex: "202.151.179.230:.*"
+        target_label: node_name
+        replacement: node5
