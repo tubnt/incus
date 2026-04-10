@@ -1,0 +1,79 @@
+# 节点告警规则 — CPU / 内存 / 磁盘
+# 对应 PLAN-002 容量水位线定义
+
+groups:
+  - name: node_capacity
+    rules:
+      # ── CPU ──────────────────────────────────────────────
+      - alert: NodeCpuWarning
+        expr: |
+          (1 - avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m]))) * 100 > 80
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "节点 CPU 使用率过高"
+          description: "节点 {{ $labels.instance }} CPU 使用率 {{ $value | printf \"%.1f\" }}%，已超过 80% 持续 10 分钟。"
+
+      - alert: NodeCpuCritical
+        expr: |
+          (1 - avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m]))) * 100 > 95
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "节点 CPU 使用率严重过高"
+          description: "节点 {{ $labels.instance }} CPU 使用率 {{ $value | printf \"%.1f\" }}%，已超过 95% 持续 5 分钟，需要扩容或迁移 VM。"
+
+      # ── 内存 ────────────────────────────────────────────
+      - alert: NodeMemoryWarning
+        expr: |
+          (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "节点内存使用率过高"
+          description: "节点 {{ $labels.instance }} 内存使用率 {{ $value | printf \"%.1f\" }}%，已超过 85%。"
+
+      - alert: NodeMemoryCritical
+        expr: |
+          (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100 > 95
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "节点内存使用率严重过高"
+          description: "节点 {{ $labels.instance }} 内存使用率 {{ $value | printf \"%.1f\" }}%，已超过 95%，需要扩容。"
+
+      # ── 宿主机磁盘（非 Ceph，系统盘）─────────────────────
+      - alert: NodeDiskWarning
+        expr: |
+          (1 - node_filesystem_avail_bytes{mountpoint="/",fstype!="tmpfs"} / node_filesystem_size_bytes) * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "节点系统盘空间不足"
+          description: "节点 {{ $labels.instance }} 系统盘使用率 {{ $value | printf \"%.1f\" }}%，可清理 journald + apt 缓存。"
+
+  - name: node_availability
+    rules:
+      # ── 节点离线 ────────────────────────────────────────
+      - alert: NodeDown
+        expr: up{job="node-exporter"} == 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "节点离线"
+          description: "节点 {{ $labels.instance }} 已离线超过 1 分钟。"
+
+      - alert: NodeDownCritical
+        expr: up{job="node-exporter"} == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "节点持续离线"
+          description: "节点 {{ $labels.instance }} 已离线超过 5 分钟，可能需要人工干预。"

@@ -1,0 +1,17 @@
+{{ define "webhook.title" }}
+{{ if eq .Status "resolved" }}[已恢复]{{ else }}[{{ .CommonLabels.severity | toUpper }}]{{ end }} {{ .CommonLabels.alertname }}
+{{ end }}
+
+{{ define "webhook.text" }}
+{{ if eq .Status "resolved" }}✅ 告警已恢复{{ else if eq .CommonLabels.severity "critical" }}🔴 P0 严重告警{{ else }}🟠 P1 警告{{ end }}
+
+{{ range .Alerts }}
+告警: {{ .Labels.alertname }}
+级别: {{ .Labels.severity }}
+节点: {{ .Labels.instance }}{{ if .Labels.node }} ({{ .Labels.node }}){{ end }}
+时间: {{ .StartsAt.Local.Format "2006-01-02 15:04:05" }}
+{{ if .Annotations.summary }}摘要: {{ .Annotations.summary }}{{ end }}
+{{ if .Annotations.description }}详情: {{ .Annotations.description }}{{ end }}
+---
+{{ end }}
+{{ end }}

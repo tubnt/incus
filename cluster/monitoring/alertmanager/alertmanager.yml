@@ -1,18 +1,99 @@
+# Alertmanager 分级路由配置
+# P0 (critical) → webhook + 邮件
+# P1 (warning)  → 邮件
+# P2 (info)     → 静默（仅 Grafana 面板展示）
+
 global:
   resolve_timeout: 5m
+  # SMTP 配置 — 从环境变量或直接修改
+  smtp_smarthost: "${SMTP_HOST}:${SMTP_PORT}"
+  smtp_from: "${SMTP_FROM}"
+  smtp_auth_username: "${SMTP_USERNAME}"
+  smtp_auth_password: "${SMTP_PASSWORD}"
+  smtp_require_tls: true
 
+templates:
+  - "/etc/alertmanager/templates/*.tmpl"
+
+# ── 抑制规则 ─────────────────────────────────────────────
+# critical 触发时抑制同指标的 warning
+inhibit_rules:
+  - source_matchers:
+      - severity = critical
+    target_matchers:
+      - severity = warning
+    equal:
+      - alertname
+      - instance
+
+# ── 路由 ─────────────────────────────────────────────────
 route:
-  group_by: ["alertname", "node_name"]
+  receiver: default-email
+  group_by: ["alertname", "severity", "instance"]
   group_wait: 30s
   group_interval: 5m
   repeat_interval: 4h
-  receiver: default
-  routes:
-    - match:
-        severity: critical
-      receiver: default
-      repeat_interval: 1h
 
+  routes:
+    # P0: critical → webhook + 邮件
+    - matchers:
+        - severity = critical
+      receiver: p0-critical
+      group_wait: 10s
+      group_interval: 1m
+      repeat_interval: 1h
+      continue: false
+
+    # P1: warning → 邮件
+    - matchers:
+        - severity = warning
+      receiver: p1-warning
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 4h
+      continue: false
+
+    # P2: info → 静默（不发送通知，仅 Grafana 展示）
+    - matchers:
+        - severity = info
+      receiver: p2-silence
+      group_wait: 1m
+      group_interval: 30m
+      repeat_interval: 24h
+      continue: false
+
+# ── 接收器 ───────────────────────────────────────────────
 receivers:
-  - name: default
-    # TODO: 配置实际告警通知渠道（webhook / 邮件 / 企业微信等）
+  # 默认：邮件
+  - name: default-email
+    email_configs:
+      - to: "${ALERT_EMAIL_TO}"
+        send_resolved: true
+        headers:
+          Subject: "[告警] {{ .GroupLabels.alertname }} - {{ .Status }}"
+        html: '{{ template "email.html" . }}'
+
+  # P0: webhook（可对接 Telegram/钉钉）+ 邮件
+  - name: p0-critical
+    webhook_configs:
+      - url: "${ALERT_WEBHOOK_URL}"
+        send_resolved: true
+        max_alerts: 0
+    email_configs:
+      - to: "${ALERT_EMAIL_TO}"
+        send_resolved: true
+        headers:
+          Subject: "[P0 严重] {{ .GroupLabels.alertname }} - {{ .Status }}"
+        html: '{{ template "email.html" . }}'
+
+  # P1: 邮件
+  - name: p1-warning
+    email_configs:
+      - to: "${ALERT_EMAIL_TO}"
+        send_resolved: true
+        headers:
+          Subject: "[P1 警告] {{ .GroupLabels.alertname }} - {{ .Status }}"
+        html: '{{ template "email.html" . }}'
+
+  # P2: 空接收器（仅 Grafana 面板展示）
+  - name: p2-silence

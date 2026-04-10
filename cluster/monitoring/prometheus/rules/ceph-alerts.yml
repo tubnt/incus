@@ -1,0 +1,106 @@
+# Ceph 告警规则 — 存储容量 / OSD / PG
+# 对应 PLAN-002 容量水位线定义
+
+groups:
+  - name: ceph_capacity
+    rules:
+      # ── Ceph 总存储 ────────────────────────────────────
+      - alert: CephStorageWarning
+        expr: |
+          ceph_cluster_total_used_bytes / ceph_cluster_total_bytes * 100 > 75
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Ceph 存储空间使用率过高"
+          description: "Ceph 集群存储使用率 {{ $value | printf \"%.1f\" }}%，已超过 75%，需要规划加 OSD。"
+
+      - alert: CephStorageCritical
+        expr: |
+          ceph_cluster_total_used_bytes / ceph_cluster_total_bytes * 100 > 85
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Ceph 存储空间严重不足"
+          description: "Ceph 集群存储使用率 {{ $value | printf \"%.1f\" }}%，已超过 85%，需要立即加 OSD。"
+
+      # ── 单 OSD 使用率 ──────────────────────────────────
+      - alert: CephOsdUsageWarning
+        expr: |
+          ceph_osd_stat_bytes_used / ceph_osd_stat_bytes * 100 > 80
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "单 OSD 使用率过高"
+          description: "OSD {{ $labels.ceph_daemon }} 使用率 {{ $value | printf \"%.1f\" }}%，已超过 80%，需要 rebalance。"
+
+      - alert: CephOsdUsageCritical
+        expr: |
+          ceph_osd_stat_bytes_used / ceph_osd_stat_bytes * 100 > 90
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "单 OSD 使用率严重过高"
+          description: "OSD {{ $labels.ceph_daemon }} 使用率 {{ $value | printf \"%.1f\" }}%，已超过 90%，需要立即 rebalance。"
+
+  - name: ceph_availability
+    rules:
+      # ── OSD down ───────────────────────────────────────
+      - alert: CephOsdDown
+        expr: ceph_osd_up == 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Ceph OSD 离线"
+          description: "OSD {{ $labels.ceph_daemon }} 已离线超过 1 分钟，尝试自动重启。"
+
+      - alert: CephOsdDownCritical
+        expr: ceph_osd_up == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Ceph OSD 持续离线"
+          description: "OSD {{ $labels.ceph_daemon }} 已离线超过 5 分钟，自动重启失败，需要人工干预。"
+
+      # ── PG 降级 ────────────────────────────────────────
+      - alert: CephPgDegraded
+        expr: ceph_pg_degraded > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Ceph PG 降级"
+          description: "当前有 {{ $value }} 个降级 PG，未达到 size=3 副本要求。"
+
+      - alert: CephPgDegradedCritical
+        expr: ceph_pg_degraded > 0
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Ceph PG 持续降级"
+          description: "已有 {{ $value }} 个 PG 降级超过 15 分钟，数据冗余受到威胁，需要立即处理。"
+
+      # ── Ceph 集群健康 ──────────────────────────────────
+      - alert: CephHealthWarning
+        expr: ceph_health_status == 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Ceph 集群状态 HEALTH_WARN"
+          description: "Ceph 集群健康状态为 HEALTH_WARN，请检查详细信息。"
+
+      - alert: CephHealthError
+        expr: ceph_health_status == 2
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Ceph 集群状态 HEALTH_ERR"
+          description: "Ceph 集群健康状态为 HEALTH_ERR，需要立即处理。"

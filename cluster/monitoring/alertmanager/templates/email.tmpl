@@ -1,0 +1,50 @@
+{{ define "email.html" }}
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  body { font-family: -apple-system, sans-serif; margin: 0; padding: 20px; background: #f5f5f5; }
+  .container { max-width: 600px; margin: 0 auto; background: #fff; border-radius: 8px; overflow: hidden; }
+  .header { padding: 16px 20px; color: #fff; }
+  .header-critical { background: #dc3545; }
+  .header-warning { background: #fd7e14; }
+  .header-info { background: #0dcaf0; }
+  .header-resolved { background: #198754; }
+  .content { padding: 20px; }
+  table { width: 100%; border-collapse: collapse; margin: 12px 0; }
+  th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid #eee; }
+  th { background: #f8f9fa; font-weight: 600; width: 30%; }
+  .footer { padding: 12px 20px; background: #f8f9fa; color: #6c757d; font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="container">
+  {{ range .Alerts }}
+  <div class="header {{ if eq .Status "resolved" }}header-resolved{{ else if eq .Labels.severity "critical" }}header-critical{{ else if eq .Labels.severity "warning" }}header-warning{{ else }}header-info{{ end }}">
+    <h2 style="margin:0;">
+      {{ if eq .Status "resolved" }}✅ 已恢复{{ else if eq .Labels.severity "critical" }}🔴 P0 严重告警{{ else if eq .Labels.severity "warning" }}🟠 P1 警告{{ else }}🔵 P2 通知{{ end }}
+    </h2>
+  </div>
+  <div class="content">
+    <table>
+      <tr><th>告警名称</th><td>{{ .Labels.alertname }}</td></tr>
+      <tr><th>级别</th><td>{{ .Labels.severity }}</td></tr>
+      <tr><th>节点</th><td>{{ .Labels.instance }}{{ if .Labels.node }} ({{ .Labels.node }}){{ end }}</td></tr>
+      <tr><th>当前值</th><td>{{ if .Annotations.description }}{{ .Annotations.description }}{{ else }}N/A{{ end }}</td></tr>
+      <tr><th>触发时间</th><td>{{ .StartsAt.Local.Format "2006-01-02 15:04:05" }}</td></tr>
+      {{ if eq .Status "resolved" }}
+      <tr><th>恢复时间</th><td>{{ .EndsAt.Local.Format "2006-01-02 15:04:05" }}</td></tr>
+      {{ end }}
+    </table>
+    {{ if .Annotations.summary }}
+    <p><strong>摘要：</strong>{{ .Annotations.summary }}</p>
+    {{ end }}
+  </div>
+  {{ end }}
+  <div class="footer">
+    此邮件由 Prometheus Alertmanager 自动发送
+  </div>
+</div>
+</body>
+</html>
+{{ end }}

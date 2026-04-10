@@ -1,0 +1,60 @@
+# Incus / VM 告警规则 — 集群节点 / IP 池
+# 对应 PLAN-002 容量水位线定义
+
+groups:
+  - name: incus_cluster
+    rules:
+      # ── Incus 集群节点离线 ──────────────────────────────
+      - alert: IncusNodeOffline
+        expr: incus_node_status != 1
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Incus 集群节点不可达"
+          description: "Incus 节点 {{ $labels.node }} 已离线超过 1 分钟。"
+
+      - alert: IncusNodeOfflineCritical
+        expr: incus_node_status != 1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Incus 集群节点持续不可达"
+          description: "Incus 节点 {{ $labels.node }} 已离线超过 5 分钟，将触发 auto-healing 冷启动 VM 迁移。"
+
+  - name: incus_ip_pool
+    rules:
+      # ── IP 池余量 ──────────────────────────────────────
+      # 需要自定义 exporter 暴露 ip_pool_total / ip_pool_used 指标
+      - alert: IpPoolWarning
+        expr: |
+          (ip_pool_total - ip_pool_used) / ip_pool_total * 100 < 20
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "IP 池余量不足"
+          description: "IP 池 {{ $labels.pool }} 剩余 {{ $value | printf \"%.0f\" }}%，不足 20%，需要规划采购新 IP。"
+
+      - alert: IpPoolCritical
+        expr: |
+          (ip_pool_total - ip_pool_used) / ip_pool_total * 100 < 10
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "IP 池余量严重不足"
+          description: "IP 池 {{ $labels.pool }} 剩余 {{ $value | printf \"%.0f\" }}%，不足 10%，需要立即采购新 IP。"
+
+  - name: incus_vm
+    rules:
+      # ── VM 实例异常 ────────────────────────────────────
+      - alert: IncusVmStopped
+        expr: incus_instance_status{type="virtual-machine"} != 1
+        for: 5m
+        labels:
+          severity: info
+        annotations:
+          summary: "VM 实例非运行状态"
+          description: "VM {{ $labels.name }} 在节点 {{ $labels.node }} 上处于非运行状态超过 5 分钟。"
