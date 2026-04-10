@@ -91,6 +91,11 @@ if [ "$MODE" = "add" ] && [ -n "$NODE_IP" ]; then
     validate_ipv4 "$NODE_IP" || err "无效的 IPv4 地址: ${NODE_IP}"
 fi
 
+# 节点名称仅允许字母、数字、连字符（Incus 命名规范）
+if [ -n "$NODE_NAME" ]; then
+    [[ "$NODE_NAME" =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$ ]] || err "无效的节点名称: ${NODE_NAME}（仅允许字母、数字、连字符）"
+fi
+
 # ─── 通用函数 ────────────────────────────────────────────────
 
 get_cluster_members() {
@@ -134,7 +139,7 @@ add_node() {
     ping -c 1 -W 3 "$NODE_IP" >/dev/null 2>&1 || err "节点 ${NODE_IP} 不可达"
 
     # 检查是否已在集群中
-    if get_cluster_members | grep -q "^${NODE_NAME}$" 2>/dev/null; then
+    if get_cluster_members | grep -qFx "$NODE_NAME" 2>/dev/null; then
         err "节点 ${NODE_NAME} 已在集群中"
     fi
 
@@ -197,7 +202,7 @@ remove_node() {
     fi
 
     # 检查节点是否存在
-    if ! get_cluster_members | grep -q "^${NODE_NAME}$"; then
+    if ! get_cluster_members | grep -qFx "$NODE_NAME"; then
         err "节点 ${NODE_NAME} 不在集群中"
     fi
 
@@ -287,13 +292,13 @@ remove_ceph_osd() {
         return 0
     fi
 
-    # 查找该节点上的 OSD
+    # 查找该节点上的 OSD（通过环境变量传递节点名，避免 shell→Python 注入）
     local osd_ids
     osd_ids=$(ceph osd tree --format json 2>/dev/null | \
-        python3 -c "
-import json, sys
+        TARGET_NODE="$target_node" python3 -c "
+import json, sys, os
 data = json.load(sys.stdin)
-target = '$target_node'
+target = os.environ['TARGET_NODE']
 for node in data.get('nodes', []):
     if node.get('name') == target and node.get('type') == 'host':
         for child_id in node.get('children', []):

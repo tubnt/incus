@@ -10,7 +10,7 @@ use Illuminate\Support\Facades\Log;
 /**
  * 用户级告警管理器
  *
- * 允许用户为自己的 VM 设置阈值告警，支持 CPU / 内存 / 带宽 / 磁盘 等指标。
+ * 允许用户为自己的 VM 设置阈值告警，支持内存 / 磁盘等指标。
  * 防 spam 机制：同一告警 1 小时内不重复通知。
  */
 class UserAlertManager

@@ -2,8 +2,8 @@
 
 namespace Extensions\Incus\CronTasks;
 
-use Extensions\Incus\UserAlertManager;
-use Extensions\Incus\IncusClient;
+use App\Extensions\Incus\UserAlertManager;
+use App\Extensions\Incus\IncusClient;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Log;
 

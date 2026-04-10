@@ -107,19 +107,21 @@ generate_targets() {
   }
 ]"
 
-    # 原子写入目标文件（先写临时文件再 mv，防止 Prometheus 读到半截 JSON）
+    # 原子写入：先写临时文件，校验通过后再 mv，防止无效 JSON 部署到 Prometheus
     local tmp_file="${TARGETS_FILE}.tmp.$$"
     echo "$json" > "$tmp_file"
-    mv -f "$tmp_file" "$TARGETS_FILE"
-    log "目标文件已写入: ${TARGETS_FILE}"
 
-    # 验证 JSON 格式
+    # 验证 JSON 格式（mv 之前校验，失败则不部署）
     if command -v python3 &>/dev/null; then
-        python3 -m json.tool "$TARGETS_FILE" >/dev/null 2>&1 || {
-            err "生成的 JSON 格式无效，请检查"
+        python3 -m json.tool "$tmp_file" >/dev/null 2>&1 || {
+            rm -f "$tmp_file"
+            err "生成的 JSON 格式无效，已丢弃临时文件"
         }
         log "JSON 格式验证通过"
     fi
+
+    mv -f "$tmp_file" "$TARGETS_FILE"
+    log "目标文件已写入: ${TARGETS_FILE}"
 
     # 通知 Prometheus 重载配置（如果运行中）
     reload_prometheus
