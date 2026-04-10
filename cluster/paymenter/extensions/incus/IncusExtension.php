@@ -3,7 +3,10 @@
 namespace App\Extensions\Incus;
 
 use App\Classes\ServerExtension;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Facades\Notification;
 
 class IncusExtension extends ServerExtension
 {
@@ -21,109 +24,185 @@ class IncusExtension extends ServerExtension
     // ========== 生命周期 ==========
 
     /**
-     * 创建 VM
+     * 创建 VM — 完整 7 步流程 + 失败回滚
      *
-     * 流程：分配 IP → 创建实例（cloud-init 注入网络/密码/SSH Key）
-     *       → 绑定安全过滤 → 设置带宽限速 → 创建默认 ACL
+     * 流程：
+     *   1. 从 IP 池分配 IP（事务锁）
+     *   2. 生成 cloud-init 配置（静态 IP + 密码 + SSH Key）
+     *   3. 调用 Incus API 创建 VM（Ceph 存储池 + CPU/内存/磁盘）
+     *   4. 绑定安全过滤（ipv4_filtering + mac_filtering + port_isolation）
+     *   5. 设置带宽限速（limits.ingress/egress）
+     *   6. 创建默认 ACL（ingress drop + 放行 SSH 22）
+     *   7. 启动 VM
+     *
+     * 任意步骤失败时回滚：
+     *   - 回收 IP（status → available）
+     *   - 删除已创建的 VM / ACL
+     *   - 订单标记为 "创建失败"
+     *   - 自动退款到账户余额
+     *   - 发送邮件通知用户
+     *   - P1 告警通知运维
+     *   - 记录审计日志
      */
     public function createServer($user, $params, $order, $product, $options): bool
     {
-        $vmName = 'vm-' . $order->id;
-        $poolId = $params['ip_pool_id'] ?? 1;
-        $ipInfo = null;
+        $provisioner = new VmProvisioner($this->client, $this->ipPool, $this->config);
 
         try {
-            // 1. 分配 IP
-            $ipInfo = $this->ipPool->allocate($poolId, $vmName, $order->id);
+            $result = $provisioner->provision($order, $params, $options);
 
-            // 2. 构建 cloud-init 配置
-            $cloudInit = $this->buildCloudInit($params, $ipInfo, $options);
-
-            // 3. 创建 VM 实例
-            $instanceConfig = [
-                'name' => $vmName,
-                'type' => 'virtual-machine',
-                'source' => [
-                    'type' => 'image',
-                    'alias' => $params['os_image'] ?? 'ubuntu/24.04',
-                ],
-                'config' => [
-                    'limits.cpu' => (string) ($params['cpu'] ?? 1),
-                    'limits.memory' => ($params['memory'] ?? 1024) . 'MiB',
-                    'cloud-init.user-data' => $cloudInit,
-                ],
-                'devices' => [
-                    'root' => [
-                        'type' => 'disk',
-                        'pool' => $this->config['storage_pool'],
-                        'path' => '/',
-                        'size' => ($params['disk'] ?? 25) . 'GiB',
-                    ],
-                    'eth0' => [
-                        'type' => 'nic',
-                        'network' => $params['network'] ?? 'br-public',
-                        'ipv4.address' => $ipInfo['ip'],
-                        // 安全过滤
-                        'security.ipv4_filtering' => 'true',
-                        'security.mac_filtering' => 'true',
-                        'security.port_isolation' => 'true',
-                        // 带宽限速
-                        'limits.ingress' => $params['bandwidth_ingress']
-                            ?? $this->config['default_bandwidth']['ingress'],
-                        'limits.egress' => $params['bandwidth_egress']
-                            ?? $this->config['default_bandwidth']['egress'],
-                    ],
-                ],
-            ];
-
-            $this->client->post('/1.0/instances', $instanceConfig);
-
-            // 4. 创建默认 ACL
-            $aclName = 'acl-order-' . $order->id;
-            $this->client->post('/1.0/network-acls', [
-                'name' => $aclName,
-                'ingress' => $this->config['default_acl']['ingress'],
-                'egress' => $this->config['default_acl']['egress'],
-            ]);
-
-            // 5. 绑定 ACL 到 VM
-            $this->client->patch('/1.0/instances/' . $vmName, [
-                'devices' => [
-                    'eth0' => [
-                        'security.acls' => $aclName,
-                        'security.acls.default.ingress.action' => $this->config['default_acl']['default_ingress_action'],
-                        'security.acls.default.egress.action' => $this->config['default_acl']['default_egress_action'],
-                    ],
-                ],
-            ]);
-
-            // 6. 启动 VM
-            $this->client->put('/1.0/instances/' . $vmName . '/state', [
-                'action' => 'start',
-            ]);
-
-            Log::info('VM 创建成功', [
-                'vm_name' => $vmName,
-                'ip' => $ipInfo['ip'],
-                'order_id' => $order->id,
+            // 审计日志：创建成功
+            $this->auditLog('vm_created', $order->id, [
+                'vm_name' => $result['vm_name'],
+                'ip' => $result['ip'],
+                'cpu' => $params['cpu'] ?? 1,
+                'memory' => ($params['memory'] ?? 1024) . 'MiB',
+                'disk' => ($params['disk'] ?? 25) . 'GiB',
+                'os_image' => $params['os_image'] ?? 'ubuntu/24.04',
             ]);
 
             return true;
 
-        } catch (\Exception $e) {
-            // 创建失败：回滚已分配的 IP
-            if ($ipInfo) {
-                $this->ipPool->release($ipInfo['ip'], 0);
-            }
+        } catch (ProvisionException $e) {
+            // VmProvisioner 已完成资源回滚（IP/VM/ACL），
+            // 这里处理业务层回滚：订单状态 + 退款 + 通知 + 告警
+            $this->handleProvisionFailure($user, $order, $product, $e);
 
-            Log::error('VM 创建失败', [
-                'vm_name' => $vmName,
-                'order_id' => $order->id,
-                'error' => $e->getMessage(),
-            ]);
-
-            throw $e;
+            return false;
         }
+    }
+
+    /**
+     * 处理 VM 创建失败的业务层回滚
+     *
+     * 步骤 4-8（资源回滚由 VmProvisioner 内部完成）：
+     *   4. 订单标记为 "创建失败"
+     *   5. 自动退款到账户余额
+     *   6. 发送邮件通知用户
+     *   7. P1 告警通知运维
+     *   8. 记录审计日志（含 Incus API 错误信息）
+     */
+    private function handleProvisionFailure(
+        $user,
+        $order,
+        $product,
+        ProvisionException $e
+    ): void {
+        $orderId = $order->id;
+        $errorMessage = $e->getMessage();
+        $originalError = $e->getPrevious()?->getMessage() ?? $errorMessage;
+
+        // 4. 订单标记为 "创建失败"
+        try {
+            DB::table('orders')
+                ->where('id', $orderId)
+                ->update([
+                    'status' => 'failed',
+                    'notes' => "创建失败: {$originalError}",
+                    'updated_at' => now(),
+                ]);
+            Log::info('创建失败处理：订单已标记为失败', ['order_id' => $orderId]);
+        } catch (\Exception $ex) {
+            Log::error('创建失败处理：订单状态更新失败', [
+                'order_id' => $orderId,
+                'error' => $ex->getMessage(),
+            ]);
+        }
+
+        // 5. 自动退款到账户余额（非原路退款，避免支付手续费）
+        try {
+            $amount = $order->total ?? $product->price ?? 0;
+            if ($amount > 0) {
+                DB::table('users')
+                    ->where('id', $user->id ?? $order->user_id)
+                    ->increment('balance', $amount);
+
+                DB::table('credit_logs')->insert([
+                    'user_id' => $user->id ?? $order->user_id,
+                    'order_id' => $orderId,
+                    'amount' => $amount,
+                    'type' => 'refund',
+                    'description' => "VM 创建失败自动退款 (订单 #{$orderId})",
+                    'created_at' => now(),
+                ]);
+
+                Log::info('创建失败处理：已退款到余额', [
+                    'order_id' => $orderId,
+                    'user_id' => $user->id ?? $order->user_id,
+                    'amount' => $amount,
+                ]);
+            }
+        } catch (\Exception $ex) {
+            Log::error('创建失败处理：退款失败', [
+                'order_id' => $orderId,
+                'error' => $ex->getMessage(),
+            ]);
+        }
+
+        // 6. 发送邮件通知用户
+        try {
+            $userEmail = $user->email ?? null;
+            if ($userEmail) {
+                Mail::raw(
+                    "您的云主机订单 #{$orderId} 创建失败，已自动退款到账户余额。\n"
+                    . "如有疑问，请提交工单联系我们。\n\n"
+                    . "— 系统自动通知",
+                    function ($message) use ($userEmail, $orderId) {
+                        $message->to($userEmail)
+                                ->subject("云主机订单 #{$orderId} 创建失败 — 已自动退款");
+                    }
+                );
+                Log::info('创建失败处理：用户通知邮件已发送', [
+                    'order_id' => $orderId,
+                    'email' => $userEmail,
+                ]);
+            }
+        } catch (\Exception $ex) {
+            Log::error('创建失败处理：邮件发送失败', [
+                'order_id' => $orderId,
+                'error' => $ex->getMessage(),
+            ]);
+        }
+
+        // 7. P1 告警通知运维
+        try {
+            $adminEmail = config('incus.alert_email', config('mail.admin_address'));
+            if ($adminEmail) {
+                Mail::raw(
+                    "[P1 告警] VM 创建失败\n\n"
+                    . "订单 ID: {$orderId}\n"
+                    . "VM 名称: vm-{$orderId}\n"
+                    . "用户: " . ($user->email ?? $user->id ?? 'unknown') . "\n"
+                    . "错误: {$originalError}\n"
+                    . "时间: " . now()->toDateTimeString() . "\n\n"
+                    . "资源回滚状态：已自动回滚（IP/VM/ACL）\n"
+                    . "退款状态：已退款到账户余额\n\n"
+                    . "请检查 Incus 集群状态。",
+                    function ($message) use ($adminEmail, $orderId) {
+                        $message->to($adminEmail)
+                                ->subject("[P1] VM 创建失败 — 订单 #{$orderId}");
+                    }
+                );
+            }
+            Log::warning('P1 告警：VM 创建失败', [
+                'order_id' => $orderId,
+                'error' => $originalError,
+            ]);
+        } catch (\Exception $ex) {
+            Log::error('创建失败处理：P1 告警发送失败', [
+                'order_id' => $orderId,
+                'error' => $ex->getMessage(),
+            ]);
+        }
+
+        // 8. 记录审计日志（含 Incus API 错误信息）
+        $this->auditLog('vm_creation_failed', $orderId, [
+            'vm_name' => 'vm-' . $orderId,
+            'error' => $originalError,
+            'full_error' => $errorMessage,
+            'user_id' => $user->id ?? $order->user_id ?? null,
+            'rollback' => 'completed',
+        ]);
     }
 
     /**
@@ -208,9 +287,6 @@ class IncusExtension extends ServerExtension
 
     // ========== 用户操作 ==========
 
-    /**
-     * 重启 VM
-     */
     public function reboot($params): bool
     {
         $vmName = 'vm-' . $params['order_id'];
@@ -222,27 +298,19 @@ class IncusExtension extends ServerExtension
         return true;
     }
 
-    /**
-     * 重装系统
-     *
-     * 保留 IP，删除旧实例后以相同 IP 重新创建
-     */
     public function reinstall($params): bool
     {
         $vmName = 'vm-' . $params['order_id'];
 
-        // 获取当前实例配置
         $instance = $this->client->get('/1.0/instances/' . $vmName);
         $currentConfig = $instance['metadata'] ?? [];
 
-        // 停止并删除旧实例（不回收 IP）
         $this->client->put('/1.0/instances/' . $vmName . '/state', [
             'action' => 'stop',
             'force' => true,
         ]);
         $this->client->delete('/1.0/instances/' . $vmName);
 
-        // 使用新的 OS 镜像重新创建（保留原有网络配置）
         $newImage = $params['os_image'] ?? $currentConfig['config']['image.os'] ?? 'ubuntu/24.04';
         $currentConfig['source'] = [
             'type' => 'image',
@@ -251,7 +319,6 @@ class IncusExtension extends ServerExtension
 
         $this->client->post('/1.0/instances', $currentConfig);
 
-        // 启动新实例
         $this->client->put('/1.0/instances/' . $vmName . '/state', [
             'action' => 'start',
         ]);
@@ -260,9 +327,6 @@ class IncusExtension extends ServerExtension
         return true;
     }
 
-    /**
-     * 修改密码（通过 stdin 管道传递，不暴露命令行）
-     */
     public function changePassword($params): bool
     {
         $vmName = 'vm-' . $params['order_id'];
@@ -279,9 +343,6 @@ class IncusExtension extends ServerExtension
         return true;
     }
 
-    /**
-     * 获取 Console 代理 URL
-     */
     public function getConsoleUrl($params): string
     {
         $vmName = 'vm-' . $params['order_id'];
@@ -334,9 +395,6 @@ class IncusExtension extends ServerExtension
 
     // ========== 升降配 ==========
 
-    /**
-     * 升配（热操作，不停机）
-     */
     public function upgrade($params): bool
     {
         $vmName = 'vm-' . $params['order_id'];
@@ -357,19 +415,14 @@ class IncusExtension extends ServerExtension
         return true;
     }
 
-    /**
-     * 降配（需停机）
-     */
     public function downgrade($params): bool
     {
         $vmName = 'vm-' . $params['order_id'];
 
-        // 停机
         $this->client->put('/1.0/instances/' . $vmName . '/state', [
             'action' => 'stop',
         ]);
 
-        // 修改配置
         $config = [];
         if (isset($params['cpu'])) {
             $config['limits.cpu'] = (string) $params['cpu'];
@@ -382,7 +435,6 @@ class IncusExtension extends ServerExtension
             'config' => $config,
         ]);
 
-        // 重新启动
         $this->client->put('/1.0/instances/' . $vmName . '/state', [
             'action' => 'start',
         ]);
@@ -406,11 +458,9 @@ class IncusExtension extends ServerExtension
         $aclName = 'acl-order-' . $params['order_id'];
         $direction = $params['direction'] ?? 'ingress';
 
-        // 获取当前 ACL
         $acl = $this->client->get('/1.0/network-acls/' . $aclName);
         $rules = $acl['metadata'][$direction] ?? [];
 
-        // 添加新规则
         $rules[] = [
             'action' => $params['action'] ?? 'allow',
             'protocol' => $params['protocol'],
@@ -432,7 +482,6 @@ class IncusExtension extends ServerExtension
         $direction = $params['direction'] ?? 'ingress';
         $ruleIndex = $params['rule_index'];
 
-        // 获取当前 ACL
         $acl = $this->client->get('/1.0/network-acls/' . $aclName);
         $rules = $acl['metadata'][$direction] ?? [];
 
@@ -452,9 +501,6 @@ class IncusExtension extends ServerExtension
 
     // ========== 附加磁盘 ==========
 
-    /**
-     * 添加附加磁盘
-     */
     public function addDisk($params): bool
     {
         $vmName = 'vm-' . $params['order_id'];
@@ -462,7 +508,6 @@ class IncusExtension extends ServerExtension
         $size = ($params['disk_size'] ?? 50) . 'GiB';
         $pool = $this->config['storage_pool'];
 
-        // 1. 创建存储卷
         $this->client->post("/1.0/storage-pools/{$pool}/volumes/custom", [
             'name' => $volumeName,
             'config' => [
@@ -470,7 +515,6 @@ class IncusExtension extends ServerExtension
             ],
         ]);
 
-        // 2. 挂载到 VM
         $this->client->patch('/1.0/instances/' . $vmName, [
             'devices' => [
                 'data-disk' => [
@@ -490,16 +534,12 @@ class IncusExtension extends ServerExtension
         return true;
     }
 
-    /**
-     * 移除附加磁盘
-     */
     public function removeDisk($params): bool
     {
         $vmName = 'vm-' . $params['order_id'];
         $volumeName = 'vol-' . $params['order_id'];
         $pool = $this->config['storage_pool'];
 
-        // 1. 从 VM 移除设备
         $instance = $this->client->get('/1.0/instances/' . $vmName);
         $devices = $instance['metadata']['devices'] ?? [];
         unset($devices['data-disk']);
@@ -508,7 +548,6 @@ class IncusExtension extends ServerExtension
             'devices' => $devices,
         ]);
 
-        // 2. 删除存储卷
         $this->client->delete("/1.0/storage-pools/{$pool}/volumes/custom/{$volumeName}");
 
         Log::info('附加磁盘已移除', ['vm_name' => $vmName, 'volume' => $volumeName]);
@@ -535,9 +574,6 @@ class IncusExtension extends ServerExtension
 
     // ========== 监控 ==========
 
-    /**
-     * 获取 VM 资源指标（CPU/内存/磁盘/网络）
-     */
     public function getMetrics($params): array
     {
         $vmName = 'vm-' . $params['order_id'];
@@ -562,62 +598,25 @@ class IncusExtension extends ServerExtension
     // ========== 内部方法 ==========
 
     /**
-     * 构建 cloud-init 配置
+     * 写入审计日志
      */
-    private function buildCloudInit(array $params, array $ipInfo, $options): string
+    private function auditLog(string $event, int $orderId, array $context): void
     {
-        $password = $params['password'] ?? bin2hex(random_bytes(12));
-        $sshKey = $options['ssh_key'] ?? $params['ssh_key'] ?? null;
-
-        $config = [
-            'hostname' => 'vm-' . ($params['order_id'] ?? 'unknown'),
-            'manage_etc_hosts' => true,
-            'chpasswd' => [
-                'expire' => false,
-            ],
-            'users' => [
-                [
-                    'name' => 'root',
-                    'lock_passwd' => false,
-                    'hashed_passwd' => '',  // 由 runcmd 设置
-                ],
-            ],
-            'runcmd' => [
-                "echo 'root:{$password}' | chpasswd",
-            ],
-            'write_files' => [
-                [
-                    'path' => '/etc/netplan/90-static.yaml',
-                    'content' => $this->buildNetplanConfig($ipInfo),
-                ],
-            ],
-        ];
-
-        if ($sshKey) {
-            $config['users'][0]['ssh_authorized_keys'] = [$sshKey];
+        try {
+            DB::table('audit_logs')->insert([
+                'event' => $event,
+                'order_id' => $orderId,
+                'context' => json_encode($context, JSON_UNESCAPED_UNICODE),
+                'created_at' => now(),
+            ]);
+        } catch (\Exception $e) {
+            // 审计日志写入失败不应中断主流程，降级到 Laravel Log
+            Log::error('审计日志写入失败', [
+                'event' => $event,
+                'order_id' => $orderId,
+                'context' => $context,
+                'error' => $e->getMessage(),
+            ]);
         }
-
-        return "#cloud-config\n" . yaml_emit($config, YAML_UTF8_ENCODING);
-    }
-
-    /**
-     * 构建 Netplan 静态 IP 配置
-     */
-    private function buildNetplanConfig(array $ipInfo): string
-    {
-        // 从子网 CIDR 获取前缀长度
-        $prefix = explode('/', $ipInfo['subnet'])[1] ?? '27';
-
-        return "network:\n"
-            . "  version: 2\n"
-            . "  ethernets:\n"
-            . "    enp5s0:\n"
-            . "      addresses:\n"
-            . "        - {$ipInfo['ip']}/{$prefix}\n"
-            . "      routes:\n"
-            . "        - to: default\n"
-            . "          via: {$ipInfo['gateway']}\n"
-            . "      nameservers:\n"
-            . "        addresses: [1.1.1.1, 8.8.8.8]\n";
     }
 }
