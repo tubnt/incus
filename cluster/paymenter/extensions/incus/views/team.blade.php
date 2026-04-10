@@ -100,7 +100,7 @@
                                                 class="block w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-50">
                                             <i class="fas fa-exchange-alt mr-2"></i>更改角色
                                         </button>
-                                        <button onclick="removeMember({{ $team->id }}, {{ $member->user_id }}, '{{ $member->user->name }}')"
+                                        <button onclick="removeMember({{ $team->id }}, {{ $member->user_id }}, @json($member->user->name ?? '未设置昵称'))"
                                                 class="block w-full px-4 py-2 text-left text-sm text-red-600 hover:bg-red-50">
                                             <i class="fas fa-user-minus mr-2"></i>移除成员
                                         </button>

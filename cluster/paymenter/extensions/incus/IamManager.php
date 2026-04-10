@@ -123,19 +123,39 @@ class IamManager
     /**
      * 邀请成员加入团队
      *
-     * @param int    $teamId 团队 ID
-     * @param string $email  被邀请人邮箱
-     * @param string $role   角色：owner/admin/member/viewer
+     * @param int    $callerId 操作者用户 ID
+     * @param int    $teamId   团队 ID
+     * @param string $email    被邀请人邮箱
+     * @param string $role     角色：admin/member/viewer（不允许直接邀请为 owner）
      * @return array 邀请信息
      *
      * @throws \InvalidArgumentException 角色无效时抛出
-     * @throws \RuntimeException 成员已存在时抛出
+     * @throws \RuntimeException 权限不足或成员已存在时抛出
      */
-    public function inviteMember(int $teamId, string $email, string $role = self::ROLE_MEMBER): array
+    public function inviteMember(int $callerId, int $teamId, string $email, string $role = self::ROLE_MEMBER): array
     {
+        // 校验调用者权限
+        if (!$this->checkPermission($callerId, $teamId, 'member.invite')) {
+            throw new \RuntimeException('权限不足：无邀请成员权限');
+        }
+
+        // 不允许通过邀请直接授予 owner 角色
+        if ($role === self::ROLE_OWNER) {
+            throw new \InvalidArgumentException('不能直接邀请为 owner，请使用所有权转移功能');
+        }
+
         // 校验角色
-        if (!in_array($role, [self::ROLE_OWNER, self::ROLE_ADMIN, self::ROLE_MEMBER, self::ROLE_VIEWER])) {
+        if (!in_array($role, [self::ROLE_ADMIN, self::ROLE_MEMBER, self::ROLE_VIEWER])) {
             throw new \InvalidArgumentException("无效的角色: {$role}");
+        }
+
+        // admin 不能邀请 admin（仅 owner 可以）
+        $callerMember = DB::table('team_members')
+            ->where('team_id', $teamId)
+            ->where('user_id', $callerId)
+            ->first();
+        if ($callerMember && $callerMember->role !== self::ROLE_OWNER && $role === self::ROLE_ADMIN) {
+            throw new \RuntimeException('权限不足：仅 owner 可邀请 admin');
         }
 
         // 查找用户
@@ -159,7 +179,7 @@ class IamManager
             'team_id'    => $teamId,
             'user_id'    => $user->id,
             'role'       => $role,
-            'invited_by' => null,
+            'invited_by' => $callerId,
             'joined_at'  => now(),
             'created_at' => now(),
             'updated_at' => now(),
@@ -183,18 +203,35 @@ class IamManager
     /**
      * 移除团队成员
      *
-     * @param int $teamId 团队 ID
-     * @param int $userId 要移除的用户 ID
+     * @param int $callerId 操作者用户 ID
+     * @param int $teamId   团队 ID
+     * @param int $userId   要移除的用户 ID
      * @return bool 是否成功
      *
-     * @throws \RuntimeException 尝试移除 owner 时抛出
+     * @throws \RuntimeException 权限不足或尝试移除 owner 时抛出
      */
-    public function removeMember(int $teamId, int $userId): bool
+    public function removeMember(int $callerId, int $teamId, int $userId): bool
     {
+        // 校验调用者权限
+        if (!$this->checkPermission($callerId, $teamId, 'member.remove')) {
+            throw new \RuntimeException('权限不足：无移除成员权限');
+        }
+
         // 不允许移除团队 owner
         $team = DB::table('teams')->where('id', $teamId)->first();
         if ($team && $team->owner_id === $userId) {
             throw new \RuntimeException('不能移除团队所有者，请先转移所有权');
+        }
+
+        // admin 不能移除其他 admin（仅 owner 可以）
+        $callerMember = DB::table('team_members')
+            ->where('team_id', $teamId)->where('user_id', $callerId)->first();
+        $targetMember = DB::table('team_members')
+            ->where('team_id', $teamId)->where('user_id', $userId)->first();
+        if ($callerMember && $targetMember
+            && $callerMember->role !== self::ROLE_OWNER
+            && $targetMember->role === self::ROLE_ADMIN) {
+            throw new \RuntimeException('权限不足：仅 owner 可移除 admin');
         }
 
         $deleted = DB::table('team_members')
@@ -275,15 +312,44 @@ class IamManager
     /**
      * 更新成员角色
      *
-     * @param int    $teamId 团队 ID
-     * @param int    $userId 用户 ID
-     * @param string $newRole 新角色
+     * @param int    $callerId 操作者用户 ID
+     * @param int    $teamId   团队 ID
+     * @param int    $userId   目标用户 ID
+     * @param string $newRole  新角色：admin/member/viewer（不允许设为 owner）
      * @return bool 是否成功
+     *
+     * @throws \RuntimeException 权限不足时抛出
+     * @throws \InvalidArgumentException 角色无效时抛出
      */
-    public function updateMemberRole(int $teamId, int $userId, string $newRole): bool
+    public function updateMemberRole(int $callerId, int $teamId, int $userId, string $newRole): bool
     {
-        if (!in_array($newRole, [self::ROLE_OWNER, self::ROLE_ADMIN, self::ROLE_MEMBER, self::ROLE_VIEWER])) {
+        // 校验调用者权限
+        if (!$this->checkPermission($callerId, $teamId, 'member.update_role')) {
+            throw new \RuntimeException('权限不足：无更改角色权限');
+        }
+
+        // 不允许通过此方法设置 owner（使用专用的所有权转移功能）
+        if ($newRole === self::ROLE_OWNER) {
+            throw new \InvalidArgumentException('不能通过角色更新设为 owner，请使用所有权转移功能');
+        }
+
+        if (!in_array($newRole, [self::ROLE_ADMIN, self::ROLE_MEMBER, self::ROLE_VIEWER])) {
             throw new \InvalidArgumentException("无效的角色: {$newRole}");
+        }
+
+        // 不允许修改 owner 的角色
+        $targetMember = DB::table('team_members')
+            ->where('team_id', $teamId)->where('user_id', $userId)->first();
+        if ($targetMember && $targetMember->role === self::ROLE_OWNER) {
+            throw new \RuntimeException('不能修改 owner 的角色，请使用所有权转移功能');
+        }
+
+        // admin 不能修改其他 admin 的角色
+        $callerMember = DB::table('team_members')
+            ->where('team_id', $teamId)->where('user_id', $callerId)->first();
+        if ($callerMember && $callerMember->role !== self::ROLE_OWNER
+            && $targetMember && $targetMember->role === self::ROLE_ADMIN) {
+            throw new \RuntimeException('权限不足：仅 owner 可修改 admin 角色');
         }
 
         $updated = DB::table('team_members')

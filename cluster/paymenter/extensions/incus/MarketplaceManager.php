@@ -69,6 +69,12 @@ class MarketplaceManager
      */
     public function getApp(string $appId): ?array
     {
+        // 防止路径穿越：仅允许字母、数字、短横线和下划线
+        if (!preg_match('/^[a-zA-Z0-9_-]+$/', $appId)) {
+            Log::warning("应用 ID 格式非法: {$appId}");
+            return null;
+        }
+
         $filePath = $this->marketplacePath . '/' . $appId . '.json';
 
         if (!File::exists($filePath)) {
@@ -110,13 +116,16 @@ class MarketplaceManager
         $memory = $this->parseMemory($vmConfig['memory'] ?? $app['min_memory'], $app['min_memory']);
         $disk = $this->parseDisk($vmConfig['disk'] ?? $app['min_disk'], $app['min_disk']);
 
-        // 生成实例名称
+        // 生成实例名称（Incus 要求：小写字母开头，仅含字母数字和短横线，最长 63 字符）
         $instanceName = $vmConfig['name'] ?? sprintf(
             'app-%s-%s-%s',
             $appId,
             $userId,
             substr(md5(uniqid()), 0, 6)
         );
+        if (!preg_match('/^[a-z][a-z0-9-]{0,62}$/', $instanceName)) {
+            throw new \InvalidArgumentException('实例名称格式非法：必须以小写字母开头，仅含小写字母、数字和短横线，最长 63 字符');
+        }
 
         // 构建 cloud-init 用户数据
         $cloudInit = $this->buildCloudInit($app);
@@ -187,12 +196,17 @@ class MarketplaceManager
     {
         $script = $app['cloud_init'] ?? '';
 
-        return "#cloud-config\npackage_update: true\npackage_upgrade: true\n\nruncmd:\n" .
-            collect(explode("\n", trim($script)))
-                ->filter()
-                ->map(fn($line) => "  - " . $line)
-                ->implode("\n") .
-            "\n";
+        // 使用 shell 数组形式 [bash, -c, cmd] 避免 YAML 解析歧义
+        // 每条命令用 JSON 风格数组表示，cloud-init 原生支持此格式
+        $lines = collect(explode("\n", trim($script)))
+            ->filter()
+            ->values();
+
+        $runcmd = $lines
+            ->map(fn($cmd) => '  - ' . json_encode(['bash', '-c', $cmd], JSON_UNESCAPED_SLASHES))
+            ->implode("\n");
+
+        return "#cloud-config\npackage_update: true\npackage_upgrade: true\n\nruncmd:\n" . $runcmd . "\n";
     }
 
     /**

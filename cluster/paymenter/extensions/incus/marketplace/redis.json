@@ -7,6 +7,6 @@
     "min_cpu": 1,
     "min_memory": "1024MiB",
     "min_disk": "10GiB",
-    "cloud_init": "apt-get install -y lsb-release gpg\ncurl -fsSL https://packages.redis.io/gpg | gpg --dearmor -o /usr/share/keyrings/redis-archive-keyring.gpg\necho \"deb [signed-by=/usr/share/keyrings/redis-archive-keyring.gpg] https://packages.redis.io/deb $(lsb_release -cs) main\" > /etc/apt/sources.list.d/redis.list\napt-get update\napt-get install -y redis-server\nsed -i 's/^bind .*/bind 0.0.0.0/' /etc/redis/redis.conf\nsed -i 's/^# requirepass .*/requirepass '\"$(openssl rand -base64 24)\"'/' /etc/redis/redis.conf\nsystemctl enable redis-server\nsystemctl restart redis-server",
+    "cloud_init": "apt-get install -y lsb-release gpg\ncurl -fsSL https://packages.redis.io/gpg | gpg --dearmor -o /usr/share/keyrings/redis-archive-keyring.gpg\necho \"deb [signed-by=/usr/share/keyrings/redis-archive-keyring.gpg] https://packages.redis.io/deb $(lsb_release -cs) main\" > /etc/apt/sources.list.d/redis.list\napt-get update\napt-get install -y redis-server\nsed -i 's/^bind .*/bind 127.0.0.1 ::1/' /etc/redis/redis.conf\nsed -i 's/^# requirepass .*/requirepass '\"$(openssl rand -base64 24)\"'/' /etc/redis/redis.conf\nsystemctl enable redis-server\nsystemctl restart redis-server",
     "ports": [6379]
 }
