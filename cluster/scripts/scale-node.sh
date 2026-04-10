@@ -73,6 +73,24 @@ done
 
 [ -z "$MODE" ] && usage
 
+# ─── 输入校验 ────────────────────────────────────────────────
+
+validate_ipv4() {
+    local ip="$1"
+    local IFS='.'
+    read -ra octets <<< "$ip"
+    [ "${#octets[@]}" -eq 4 ] || return 1
+    for octet in "${octets[@]}"; do
+        [[ "$octet" =~ ^[0-9]+$ ]] || return 1
+        [ "$octet" -ge 0 ] && [ "$octet" -le 255 ] || return 1
+    done
+    return 0
+}
+
+if [ "$MODE" = "add" ] && [ -n "$NODE_IP" ]; then
+    validate_ipv4 "$NODE_IP" || err "无效的 IPv4 地址: ${NODE_IP}"
+fi
+
 # ─── 通用函数 ────────────────────────────────────────────────
 
 get_cluster_members() {

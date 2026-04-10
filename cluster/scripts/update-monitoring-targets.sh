@@ -107,8 +107,10 @@ generate_targets() {
   }
 ]"
 
-    # 写入目标文件
-    echo "$json" > "$TARGETS_FILE"
+    # 原子写入目标文件（先写临时文件再 mv，防止 Prometheus 读到半截 JSON）
+    local tmp_file="${TARGETS_FILE}.tmp.$$"
+    echo "$json" > "$tmp_file"
+    mv -f "$tmp_file" "$TARGETS_FILE"
     log "目标文件已写入: ${TARGETS_FILE}"
 
     # 验证 JSON 格式
@@ -126,9 +128,9 @@ generate_targets() {
 # ─── 重载 Prometheus ─────────────────────────────────────────
 
 reload_prometheus() {
-    # 方式 1：发送 SIGHUP
+    # 方式 1：发送 SIGHUP（pkill 可安全处理多 PID）
     if pgrep -x prometheus >/dev/null 2>&1; then
-        kill -HUP "$(pgrep -x prometheus)" 2>/dev/null && {
+        pkill -HUP -x prometheus 2>/dev/null && {
             log "Prometheus 已重载配置 (SIGHUP)"
             return 0
         }
