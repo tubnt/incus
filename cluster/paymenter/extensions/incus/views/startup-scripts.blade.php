@@ -64,7 +64,7 @@
                             <td class="py-3 px-2 text-gray-500">{{ $script->updated_at }}</td>
                             <td class="py-3 px-2 text-right space-x-2">
                                 <button type="button"
-                                        onclick="openEditModal({{ json_encode($script) }})"
+                                        onclick="openEditModal({{ Js::from($script) }})"
                                         class="text-blue-600 hover:text-blue-800 text-sm">
                                     编辑
                                 </button>

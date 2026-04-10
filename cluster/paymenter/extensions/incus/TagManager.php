@@ -54,17 +54,19 @@ class TagManager
             );
         }
 
-        // 写入 Incus config
+        // 先写 Incus（如果失败则不写 DB，保持一致性）
         $currentTags[] = $tag;
         $this->syncTagsToIncus($vmName, $currentTags);
 
-        // 写入本地数据库
-        DB::table('vm_tags')->insert([
-            'vm_name' => $vmName,
-            'tag' => $tag,
-            'user_id' => $userId,
-            'created_at' => now(),
-        ]);
+        // Incus 写入成功后再写数据库
+        DB::transaction(function () use ($vmName, $tag, $userId) {
+            DB::table('vm_tags')->insert([
+                'vm_name' => $vmName,
+                'tag' => $tag,
+                'user_id' => $userId,
+                'created_at' => now(),
+            ]);
+        });
 
         Log::info("VM {$vmName} 添加标签：{$tag}");
     }
@@ -159,22 +161,24 @@ class TagManager
             );
         }
 
-        // 更新 Incus
+        // 先写 Incus（失败则不动 DB）
         $this->syncTagsToIncus($vmName, $tags);
 
-        // 更新数据库：先删后插
-        DB::table('vm_tags')->where('vm_name', $vmName)->delete();
+        // Incus 成功后事务更新数据库
+        DB::transaction(function () use ($vmName, $tags, $userId) {
+            DB::table('vm_tags')->where('vm_name', $vmName)->delete();
 
-        if (!empty($tags)) {
-            $rows = array_map(fn($tag) => [
-                'vm_name' => $vmName,
-                'tag' => $tag,
-                'user_id' => $userId,
-                'created_at' => now(),
-            ], $tags);
+            if (!empty($tags)) {
+                $rows = array_map(fn($tag) => [
+                    'vm_name' => $vmName,
+                    'tag' => $tag,
+                    'user_id' => $userId,
+                    'created_at' => now(),
+                ], $tags);
 
-            DB::table('vm_tags')->insert($rows);
-        }
+                DB::table('vm_tags')->insert($rows);
+            }
+        });
 
         Log::info("VM {$vmName} 标签已更新为：" . implode(', ', $tags));
     }
@@ -217,14 +221,23 @@ class TagManager
     /**
      * 同步标签到 Incus config（user.tags）
      */
+    /**
+     * 同步标签到 Incus config（user.tags），使用 ETag 乐观锁防止竞态覆盖
+     */
     private function syncTagsToIncus(string $vmName, array $tags): void
     {
         $instance = $this->client->request('GET', "/1.0/instances/{$vmName}");
+        $etag = $instance['etag'] ?? '';
         $config = $instance['metadata']['config'] ?? [];
         $config['user.tags'] = implode(',', $tags);
 
+        $headers = [];
+        if ($etag !== '') {
+            $headers['If-Match'] = $etag;
+        }
+
         $this->client->request('PATCH', "/1.0/instances/{$vmName}", [
             'config' => $config,
-        ]);
+        ], $headers);
     }
 }

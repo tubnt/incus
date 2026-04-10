@@ -49,51 +49,37 @@ class RescueMode
         // 停止 VM
         $this->stopVm($vmName);
 
-        // 备份原始启动配置到数据库
         $expiresAt = now()->addSeconds(self::MAX_RESCUE_DURATION);
-        DB::table('vm_rescue_sessions')->insert([
-            'vm_name' => $vmName,
-            'original_boot_image' => $originalConfig['config']['image.description'] ?? '',
-            'original_root_device' => json_encode($originalConfig['devices']['root'] ?? []),
-            'expires_at' => $expiresAt,
-            'created_at' => now(),
-        ]);
 
         // 获取原根盘设备信息
         $rootDevice = $originalConfig['devices']['root'] ?? [];
         $rootPool = $rootDevice['pool'] ?? 'default';
-        $rootPath = $rootDevice['path'] ?? '/';
 
-        // 修改 VM：以 rescue 镜像作为启动盘，原根盘挂载到 /mnt
-        $rescueConfig = [
-            'config' => array_merge($originalConfig['config'] ?? [], [
-                'user.rescue_mode' => 'true',
-                'user.rescue_expires' => $expiresAt->toIso8601String(),
-            ]),
-            'devices' => array_merge($originalConfig['devices'] ?? [], [
-                // 原根盘重新挂载到 /mnt
-                'rescue-original-disk' => [
-                    'type' => 'disk',
-                    'pool' => $rootPool,
-                    'source' => $rootDevice['source'] ?? $vmName,
-                    'path' => '/mnt',
-                ],
-                // rescue 镜像作为新的根盘
-                'root' => [
-                    'type' => 'disk',
-                    'pool' => $rootPool,
-                    'path' => '/',
-                    'size' => '10GiB',
-                ],
-            ]),
+        // 挂载原磁盘到 /mnt + 设置 rescue 标记
+        $rescueDevices = $originalConfig['devices'] ?? [];
+        $rescueDevices['rescue-original-disk'] = [
+            'type' => 'disk',
+            'pool' => $rootPool,
+            'source' => $rootDevice['source'] ?? $vmName,
+            'path' => '/mnt',
+        ];
+
+        $rescueConfig = $originalConfig['config'] ?? [];
+        $rescueConfig['user.rescue_mode'] = 'true';
+        $rescueConfig['user.rescue_expires'] = $expiresAt->toIso8601String();
+
+        $this->client->request('PUT', "/1.0/instances/{$vmName}", [
+            'config' => $rescueConfig,
+            'devices' => $rescueDevices,
+        ]);
+
+        // 使用 rebuild API 更换启动镜像（PUT 时 source 字段无效）
+        $this->client->request('POST', "/1.0/instances/{$vmName}/rebuild", [
             'source' => [
                 'type' => 'image',
                 'alias' => self::RESCUE_IMAGE,
             ],
-        ];
-
-        // 应用 rescue 配置
-        $this->client->request('PUT', "/1.0/instances/{$vmName}", $rescueConfig);
+        ]);
 
         // 启动 VM
         $this->client->request('PUT', "/1.0/instances/{$vmName}/state", [
@@ -104,9 +90,20 @@ class RescueMode
         $tempPassword = $this->generateTempPassword();
         $this->waitForAgent($vmName);
 
+        // 使用 chpasswd 的 stdin 传入密码，避免命令注入
         $this->client->request('POST', "/1.0/instances/{$vmName}/exec", [
-            'command' => ['bash', '-c', "echo 'root:{$tempPassword}' | chpasswd"],
+            'command' => ['chpasswd'],
             'wait-for-websocket' => false,
+            'stdin' => 'root:' . $tempPassword . "\n",
+        ]);
+
+        // 所有 Incus 操作成功后再写 DB，避免 orphan 记录
+        DB::table('vm_rescue_sessions')->insert([
+            'vm_name' => $vmName,
+            'original_boot_image' => $originalConfig['config']['image.description'] ?? '',
+            'original_root_device' => json_encode($originalConfig['devices']['root'] ?? []),
+            'expires_at' => $expiresAt,
+            'created_at' => now(),
         ]);
 
         Log::info("VM {$vmName} 已进入救援模式，将在 {$expiresAt} 自动退出");
