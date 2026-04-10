@@ -78,17 +78,26 @@ fi
 ROLLBACK_SCRIPT=$(mktemp /var/tmp/netplan-rollback-XXXXXX.sh)
 cat > "$ROLLBACK_SCRIPT" << 'ROLLBACK_EOF'
 #!/usr/bin/env bash
-# 自动回滚脚本
+# 自动回滚脚本 — systemd-run 定时触发，无 IPMI 环境下的最后一道防线
 BACKUP_PATH="__BACKUP_PATH__"
 NETPLAN_DIR="/etc/netplan"
+MAX_RETRIES=3
 
 echo "[ROLLBACK] 回滚超时触发，正在恢复备份配置..."
 
 if [[ -d "$BACKUP_PATH" ]] && [[ -n "$(ls -A "$BACKUP_PATH" 2>/dev/null)" ]]; then
     rm -f "${NETPLAN_DIR}/"*.yaml
     cp -a "${BACKUP_PATH}/"* "${NETPLAN_DIR}/"
-    netplan apply
-    echo "[ROLLBACK] 已恢复到备份配置: $BACKUP_PATH"
+    # 重试机制：netplan apply 是恢复网络的唯一手段，必须尽最大努力
+    for attempt in $(seq 1 "$MAX_RETRIES"); do
+        if netplan apply 2>/dev/null; then
+            echo "[ROLLBACK] 已恢复到备份配置: $BACKUP_PATH (第 ${attempt} 次尝试)"
+            exit 0
+        fi
+        echo "[ROLLBACK] netplan apply 失败 (第 ${attempt}/${MAX_RETRIES} 次)，2 秒后重试..."
+        sleep 2
+    done
+    echo "[ROLLBACK] 所有重试均失败! 需要物理介入恢复网络"
 else
     echo "[ROLLBACK] 备份目录为空或不存在，无法回滚!"
 fi
@@ -135,13 +144,17 @@ cp "$CONFIG_FILE" "${NETPLAN_DIR}/01-network.yaml"
 chmod 600 "${NETPLAN_DIR}/01-network.yaml"
 
 # 先用 netplan generate 检查语法
-if ! netplan generate 2>&1; then
+if ! netplan generate 2>/tmp/netplan-generate.log; then
     log_error "netplan generate 失败，立即回滚"
+    cat /tmp/netplan-generate.log 2>/dev/null || true
     rm -f "${NETPLAN_DIR}/"*.yaml
     cp -a "${BACKUP_PATH}/"* "${NETPLAN_DIR}/" 2>/dev/null || true
-    netplan apply
+    # 回滚路径必须容忍失败：即使 apply 出错，也要继续清理定时器
+    if ! netplan apply; then
+        log_error "回滚 netplan apply 也失败，等待 ${ROLLBACK_TIMEOUT}s 定时器二次回滚"
+    fi
     systemctl stop "${ROLLBACK_UNIT_NAME}.timer" 2>/dev/null || true
-    rm -f "$ROLLBACK_SCRIPT"
+    rm -f "$ROLLBACK_SCRIPT" /tmp/netplan-generate.log
     exit 1
 fi
 
@@ -226,13 +239,17 @@ else
     if [[ -d "$BACKUP_PATH" ]] && [[ -n "$(ls -A "$BACKUP_PATH" 2>/dev/null)" ]]; then
         cp -a "${BACKUP_PATH}/"* "${NETPLAN_DIR}/"
     fi
-    netplan apply
+    # 回滚路径必须容忍失败：即使 apply 出错，也要继续清理
+    if netplan apply; then
+        log_error "已回滚到备份配置: ${BACKUP_PATH}"
+    else
+        log_error "回滚 netplan apply 也失败，等待 ${ROLLBACK_TIMEOUT}s 定时器二次回滚"
+    fi
 
     # 清理定时器和临时脚本
     systemctl stop "${ROLLBACK_UNIT_NAME}.timer" 2>/dev/null || true
     systemctl stop "${ROLLBACK_UNIT_NAME}.service" 2>/dev/null || true
     rm -f "$ROLLBACK_SCRIPT"
 
-    log_error "已回滚到备份配置: ${BACKUP_PATH}"
     exit 1
 fi
