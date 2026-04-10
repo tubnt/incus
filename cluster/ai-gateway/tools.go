@@ -6,9 +6,21 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"regexp"
 
 	"github.com/anthropics/anthropic-sdk-go"
 )
+
+// vmNamePattern 限制 VM 名称格式：小写字母数字短横线，1-63 字符
+var vmNamePattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+
+func validateVMName(name string) error {
+	if !vmNamePattern.MatchString(name) {
+		return fmt.Errorf("虚拟机名称格式无效（仅允许小写字母、数字和短横线，1-63 字符）")
+	}
+	return nil
+}
 
 // ToolDefs 返回所有 Claude tool 定义
 func ToolDefs() []anthropic.ToolUnionParam {
@@ -191,9 +203,21 @@ type ToolExecutor struct {
 
 // Execute 根据 tool 名称执行对应操作
 func (e *ToolExecutor) Execute(userID, toolName string, input json.RawMessage) (string, error) {
+	// 对需要 VM 名称的 tool，提前校验名称格式
+	if toolName != "list_vms" {
+		var p struct {
+			Name string `json:"name"`
+		}
+		if err := json.Unmarshal(input, &p); err == nil && p.Name != "" {
+			if err := validateVMName(p.Name); err != nil {
+				return "", err
+			}
+		}
+	}
+
 	switch toolName {
 	case "list_vms":
-		return e.callExtension("GET", fmt.Sprintf("/vms?user_id=%s", userID), nil)
+		return e.callExtension("GET", fmt.Sprintf("/vms?user_id=%s", url.QueryEscape(userID)), nil)
 	case "create_vm":
 		return e.callExtension("POST", "/vms", withUserID(userID, input))
 	case "delete_vm":
@@ -207,7 +231,7 @@ func (e *ToolExecutor) Execute(userID, toolName string, input json.RawMessage) (
 		if !p.Confirm {
 			return `{"error": "删除操作需要 confirm=true 确认"}`, nil
 		}
-		return e.callExtension("DELETE", fmt.Sprintf("/vms/%s?user_id=%s", p.Name, userID), nil)
+		return e.callExtension("DELETE", fmt.Sprintf("/vms/%s?user_id=%s", url.PathEscape(p.Name), url.QueryEscape(userID)), nil)
 	case "start_vm":
 		return e.vmAction(userID, input, "start")
 	case "stop_vm":
@@ -233,7 +257,7 @@ func (e *ToolExecutor) vmAction(userID string, input json.RawMessage, action str
 		return "", err
 	}
 	body, _ := json.Marshal(map[string]string{"action": action, "user_id": userID})
-	return e.callExtension("POST", fmt.Sprintf("/vms/%s/state", p.Name), body)
+	return e.callExtension("POST", fmt.Sprintf("/vms/%s/state", url.PathEscape(p.Name)), body)
 }
 
 func (e *ToolExecutor) callExtensionWithName(userID string, input json.RawMessage, endpoint, method string) (string, error) {
@@ -243,11 +267,11 @@ func (e *ToolExecutor) callExtensionWithName(userID string, input json.RawMessag
 	if err := json.Unmarshal(input, &p); err != nil {
 		return "", err
 	}
-	url := fmt.Sprintf("/vms/%s/%s?user_id=%s", p.Name, endpoint, userID)
+	reqURL := fmt.Sprintf("/vms/%s/%s?user_id=%s", url.PathEscape(p.Name), endpoint, url.QueryEscape(userID))
 	if method == "GET" {
-		return e.callExtension(method, url, nil)
+		return e.callExtension(method, reqURL, nil)
 	}
-	return e.callExtension(method, url, withUserID(userID, input))
+	return e.callExtension(method, reqURL, withUserID(userID, input))
 }
 
 func (e *ToolExecutor) handleFirewall(userID string, input json.RawMessage) (string, error) {
@@ -259,14 +283,14 @@ func (e *ToolExecutor) handleFirewall(userID string, input json.RawMessage) (str
 	if err := json.Unmarshal(input, &p); err != nil {
 		return "", err
 	}
-	base := fmt.Sprintf("/vms/%s/firewall?user_id=%s", p.Name, userID)
+	base := fmt.Sprintf("/vms/%s/firewall?user_id=%s", url.PathEscape(p.Name), url.QueryEscape(userID))
 	switch p.Action {
 	case "list":
 		return e.callExtension("GET", base, nil)
 	case "add":
 		return e.callExtension("POST", base, input)
 	case "remove":
-		return e.callExtension("DELETE", fmt.Sprintf("/vms/%s/firewall/%s?user_id=%s", p.Name, p.RuleID, userID), nil)
+		return e.callExtension("DELETE", fmt.Sprintf("/vms/%s/firewall/%s?user_id=%s", url.PathEscape(p.Name), url.PathEscape(p.RuleID), url.QueryEscape(userID)), nil)
 	default:
 		return "", fmt.Errorf("未知防火墙操作: %s", p.Action)
 	}
@@ -289,7 +313,7 @@ func (e *ToolExecutor) callExtension(method, path string, body []byte) (string, 
 	}
 	defer resp.Body.Close()
 
-	data, err := io.ReadAll(resp.Body)
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20)) // 限制响应体最大 10MB
 	if err != nil {
 		return "", fmt.Errorf("读取响应失败: %w", err)
 	}

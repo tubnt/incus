@@ -68,9 +68,15 @@ const input = document.getElementById('input');
 const sendBtn = document.getElementById('send');
 const statusEl = document.getElementById('status');
 
-// 简易 Markdown 渲染
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+// 简易 Markdown 渲染（先转义 HTML 再应用格式）
 function renderMd(text) {
-  return text
+  return escapeHtml(text)
     .replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>')
     .replace(/`([^`]+)`/g, '<code>$1</code>')
     .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
@@ -86,17 +92,21 @@ function addMsg(type, content, extra) {
   const el = document.createElement('div');
   if (type === 'tool_use') {
     el.className = 'tool-card' + (extra?.pending ? ' pending' : '');
-    let html = `<div class="tool-name">${extra?.pending ? '⏳' : '✅'} ${content}</div>`;
-    if (extra?.input) html += `<div class="tool-input">${extra.input}</div>`;
+    let html = `<div class="tool-name">${extra?.pending ? '⏳' : '✅'} ${escapeHtml(content)}</div>`;
+    if (extra?.input) html += `<div class="tool-input">${escapeHtml(extra.input)}</div>`;
     if (extra?.result) {
       let formatted = extra.result;
       try { formatted = JSON.stringify(JSON.parse(extra.result), null, 2); } catch {}
-      html += `<div class="tool-result">${formatted}</div>`;
+      html += `<div class="tool-result">${escapeHtml(formatted)}</div>`;
     }
     el.innerHTML = html;
   } else {
     el.className = `msg ${type}`;
-    el.innerHTML = type === 'assistant' ? renderMd(content) : content;
+    if (type === 'assistant') {
+      el.innerHTML = renderMd(content);
+    } else {
+      el.textContent = content;
+    }
   }
   chat.appendChild(el);
   chat.scrollTop = chat.scrollHeight;
