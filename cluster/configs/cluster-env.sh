@@ -50,6 +50,7 @@ CEPH_OSD_ENCRYPTED=true
 
 # ==================== Incus 配置 ====================
 INCUS_STORAGE_NAME="ceph-pool"
+# TODO: 替换为专用 Ceph 用户（如 client.incus），admin 权限过大
 INCUS_CEPH_USER="admin"
 INCUS_CLUSTER_PORT=8443
 
