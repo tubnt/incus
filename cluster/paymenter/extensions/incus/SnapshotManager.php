@@ -50,6 +50,7 @@ class SnapshotManager
      *
      * @param string|null $snapName 快照名称，为 null 时自动生成
      * @throws \OverflowException 超过快照数量限制
+     * @throws \InvalidArgumentException 快照名称包含非法字符
      */
     public function createSnapshot(string $vmName, ?string $snapName = null): array
     {
@@ -64,6 +65,8 @@ class SnapshotManager
         // 自动生成快照名称：snap-{YmdHis}
         if ($snapName === null) {
             $snapName = 'snap-' . date('YmdHis');
+        } else {
+            $this->validateSnapshotName($snapName);
         }
 
         return $this->client->request(
@@ -85,6 +88,8 @@ class SnapshotManager
      */
     public function restoreSnapshot(string $vmName, string $snapName): array
     {
+        $this->validateSnapshotName($snapName);
+
         // 检查 VM 状态 — 必须已停机
         $this->ensureVmStopped($vmName);
 
@@ -100,13 +105,31 @@ class SnapshotManager
 
     /**
      * 删除快照
+     *
+     * @throws \InvalidArgumentException 快照名称包含非法字符
      */
     public function deleteSnapshot(string $vmName, string $snapName): array
     {
+        $this->validateSnapshotName($snapName);
+
         return $this->client->request(
             'DELETE',
             '/1.0/instances/' . $vmName . '/snapshots/' . $snapName . '?project=customers'
         );
+    }
+
+    /**
+     * 校验快照名称（仅允许字母、数字、连字符、下划线）
+     *
+     * @throws \InvalidArgumentException
+     */
+    private function validateSnapshotName(string $name): void
+    {
+        if (!preg_match('/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$/', $name)) {
+            throw new \InvalidArgumentException(
+                '快照名称无效：' . $name . '（仅允许字母、数字、连字符、下划线，1-63 字符，字母或数字开头）'
+            );
+        }
     }
 
     /**

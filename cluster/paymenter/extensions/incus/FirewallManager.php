@@ -18,11 +18,14 @@ class FirewallManager
     /** 允许的协议列表 */
     private const ALLOWED_PROTOCOLS = ['tcp', 'udp', 'icmp'];
 
-    /** RFC1918 私有地址段 — 禁止作为源地址 */
-    private const RFC1918_RANGES = [
-        ['start' => '10.0.0.0',     'end' => '10.255.255.255',   'cidr' => 8],
-        ['start' => '172.16.0.0',   'end' => '172.31.255.255',   'cidr' => 12],
-        ['start' => '192.168.0.0',  'end' => '192.168.255.255',  'cidr' => 16],
+    /** 禁止作为源地址的保留地址段（RFC1918 + 回环 + 链路本地 + CGNAT） */
+    private const RESERVED_RANGES = [
+        ['start' => '10.0.0.0',      'end' => '10.255.255.255'],
+        ['start' => '172.16.0.0',    'end' => '172.31.255.255'],
+        ['start' => '192.168.0.0',   'end' => '192.168.255.255'],
+        ['start' => '127.0.0.0',     'end' => '127.255.255.255'],
+        ['start' => '169.254.0.0',   'end' => '169.254.255.255'],
+        ['start' => '100.64.0.0',    'end' => '100.127.255.255'],
     ];
 
     private IncusClient $client;
@@ -246,13 +249,13 @@ class FirewallManager
     }
 
     /**
-     * 校验源地址 — 拒绝 RFC1918 私有地址段
+     * 校验源地址 — 拒绝保留地址段（含 CIDR 范围重叠检测）
      *
      * @throws \InvalidArgumentException
      */
     private function validateSource(string $source): void
     {
-        // 允许 0.0.0.0/0（全部）
+        // 允许 0.0.0.0/0（全部放行）
         if ($source === '0.0.0.0/0') {
             return;
         }
@@ -265,41 +268,45 @@ class FirewallManager
             throw new \InvalidArgumentException('无效的 IPv4 地址：' . $source);
         }
 
-        // 检查是否落入 RFC1918 范围
-        if ($this->isRfc1918($ip)) {
-            throw new \InvalidArgumentException(
-                '禁止使用 RFC1918 私有地址作为源地址：' . $source .
-                '（10.0.0.0/8、172.16.0.0/12、192.168.0.0/16 均不允许）'
-            );
-        }
-
         // 校验 CIDR 掩码
+        $mask = 32;
         if (isset($parts[1])) {
             $mask = (int) $parts[1];
             if ($mask < 0 || $mask > 32) {
                 throw new \InvalidArgumentException('无效的 CIDR 掩码：/' . $parts[1]);
             }
         }
+
+        // 计算用户 CIDR 的实际范围 [start, end]，检查是否与保留地址段重叠
+        $ipLong = ip2long($ip);
+        $cidrMask = $mask < 32 ? (~0 << (32 - $mask)) : (~0);
+        $cidrStart = $ipLong & $cidrMask;
+        $cidrEnd   = $cidrStart | (~$cidrMask & 0xFFFFFFFF);
+
+        foreach (self::RESERVED_RANGES as $range) {
+            $rangeStart = ip2long($range['start']);
+            $rangeEnd   = ip2long($range['end']);
+
+            // 两个范围重叠条件：start1 <= end2 && start2 <= end1
+            // 使用无符号比较（ip2long 在 32 位系统可能返回负数）
+            if ($this->unsignedLte($cidrStart, $rangeEnd) && $this->unsignedLte($rangeStart, $cidrEnd)) {
+                throw new \InvalidArgumentException(
+                    '源地址 ' . $source . ' 与保留地址段 ' .
+                    long2ip($rangeStart) . '-' . long2ip($rangeEnd) . ' 重叠，不允许使用'
+                );
+            }
+        }
     }
 
     /**
-     * 检查 IP 是否在 RFC1918 范围内
+     * 无符号整数 <= 比较（兼容 32 位系统 ip2long 返回负数的情况）
      */
-    private function isRfc1918(string $ip): bool
+    private function unsignedLte(int $a, int $b): bool
     {
-        $ipLong = ip2long($ip);
-        if ($ipLong === false) {
-            return false;
+        // 转换为无符号比较：符号位相同时直接比较，不同时负数更大（无符号视角）
+        if (($a < 0) === ($b < 0)) {
+            return $a <= $b;
         }
-
-        foreach (self::RFC1918_RANGES as $range) {
-            $startLong = ip2long($range['start']);
-            $endLong   = ip2long($range['end']);
-            if ($ipLong >= $startLong && $ipLong <= $endLong) {
-                return true;
-            }
-        }
-
-        return false;
+        return $a >= 0;
     }
 }

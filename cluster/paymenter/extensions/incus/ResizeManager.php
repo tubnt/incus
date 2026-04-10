@@ -74,9 +74,11 @@ class ResizeManager
         $currentCpu = (int) ($current['limits.cpu'] ?? 0);
         $currentMem = $current['limits.memory'] ?? '0';
 
-        if ($newCpu > $currentCpu && $this->parseMemoryBytes($newMem) > $this->parseMemoryBytes($currentMem)) {
+        if ($newCpu >= $currentCpu && $this->parseMemoryBytes($newMem) >= $this->parseMemoryBytes($currentMem)) {
             throw new \InvalidArgumentException(
-                '降配操作不允许同时增加 CPU 和内存，请使用升配接口'
+                '降配操作要求至少一项（CPU 或内存）减少，请使用升配接口。' .
+                '当前配置：' . $currentCpu . ' 核 / ' . $currentMem .
+                '，请求配置：' . $newCpu . ' 核 / ' . $newMem
             );
         }
 
