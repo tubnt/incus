@@ -18,6 +18,7 @@ return new class extends Migration
 
             $table->index('user_id');
             $table->unique(['user_id', 'name']);
+            $table->unique('subnet');
         });
     }
 

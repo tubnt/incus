@@ -38,57 +38,62 @@ class VpcManager
             throw new \InvalidArgumentException('VPC 网段格式无效，仅支持 10.x.0.0/16 格式');
         }
 
-        // 检查网段是否已被使用
-        $existing = DB::table('vpcs')->where('subnet', $subnet)->first();
-        if ($existing) {
-            throw new \RuntimeException("网段 [{$subnet}] 已被使用");
-        }
+        return DB::transaction(function () use ($userId, $name, $subnet) {
+            // lockForUpdate 防止并发创建同一网段
+            $existing = DB::table('vpcs')
+                ->where('subnet', $subnet)
+                ->lockForUpdate()
+                ->first();
+            if ($existing) {
+                throw new \RuntimeException("网段 [{$subnet}] 已被使用");
+            }
 
-        // 生成 Incus network 名称：vpc-{userId}-{shortHash}
-        $networkName = 'vpc-' . $userId . '-' . substr(md5($name . $userId), 0, 6);
+            // 生成 Incus network 名称：vpc-{userId}-{shortHash}
+            $networkName = 'vpc-' . $userId . '-' . substr(md5($name . $userId), 0, 6);
 
-        // 从网段提取网关地址（x.x.0.1）
-        $parts = explode('.', explode('/', $subnet)[0]);
-        $gateway = $parts[0] . '.' . $parts[1] . '.0.1/16';
+            // 从网段提取网关地址（x.x.0.1）
+            $parts = explode('.', explode('/', $subnet)[0]);
+            $gateway = $parts[0] . '.' . $parts[1] . '.0.1/16';
 
-        // 在 Incus 创建 managed network
-        $this->client->post('/1.0/networks', [
-            'name' => $networkName,
-            'type' => 'bridge',
-            'config' => [
-                'ipv4.address' => $gateway,
-                'ipv4.nat' => 'false',
-                'ipv6.address' => 'none',
-                'ipv4.dhcp' => 'true',
-                'ipv4.dhcp.ranges' => $parts[0] . '.' . $parts[1] . '.1.1-' . $parts[0] . '.' . $parts[1] . '.254.254',
-            ],
-        ]);
+            // 在 Incus 创建 managed network
+            $this->client->post('/1.0/networks', [
+                'name' => $networkName,
+                'type' => 'bridge',
+                'config' => [
+                    'ipv4.address' => $gateway,
+                    'ipv4.nat' => 'false',
+                    'ipv6.address' => 'none',
+                    'ipv4.dhcp' => 'true',
+                    'ipv4.dhcp.ranges' => $parts[0] . '.' . $parts[1] . '.1.1-' . $parts[0] . '.' . $parts[1] . '.254.254',
+                ],
+            ]);
 
-        // 写入数据库
-        $vpcId = DB::table('vpcs')->insertGetId([
-            'user_id' => $userId,
-            'name' => $name,
-            'subnet' => $subnet,
-            'incus_network' => $networkName,
-            'created_at' => now(),
-            'updated_at' => now(),
-        ]);
+            // 写入数据库（subnet 有 unique 约束兜底）
+            $vpcId = DB::table('vpcs')->insertGetId([
+                'user_id' => $userId,
+                'name' => $name,
+                'subnet' => $subnet,
+                'incus_network' => $networkName,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
 
-        Log::info('VPC 已创建', [
-            'vpc_id' => $vpcId,
-            'user_id' => $userId,
-            'name' => $name,
-            'subnet' => $subnet,
-            'incus_network' => $networkName,
-        ]);
+            Log::info('VPC 已创建', [
+                'vpc_id' => $vpcId,
+                'user_id' => $userId,
+                'name' => $name,
+                'subnet' => $subnet,
+                'incus_network' => $networkName,
+            ]);
 
-        return [
-            'id' => $vpcId,
-            'user_id' => $userId,
-            'name' => $name,
-            'subnet' => $subnet,
-            'incus_network' => $networkName,
-        ];
+            return [
+                'id' => $vpcId,
+                'user_id' => $userId,
+                'name' => $name,
+                'subnet' => $subnet,
+                'incus_network' => $networkName,
+            ];
+        });
     }
 
     /**
@@ -133,13 +138,29 @@ class VpcManager
      *
      * @param int $vpcId VPC ID
      * @param string $vmName VM 名称
+     * @param int $userId 操作用户 ID（用于鉴权）
      * @return array 成员记录（含分配的私有 IP）
+     * @throws \RuntimeException VPC 不属于该用户或 VM 不属于该用户
      */
-    public function attachVm(int $vpcId, string $vmName): array
+    public function attachVm(int $vpcId, string $vmName, int $userId): array
     {
         $vpc = DB::table('vpcs')->where('id', $vpcId)->first();
         if (!$vpc) {
             throw new \RuntimeException("VPC [{$vpcId}] 不存在");
+        }
+
+        // 校验 VPC 归属
+        if ((int) $vpc->user_id !== $userId) {
+            throw new \RuntimeException("无权操作此 VPC");
+        }
+
+        // 校验 VM 归属：通过 ip_addresses 关联的 order 确认用户
+        $vmIp = DB::table('ip_addresses')->where('vm_name', $vmName)->first();
+        if ($vmIp && $vmIp->order_id) {
+            $order = DB::table('orders')->where('id', $vmIp->order_id)->first();
+            if (!$order || (int) $order->user_id !== $userId) {
+                throw new \RuntimeException("VM [{$vmName}] 不属于当前用户");
+            }
         }
 
         // 检查 VM 是否已在此 VPC 中
@@ -165,6 +186,21 @@ class VpcManager
 
         // 等待 DHCP 分配 IP 后查询（轮询 Incus 实例状态获取 eth1 的 IP）
         $privateIp = $this->waitForPrivateIp($vmName, 'eth1');
+
+        // 超时未获取到 IP，回滚网卡添加
+        if ($privateIp === null) {
+            try {
+                $this->removeVpcNic($vmName);
+            } catch (\Exception $e) {
+                Log::error('回滚 VPC 网卡失败', [
+                    'vm_name' => $vmName,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+            throw new \RuntimeException(
+                "VM [{$vmName}] 加入 VPC 失败：DHCP 分配私有 IP 超时，网卡已回滚"
+            );
+        }
 
         // 记录成员关系
         $memberId = DB::table('vpc_members')->insertGetId([
@@ -211,14 +247,7 @@ class VpcManager
         }
 
         // 移除 VM 的 VPC 网卡
-        // Incus PATCH 将设备值设为空对象即可删除
-        $instance = $this->client->get('/1.0/instances/' . $vmName);
-        $devices = $instance['metadata']['devices'] ?? [];
-        unset($devices['eth1-vpc']);
-
-        $this->client->put('/1.0/instances/' . $vmName, [
-            'devices' => $devices,
-        ]);
+        $this->removeVpcNic($vmName);
 
         DB::table('vpc_members')
             ->where('vpc_id', $vpcId)
@@ -266,6 +295,20 @@ class VpcManager
                 'member_count' => $members->count(),
             ];
         })->toArray();
+    }
+
+    /**
+     * 移除 VM 的 VPC 网卡
+     */
+    private function removeVpcNic(string $vmName): void
+    {
+        $instance = $this->client->get('/1.0/instances/' . $vmName);
+        $devices = $instance['metadata']['devices'] ?? [];
+        unset($devices['eth1-vpc']);
+
+        $this->client->put('/1.0/instances/' . $vmName, [
+            'devices' => $devices,
+        ]);
     }
 
     /**

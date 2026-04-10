@@ -36,21 +36,19 @@ class ReservedIpManager
                 throw new \RuntimeException("IP [{$ip}] 不存在");
             }
 
-            // 仅允许保留 "已分配给该用户的" 或 "可用" 的 IP
+            // 仅允许保留已分配给当前用户的 IP（禁止保留 available/cooldown 等状态的 IP）
             if ($record->status === 'reserved') {
                 throw new \RuntimeException("IP [{$ip}] 已被保留");
             }
 
-            if ($record->status === 'cooldown') {
-                throw new \RuntimeException("IP [{$ip}] 处于冷却期，暂不可操作");
+            if ($record->status !== 'allocated') {
+                throw new \RuntimeException("仅可保留已分配给您的 IP（当前状态：{$record->status}）");
             }
 
-            // 如果 IP 已分配，需要确认是该用户的 VM
-            if ($record->status === 'allocated') {
-                $order = DB::table('orders')->where('id', $record->order_id)->first();
-                if (!$order || $order->user_id !== $userId) {
-                    throw new \RuntimeException("IP [{$ip}] 不属于当前用户");
-                }
+            // 验证 IP 确实属于该用户
+            $order = DB::table('orders')->where('id', $record->order_id)->first();
+            if (!$order || (int) $order->user_id !== $userId) {
+                throw new \RuntimeException("IP [{$ip}] 不属于当前用户");
             }
 
             DB::table('ip_addresses')
@@ -86,36 +84,39 @@ class ReservedIpManager
      */
     public function releaseReservedIp(int $ipId): void
     {
-        $record = DB::table('ip_addresses')
-            ->where('id', $ipId)
-            ->where('status', 'reserved')
-            ->first();
+        DB::transaction(function () use ($ipId) {
+            $record = DB::table('ip_addresses')
+                ->where('id', $ipId)
+                ->where('status', 'reserved')
+                ->lockForUpdate()
+                ->first();
 
-        if (!$record) {
-            throw new \RuntimeException("IP 记录 [{$ipId}] 不存在或非保留状态");
-        }
+            if (!$record) {
+                throw new \RuntimeException("IP 记录 [{$ipId}] 不存在或非保留状态");
+            }
 
-        // 如果仍绑定 VM，先解绑
-        if ($record->vm_name) {
-            throw new \RuntimeException("IP [{$record->ip}] 仍绑定在 VM [{$record->vm_name}] 上，请先解绑");
-        }
+            // 如果仍绑定 VM，先解绑
+            if ($record->vm_name) {
+                throw new \RuntimeException("IP [{$record->ip}] 仍绑定在 VM [{$record->vm_name}] 上，请先解绑");
+            }
 
-        DB::table('ip_addresses')
-            ->where('id', $ipId)
-            ->update([
-                'status' => 'available',
-                'reserved_by_user' => null,
-                'reserved_at' => null,
-                'vm_name' => null,
-                'order_id' => null,
-                'allocated_at' => null,
+            DB::table('ip_addresses')
+                ->where('id', $ipId)
+                ->update([
+                    'status' => 'available',
+                    'reserved_by_user' => null,
+                    'reserved_at' => null,
+                    'vm_name' => null,
+                    'order_id' => null,
+                    'allocated_at' => null,
+                ]);
+
+            Log::info('保留 IP 已释放', [
+                'ip_id' => $ipId,
+                'ip' => $record->ip,
+                'user_id' => $record->reserved_by_user,
             ]);
-
-        Log::info('保留 IP 已释放', [
-            'ip_id' => $ipId,
-            'ip' => $record->ip,
-            'user_id' => $record->reserved_by_user,
-        ]);
+        });
     }
 
     /**
