@@ -54,48 +54,51 @@ class Ipv6Manager
             return ['success' => false, 'prefix' => null, 'message' => 'IPv6 前缀未配置'];
         }
 
-        // 检查是否已分配
-        $existing = DB::table('ipv6_prefixes')
-            ->where('vm_name', $vmName)
-            ->where('status', 'allocated')
-            ->first();
+        return DB::transaction(function () use ($vmName) {
+            // 检查是否已分配（加行锁防止并发重复）
+            $existing = DB::table('ipv6_prefixes')
+                ->where('vm_name', $vmName)
+                ->where('status', 'allocated')
+                ->lockForUpdate()
+                ->first();
 
-        if ($existing) {
+            if ($existing) {
+                return [
+                    'success' => true,
+                    'prefix' => $existing->prefix,
+                    'message' => "VM 已分配前缀: {$existing->prefix}",
+                ];
+            }
+
+            // 查找下一个可用子网索引（事务内带锁）
+            $nextIndex = $this->findNextAvailableIndex();
+            if ($nextIndex === null) {
+                return ['success' => false, 'prefix' => null, 'message' => 'IPv6 /64 前缀已耗尽'];
+            }
+
+            // 生成 /64 前缀
+            $prefix64 = $this->generatePrefix64($nextIndex);
+
+            // 写入数据库（subnet_index 有唯一索引，并发冲突会抛异常触发事务回滚）
+            DB::table('ipv6_prefixes')->insert([
+                'vm_name' => $vmName,
+                'prefix' => $prefix64,
+                'prefix_len' => $this->vmPrefixLen,
+                'subnet_index' => $nextIndex,
+                'status' => 'allocated',
+                'allocated_at' => now(),
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+
+            Log::info("IPv6 前缀已分配: {$vmName} -> {$prefix64}/{$this->vmPrefixLen}");
+
             return [
                 'success' => true,
-                'prefix' => $existing->prefix,
-                'message' => "VM 已分配前缀: {$existing->prefix}",
+                'prefix' => $prefix64,
+                'message' => "已分配 {$prefix64}/{$this->vmPrefixLen}",
             ];
-        }
-
-        // 查找下一个可用子网索引
-        $nextIndex = $this->findNextAvailableIndex();
-        if ($nextIndex === null) {
-            return ['success' => false, 'prefix' => null, 'message' => 'IPv6 /64 前缀已耗尽'];
-        }
-
-        // 生成 /64 前缀
-        $prefix64 = $this->generatePrefix64($nextIndex);
-
-        // 写入数据库
-        DB::table('ipv6_prefixes')->insert([
-            'vm_name' => $vmName,
-            'prefix' => $prefix64,
-            'prefix_len' => $this->vmPrefixLen,
-            'subnet_index' => $nextIndex,
-            'status' => 'allocated',
-            'allocated_at' => now(),
-            'created_at' => now(),
-            'updated_at' => now(),
-        ]);
-
-        Log::info("IPv6 前缀已分配: {$vmName} -> {$prefix64}/{$this->vmPrefixLen}");
-
-        return [
-            'success' => true,
-            'prefix' => $prefix64,
-            'message' => "已分配 {$prefix64}/{$this->vmPrefixLen}",
-        ];
+        });
     }
 
     /**
@@ -272,20 +275,20 @@ YAML;
      */
     private function findNextAvailableIndex(): ?int
     {
-        // 优先复用已释放的最小索引
+        // 优先复用已释放的最小索引（带行锁，确保并发安全）
         $released = DB::table('ipv6_prefixes')
             ->where('status', 'released')
             ->orderBy('subnet_index')
+            ->lockForUpdate()
             ->first();
 
         if ($released) {
-            // 标记为重新分配（调用方会 insert 新记录）
             DB::table('ipv6_prefixes')->where('id', $released->id)->delete();
             return $released->subnet_index;
         }
 
-        // 取最大已分配索引 + 1
-        $maxIndex = DB::table('ipv6_prefixes')->max('subnet_index');
+        // 取最大已分配索引 + 1（事务内读取，配合唯一索引防重复）
+        $maxIndex = DB::table('ipv6_prefixes')->lockForUpdate()->max('subnet_index');
         $nextIndex = ($maxIndex === null) ? 1 : $maxIndex + 1; // 0 保留给网桥
 
         // 检查是否耗尽（/48 → /64 = 65536 个子网）
@@ -326,10 +329,22 @@ YAML;
 
     /**
      * 从 /64 前缀生成 VM 地址（使用 ::1）
+     * 通过 inet_pton/inet_ntop 规范化，避免 rtrim 过度删除冒号
      */
     private function prefixToVmAddress(string $prefix): string
     {
-        return rtrim($prefix, ':') . '::1';
+        // 将前缀规范化为完整地址（补 0），然后设置最后 2 字节为 ::1
+        $prefixAddr = rtrim($prefix, ':');
+        // 补齐为合法 IPv6 地址用于解析
+        $packed = @inet_pton($prefixAddr . '::1');
+        if ($packed === false) {
+            // 回退：直接拼接
+            $packed = @inet_pton($prefixAddr . ':0:0:0:1');
+        }
+        if ($packed === false) {
+            throw new \RuntimeException("无法解析 IPv6 前缀: {$prefix}");
+        }
+        return inet_ntop($packed);
     }
 
     /**

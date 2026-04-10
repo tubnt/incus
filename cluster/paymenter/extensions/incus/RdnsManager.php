@@ -532,9 +532,19 @@ XML;
         // AWS Signature V4 签名
         $host = parse_url($url, PHP_URL_HOST);
         $path = parse_url($url, PHP_URL_PATH) ?: '/';
+        $queryString = parse_url($url, PHP_URL_QUERY) ?: '';
+
+        // 规范化 query string：按参数名排序（SigV4 要求）
+        $canonicalQueryString = '';
+        if (!empty($queryString)) {
+            parse_str($queryString, $params);
+            ksort($params);
+            $canonicalQueryString = http_build_query($params, '', '&', PHP_QUERY_RFC3986);
+        }
 
         $canonicalRequest = implode("\n", [
-            $method, $path, '', "host:{$host}", "x-amz-date:{$date}", '',
+            $method, $path, $canonicalQueryString,
+            "host:{$host}", "x-amz-date:{$date}", '',
             'host;x-amz-date', 'UNSIGNED-PAYLOAD',
         ]);
 

@@ -47,8 +47,15 @@ detect_ipv6() {
 
         [ -z "${ipv6_addr}" ] && err "无法检测 IPv6 地址，请手动设置 IPV6_PREFIX"
 
-        # 提取前缀（取 /48 部分）
-        IPV6_PREFIX=$(echo "${ipv6_addr}" | cut -d'/' -f1 | sed 's/:[0-9a-f]*:[0-9a-f]*:[0-9a-f]*$/::/')
+        # 用 python3 ipaddress 模块规范化提取 /48 前缀（兼容所有缩写格式）
+        IPV6_PREFIX=$(python3 -c "
+import ipaddress, sys
+addr = sys.argv[1].split('/')[0]
+net = ipaddress.IPv6Network(addr + '/${IPV6_PREFIX_LEN}', strict=False)
+print(str(net.network_address))
+" "${ipv6_addr}") || err "IPv6 前缀提取失败"
+        # 追加 :: 后缀便于后续拼接
+        IPV6_PREFIX="${IPV6_PREFIX%::}::"
         log "   检测到 IPv6 前缀: ${IPV6_PREFIX}/${IPV6_PREFIX_LEN}"
     fi
 
@@ -102,49 +109,58 @@ update_netplan_ipv6() {
     local host_ipv6="${IPV6_PREFIX%::}:0:0:0:1/64"
 
     # 在网桥的 addresses 段追加 IPv6
-    # 使用 Python（netplan 的 YAML 不适合 sed 修改）
-    python3 << PYEOF
-import yaml, sys
+    # 通过环境变量传递参数，避免 heredoc 注入
+    export _NETPLAN_FILE="${netplan_file}"
+    export _BRIDGE_NAME="${BRIDGE_NAME}"
+    export _HOST_IPV6="${host_ipv6}"
+    export _IPV6_GATEWAY="${IPV6_GATEWAY}"
+    export _DNS_V6="${DNS_V6}"
 
-with open("${netplan_file}", "r") as f:
+    python3 << 'PYEOF'
+import yaml, sys, os
+
+netplan_file = os.environ["_NETPLAN_FILE"]
+bridge_name = os.environ["_BRIDGE_NAME"]
+host_ipv6 = os.environ["_HOST_IPV6"]
+ipv6_gw = os.environ.get("_IPV6_GATEWAY") or "fe80::1"
+dns_v6 = os.environ["_DNS_V6"]
+
+with open(netplan_file, "r") as f:
     config = yaml.safe_load(f)
 
 bridges = config.get("network", {}).get("bridges", {})
-if "${BRIDGE_NAME}" not in bridges:
-    print("未在 netplan 中找到 ${BRIDGE_NAME} 配置")
+if bridge_name not in bridges:
+    print(f"未在 netplan 中找到 {bridge_name} 配置")
     sys.exit(0)
 
-br = bridges["${BRIDGE_NAME}"]
+br = bridges[bridge_name]
 addresses = br.get("addresses", [])
 
-# 追加 IPv6 地址
-ipv6_addr = "${host_ipv6}"
-if ipv6_addr not in addresses:
-    addresses.append(ipv6_addr)
+if host_ipv6 not in addresses:
+    addresses.append(host_ipv6)
     br["addresses"] = addresses
 
-# 添加 IPv6 路由
 routes = br.get("routes", [])
-gw = "${IPV6_GATEWAY}" or "fe80::1"
-ipv6_default = {"to": "::/0", "via": gw}
+ipv6_default = {"to": "::/0", "via": ipv6_gw}
 if not any(r.get("to") == "::/0" for r in routes):
     routes.append(ipv6_default)
     br["routes"] = routes
 
-# 添加 IPv6 DNS
 ns = br.get("nameservers", {})
 addrs = ns.get("addresses", [])
-for dns in "${DNS_V6}".split(","):
+for dns in dns_v6.split(","):
     if dns not in addrs:
         addrs.append(dns)
 ns["addresses"] = addrs
 br["nameservers"] = ns
 
-with open("${netplan_file}", "w") as f:
+with open(netplan_file, "w") as f:
     yaml.dump(config, f, default_flow_style=False, allow_unicode=True)
 
 print("netplan IPv6 配置已更新")
 PYEOF
+
+    unset _NETPLAN_FILE _BRIDGE_NAME _HOST_IPV6 _IPV6_GATEWAY _DNS_V6
 
     log "   netplan 配置已更新"
 }
@@ -216,9 +232,14 @@ NFTEOF
 
     log "   ip6 filter-v6 规则已加载"
 
-    # 持久化
-    nft list ruleset > /etc/nftables.conf 2>/dev/null || true
-    log "   规则已持久化到 /etc/nftables.conf"
+    # 仅导出 ip6 表到独立文件，避免覆盖 IPv4 规则
+    mkdir -p /etc/nftables.d
+    nft list table ip6 filter-v6 > /etc/nftables.d/ipv6.conf 2>/dev/null || true
+    # 确保主配置包含 nftables.d 目录
+    if ! grep -q 'include "/etc/nftables.d/' /etc/nftables.conf 2>/dev/null; then
+        echo 'include "/etc/nftables.d/*.conf"' >> /etc/nftables.conf
+    fi
+    log "   规则已持久化到 /etc/nftables.d/ipv6.conf"
 }
 
 # ---------- 5. 启用 IPv6 转发 ----------
