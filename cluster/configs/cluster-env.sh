@@ -51,6 +51,11 @@ CEPH_OSD_ENCRYPTED=true
 # ==================== Incus 配置 ====================
 INCUS_STORAGE_NAME="ceph-pool"
 INCUS_CEPH_USER="admin"
+INCUS_CLUSTER_PORT=8443
+
+# Auto-healing 参数
+CLUSTER_OFFLINE_THRESHOLD=20    # 节点离线判定（秒）
+CLUSTER_HEALING_THRESHOLD=300   # 自动恢复触发（秒，5 分钟）
 
 # ==================== 通用 ====================
 DNS_SERVERS="1.1.1.1,8.8.8.8"
