@@ -80,11 +80,12 @@ class ReservedIpManager
      * 释放保留的 IP（恢复为可用）
      *
      * @param int $ipId IP 记录 ID
-     * @throws \RuntimeException IP 未处于保留状态
+     * @param int $userId 操作用户 ID（用于鉴权）
+     * @throws \RuntimeException IP 未处于保留状态或不属于该用户
      */
-    public function releaseReservedIp(int $ipId): void
+    public function releaseReservedIp(int $ipId, int $userId): void
     {
-        DB::transaction(function () use ($ipId) {
+        DB::transaction(function () use ($ipId, $userId) {
             $record = DB::table('ip_addresses')
                 ->where('id', $ipId)
                 ->where('status', 'reserved')
@@ -93,6 +94,10 @@ class ReservedIpManager
 
             if (!$record) {
                 throw new \RuntimeException("IP 记录 [{$ipId}] 不存在或非保留状态");
+            }
+
+            if ((int) $record->reserved_by_user !== $userId) {
+                throw new \RuntimeException("无权操作此保留 IP");
             }
 
             // 如果仍绑定 VM，先解绑
@@ -124,12 +129,13 @@ class ReservedIpManager
      *
      * @param int $ipId IP 记录 ID
      * @param string $vmName VM 名称
+     * @param int $userId 操作用户 ID（用于鉴权）
      * @return array 更新后的 IP 记录
-     * @throws \RuntimeException IP 非保留状态或已绑定
+     * @throws \RuntimeException IP 非保留状态、已绑定或不属于该用户
      */
-    public function assignToVm(int $ipId, string $vmName): array
+    public function assignToVm(int $ipId, string $vmName, int $userId): array
     {
-        return DB::transaction(function () use ($ipId, $vmName) {
+        return DB::transaction(function () use ($ipId, $vmName, $userId) {
             $record = DB::table('ip_addresses')
                 ->where('id', $ipId)
                 ->where('status', 'reserved')
@@ -138,6 +144,19 @@ class ReservedIpManager
 
             if (!$record) {
                 throw new \RuntimeException("IP 记录 [{$ipId}] 不存在或非保留状态");
+            }
+
+            if ((int) $record->reserved_by_user !== $userId) {
+                throw new \RuntimeException("无权操作此保留 IP");
+            }
+
+            // 验证目标 VM 属于该用户
+            $vmIp = DB::table('ip_addresses')->where('vm_name', $vmName)->first();
+            if ($vmIp && $vmIp->order_id) {
+                $order = DB::table('orders')->where('id', $vmIp->order_id)->first();
+                if (!$order || (int) $order->user_id !== $userId) {
+                    throw new \RuntimeException("VM [{$vmName}] 不属于当前用户");
+                }
             }
 
             if ($record->vm_name) {

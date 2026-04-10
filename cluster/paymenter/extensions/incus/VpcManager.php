@@ -33,9 +33,11 @@ class VpcManager
      */
     public function createVpc(int $userId, string $name, string $subnet): array
     {
-        // 校验网段格式：仅允许 10.x.0.0/16
-        if (!preg_match('/^10\.\d{1,3}\.0\.0\/16$/', $subnet)) {
-            throw new \InvalidArgumentException('VPC 网段格式无效，仅支持 10.x.0.0/16 格式');
+        // 校验网段格式：仅允许 10.{1-254}.0.0/16
+        if (!preg_match('/^10\.(\d{1,3})\.0\.0\/16$/', $subnet, $matches)
+            || (int) $matches[1] < 1
+            || (int) $matches[1] > 254) {
+            throw new \InvalidArgumentException('VPC 网段格式无效，仅支持 10.{1-254}.0.0/16 格式');
         }
 
         return DB::transaction(function () use ($userId, $name, $subnet) {
@@ -100,13 +102,18 @@ class VpcManager
      * 删除 VPC
      *
      * @param int $vpcId VPC ID
-     * @throws \RuntimeException VPC 中仍有 VM 成员
+     * @param int $userId 操作用户 ID（用于鉴权）
+     * @throws \RuntimeException VPC 不存在、不属于该用户或仍有 VM 成员
      */
-    public function deleteVpc(int $vpcId): void
+    public function deleteVpc(int $vpcId, int $userId): void
     {
         $vpc = DB::table('vpcs')->where('id', $vpcId)->first();
         if (!$vpc) {
             throw new \RuntimeException("VPC [{$vpcId}] 不存在");
+        }
+
+        if ((int) $vpc->user_id !== $userId) {
+            throw new \RuntimeException("无权操作此 VPC");
         }
 
         // 检查是否还有成员
@@ -156,11 +163,12 @@ class VpcManager
 
         // 校验 VM 归属：通过 ip_addresses 关联的 order 确认用户
         $vmIp = DB::table('ip_addresses')->where('vm_name', $vmName)->first();
-        if ($vmIp && $vmIp->order_id) {
-            $order = DB::table('orders')->where('id', $vmIp->order_id)->first();
-            if (!$order || (int) $order->user_id !== $userId) {
-                throw new \RuntimeException("VM [{$vmName}] 不属于当前用户");
-            }
+        if (!$vmIp || !$vmIp->order_id) {
+            throw new \RuntimeException("VM [{$vmName}] 归属信息不完整，无法验证所有权");
+        }
+        $order = DB::table('orders')->where('id', $vmIp->order_id)->first();
+        if (!$order || (int) $order->user_id !== $userId) {
+            throw new \RuntimeException("VM [{$vmName}] 不属于当前用户");
         }
 
         // 检查 VM 是否已在此 VPC 中
@@ -230,12 +238,17 @@ class VpcManager
      *
      * @param int $vpcId VPC ID
      * @param string $vmName VM 名称
+     * @param int $userId 操作用户 ID（用于鉴权）
      */
-    public function detachVm(int $vpcId, string $vmName): void
+    public function detachVm(int $vpcId, string $vmName, int $userId): void
     {
         $vpc = DB::table('vpcs')->where('id', $vpcId)->first();
         if (!$vpc) {
             throw new \RuntimeException("VPC [{$vpcId}] 不存在");
+        }
+
+        if ((int) $vpc->user_id !== $userId) {
+            throw new \RuntimeException("无权操作此 VPC");
         }
 
         $member = DB::table('vpc_members')
