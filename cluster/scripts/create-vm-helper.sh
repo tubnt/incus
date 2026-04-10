@@ -17,8 +17,6 @@ STORAGE_POOL="ceph"
 DEFAULT_DISK="20GiB"
 DEFAULT_CPU=2
 DEFAULT_MEM="2GiB"
-TEMPLATE_DIR="${SCRIPT_DIR}/../configs/cloud-init"
-
 # ── 帮助 ──────────────────────────────────────────────
 usage() {
     cat <<'EOF'

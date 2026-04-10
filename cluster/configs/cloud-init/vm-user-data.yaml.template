@@ -1,8 +1,8 @@
 #cloud-config
 # VM 用户数据模板
-# 变量: ${HOSTNAME}, ${PASSWORD_HASH}, ${SSH_PUBKEY}
+# 变量: ${VM_NAME}, ${PASSWORD_HASH}, ${SSH_PUBKEY}
 
-hostname: ${HOSTNAME}
+hostname: ${VM_NAME}
 manage_etc_hosts: true
 
 users:
