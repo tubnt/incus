@@ -146,6 +146,9 @@ class RescueMode
 
         // 恢复原始配置
         $originalRootDevice = json_decode($session->original_root_device, true);
+        if (!is_array($originalRootDevice) || empty($originalRootDevice)) {
+            throw new \RuntimeException("VM {$vmName} 的原始根设备配置已损坏，无法自动恢复");
+        }
         $devices = $currentConfig['devices'] ?? [];
 
         // 移除 rescue 相关设备，恢复原根盘

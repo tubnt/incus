@@ -24,7 +24,7 @@ class StartupScriptManager
 
     /** 敏感命令模式（触发警告） */
     private const DANGEROUS_PATTERNS = [
-        '/rm\s+(-[a-zA-Z]*f[a-zA-Z]*\s+)?\/\s/' => 'rm -rf / 危险：将删除整个文件系统',
+        '/rm\s+(-[a-zA-Z]*f[a-zA-Z]*\s+)?\/(\s|$)/' => 'rm -rf / 危险：将删除整个文件系统',
         '/rm\s+-[a-zA-Z]*f[a-zA-Z]*\s+\/\*/' => 'rm -rf /* 危险：将删除根目录下所有文件',
         '/mkfs\.[a-z]+\s+\/dev\/[sv]da/' => '格式化系统盘操作：可能破坏系统',
         '/dd\s+.*of=\/dev\/[sv]da/' => 'dd 写入系统盘：可能破坏系统',
@@ -108,6 +108,11 @@ class StartupScriptManager
         if (isset($data['type'])) {
             $this->validateType($data['type']);
             $update['type'] = $data['type'];
+
+            // type 变更时，重新校验已有脚本是否符合新类型要求
+            if (!isset($data['script'])) {
+                $this->validateScript($script->script, $data['type']);
+            }
         }
 
         DB::table('startup_scripts')

@@ -71,7 +71,7 @@
                                 <form method="POST"
                                       action="{{ route('incus.startup-scripts.delete', $script->id) }}"
                                       class="inline"
-                                      onsubmit="return confirm('确定删除脚本「{{ $script->name }}」？')">
+                                      onsubmit="return confirm('确定删除脚本「' + {{ Js::from($script->name) }} + '」？')">
                                     @csrf
                                     @method('DELETE')
                                     <button type="submit" class="text-red-600 hover:text-red-800 text-sm">

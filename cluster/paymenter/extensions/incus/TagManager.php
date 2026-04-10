@@ -219,9 +219,6 @@ class TagManager
     }
 
     /**
-     * 同步标签到 Incus config（user.tags）
-     */
-    /**
      * 同步标签到 Incus config（user.tags），使用 ETag 乐观锁防止竞态覆盖
      */
     private function syncTagsToIncus(string $vmName, array $tags): void
