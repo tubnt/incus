@@ -42,6 +42,9 @@ run_on() {
 
 # ==================== 主逻辑 ====================
 main() {
+  # 确保备份文件创建时即为 600 权限，避免短暂 world-readable 窗口
+  umask 077
+
   log "开始备份 dmcrypt 密钥..."
 
   # 找到可用的 MON 节点
@@ -64,25 +67,21 @@ main() {
 
   local backup_file="${BACKUP_DIR}/dmcrypt-keys_${TIMESTAMP}.json"
 
-  # 导出 dmcrypt 密钥
+  # 导出 dmcrypt 密钥（使用 python3 生成合法 JSON，避免 shell 拼接导致格式损坏）
   log "导出 dm-crypt 密钥..."
   local key_count=0
 
-  run_on "$mon_node" "
-    echo '{'
-    first=true
-    for key in \$(ceph config-key ls 2>/dev/null | grep dm-crypt); do
-      value=\$(ceph config-key get \"\$key\" 2>/dev/null)
-      if [ \"\$first\" = true ]; then
-        first=false
-      else
-        echo ','
-      fi
-      echo \"  \\\"\$key\\\": \\\"\$value\\\"\"
-    done
-    echo ''
-    echo '}'
-  " > "$backup_file" 2>/dev/null
+  run_on "$mon_node" "python3 -c '
+import subprocess, json, sys
+out = subprocess.check_output([\"ceph\", \"config-key\", \"ls\"], text=True)
+keys = [k for k in out.strip().splitlines() if \"dm-crypt\" in k]
+result = {}
+for key in keys:
+    val = subprocess.check_output([\"ceph\", \"config-key\", \"get\", key], text=True).strip()
+    result[key] = val
+json.dump(result, sys.stdout, indent=2)
+print()
+'" > "$backup_file" 2>/dev/null
 
   key_count=$(run_on "$mon_node" "ceph config-key ls 2>/dev/null | grep -c dm-crypt" 2>/dev/null || echo "0")
 
@@ -101,14 +100,16 @@ main() {
   chmod 600 "$extra_file"
   log "已备份 Ceph 认证信息: ${extra_file}"
 
-  # 清理旧备份
+  # 清理旧备份（使用 find 替代 ls 管道解析，避免特殊字符问题）
   local backup_count
-  backup_count=$(ls -1 "${BACKUP_DIR}"/dmcrypt-keys_*.json 2>/dev/null | wc -l)
+  backup_count=$(find "${BACKUP_DIR}" -maxdepth 1 -name 'dmcrypt-keys_*.json' -type f | wc -l)
   if [[ "$backup_count" -gt "$MAX_BACKUPS" ]]; then
     local to_delete=$((backup_count - MAX_BACKUPS))
     log "清理 ${to_delete} 份旧备份..."
-    ls -1t "${BACKUP_DIR}"/dmcrypt-keys_*.json | tail -n "$to_delete" | xargs rm -f
-    ls -1t "${BACKUP_DIR}"/ceph-auth_*.txt | tail -n "$to_delete" | xargs rm -f
+    find "${BACKUP_DIR}" -maxdepth 1 -name 'dmcrypt-keys_*.json' -type f -printf '%T@ %p\n' \
+      | sort -n | head -n "$to_delete" | cut -d' ' -f2- | xargs -d '\n' rm -f
+    find "${BACKUP_DIR}" -maxdepth 1 -name 'ceph-auth_*.txt' -type f -printf '%T@ %p\n' \
+      | sort -n | head -n "$to_delete" | cut -d' ' -f2- | xargs -d '\n' rm -f
   fi
 
   log "备份完成"

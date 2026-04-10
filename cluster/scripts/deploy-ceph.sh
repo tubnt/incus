@@ -113,10 +113,6 @@ do_bootstrap() {
       --skip-monitoring-stack
   "
 
-  log "Bootstrap 完成"
-  log "获取 Ceph 公钥用于后续添加节点..."
-  run_on "${CEPH_BOOTSTRAP_NODE}" "ceph cephadm get-pub-key" > /tmp/ceph-pub-key.pub
-
   log "Bootstrap 完成，集群已在 ${CEPH_BOOTSTRAP_NODE} 上初始化"
 }
 
@@ -140,10 +136,10 @@ do_add_hosts() {
 
     log "添加 ${node} (${ceph_pub_ip})..."
 
-    # 分发 SSH 公钥
-    run_on "$node" "
-      mkdir -p /root/.ssh
-      echo '${pub_key}' >> /root/.ssh/authorized_keys
+    # 分发 SSH 公钥（通过 stdin 传输，避免 shell 注入）
+    printf '%s\n' "$pub_key" | run_on "$node" "
+      mkdir -p /root/.ssh && chmod 700 /root/.ssh
+      cat >> /root/.ssh/authorized_keys
       sort -u /root/.ssh/authorized_keys -o /root/.ssh/authorized_keys
     "
 
@@ -220,6 +216,7 @@ do_deploy_osds() {
   log "应用 OSD service spec（encrypted: true）..."
   run_on "${CEPH_BOOTSTRAP_NODE}" "
     ceph orch apply -i /tmp/ceph-osd-spec.yaml
+    rm -f /tmp/ceph-osd-spec.yaml
   "
 
   log "等待 OSD 部署完成（预计 20 个 OSD: 5 节点 × 4 盘）..."
@@ -341,22 +338,22 @@ do_connect_incus() {
   done
 
   log "分发 Ceph 配置和密钥到各节点..."
-  local ceph_conf ceph_keyring
-  ceph_conf=$(run_on "${CEPH_BOOTSTRAP_NODE}" "cat /etc/ceph/ceph.conf")
-  ceph_keyring=$(run_on "${CEPH_BOOTSTRAP_NODE}" "cat /etc/ceph/ceph.client.admin.keyring")
+  # 通过 scp 传输敏感文件，避免 shell 变量展开导致内容损坏或注入
+  local tmp_conf tmp_keyring
+  tmp_conf=$(mktemp)
+  tmp_keyring=$(mktemp)
+  trap "rm -f '$tmp_conf' '$tmp_keyring'" RETURN
+
+  run_on "${CEPH_BOOTSTRAP_NODE}" "cat /etc/ceph/ceph.conf" > "$tmp_conf"
+  run_on "${CEPH_BOOTSTRAP_NODE}" "cat /etc/ceph/ceph.client.admin.keyring" > "$tmp_keyring"
+  chmod 600 "$tmp_keyring"
 
   for node in $(get_all_nodes); do
     [[ "$node" == "${CEPH_BOOTSTRAP_NODE}" ]] && continue
-    run_on "$node" "
-      mkdir -p /etc/ceph
-      cat > /etc/ceph/ceph.conf << 'CEOF'
-${ceph_conf}
-CEOF
-      cat > /etc/ceph/ceph.client.admin.keyring << 'CEOF'
-${ceph_keyring}
-CEOF
-      chmod 600 /etc/ceph/ceph.client.admin.keyring
-    "
+    run_on "$node" "mkdir -p /etc/ceph"
+    copy_to "$node" "$tmp_conf" "/etc/ceph/ceph.conf"
+    copy_to "$node" "$tmp_keyring" "/etc/ceph/ceph.client.admin.keyring"
+    run_on "$node" "chmod 600 /etc/ceph/ceph.client.admin.keyring"
     log "  ${node}: 配置已分发"
   done
 
