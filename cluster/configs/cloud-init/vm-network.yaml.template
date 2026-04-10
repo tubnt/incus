@@ -6,6 +6,8 @@ network:
   ethernets:
     enp5s0:
       addresses: [${IP}/${SUBNET_MASK}]
-      gateway4: ${GATEWAY}
+      routes:
+        - to: default
+          via: ${GATEWAY}
       nameservers:
         addresses: [${DNS1}, ${DNS2}]

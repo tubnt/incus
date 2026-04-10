@@ -36,7 +36,8 @@ usage() {
   --disk <大小>         磁盘大小（默认: 20GiB）
   --bandwidth <限速>    带宽限速，如 100Mbit
   --ssh-key <路径>      SSH 公钥文件路径（默认: ~/.ssh/id_ed25519.pub）
-  --password <密码>     root 密码（不指定则随机生成）
+  --password-file <路径> 包含 root 密码的文件（不指定则随机生成）
+                        也可通过 VM_PASSWORD 环境变量传入
   --no-start            创建后不自动启动
   --help                显示此帮助信息
 
@@ -69,6 +70,7 @@ DISK="$DEFAULT_DISK"
 BANDWIDTH=""
 SSH_KEY_FILE="${HOME}/.ssh/id_ed25519.pub"
 PASSWORD=""
+PASSWORD_FILE=""
 AUTO_START=true
 
 while [[ $# -gt 0 ]]; do
@@ -79,9 +81,9 @@ while [[ $# -gt 0 ]]; do
         --memory)    MEMORY="$2";       shift 2 ;;
         --disk)      DISK="$2";         shift 2 ;;
         --bandwidth) BANDWIDTH="$2";    shift 2 ;;
-        --ssh-key)   SSH_KEY_FILE="$2"; shift 2 ;;
-        --password)  PASSWORD="$2";     shift 2 ;;
-        --no-start)  AUTO_START=false;  shift ;;
+        --ssh-key)        SSH_KEY_FILE="$2";  shift 2 ;;
+        --password-file)  PASSWORD_FILE="$2"; shift 2 ;;
+        --no-start)       AUTO_START=false;   shift ;;
         --help)      usage ;;
         *)           die "未知参数: $1" ;;
     esac
@@ -100,6 +102,11 @@ validate_ip() {
 }
 
 validate_ip "$IP_ADDR"
+
+# 校验 VM 名称（仅允许小写字母、数字、连字符，禁止特殊字符破坏 YAML/命令）
+if ! [[ "$VM_NAME" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]]; then
+    die "VM 名称不合法（仅允许小写字母、数字和连字符，长度 1-63）: ${VM_NAME}"
+fi
 
 # 检查 VM 是否已存在
 if incus info "$VM_NAME" &>/dev/null; then
@@ -136,13 +143,24 @@ fi
 # ── 步骤 2：生成 cloud-init 配置 ──────────────────────
 log "生成 cloud-init 配置..."
 
-# 生成密码
-if [[ -z "$PASSWORD" ]]; then
+# 读取密码：优先 --password-file，其次 VM_PASSWORD 环境变量，最后随机生成
+if [[ -n "$PASSWORD_FILE" ]]; then
+    [[ -f "$PASSWORD_FILE" ]] || die "密码文件不存在: ${PASSWORD_FILE}"
+    PASSWORD=$(<"$PASSWORD_FILE")
+    [[ -n "$PASSWORD" ]] || die "密码文件为空: ${PASSWORD_FILE}"
+elif [[ -n "${VM_PASSWORD:-}" ]]; then
+    PASSWORD="$VM_PASSWORD"
+else
     PASSWORD=$(openssl rand -base64 16)
-    log "已生成随机 root 密码: ${PASSWORD}"
-    log "请妥善保存此密码！"
+    CRED_FILE="${HOME}/.incus-vm-creds/${VM_NAME}.cred"
+    mkdir -p "${HOME}/.incus-vm-creds"
+    chmod 700 "${HOME}/.incus-vm-creds"
+    install -m 600 /dev/null "$CRED_FILE"
+    echo "$PASSWORD" > "$CRED_FILE"
+    log "已生成随机 root 密码，保存至: ${CRED_FILE}（权限 600）"
 fi
-PASSWORD_HASH=$(echo "$PASSWORD" | openssl passwd -6 -stdin)
+PASSWORD_HASH=$(openssl passwd -6 -stdin <<< "$PASSWORD")
+unset PASSWORD
 
 # 网络配置
 NETWORK_CONFIG=$(cat <<NETEOF
@@ -151,7 +169,9 @@ network:
   ethernets:
     enp5s0:
       addresses: [${IP_ADDR}/${SUBNET_MASK}]
-      gateway4: ${GATEWAY}
+      routes:
+        - to: default
+          via: ${GATEWAY}
       nameservers:
         addresses: [${DNS1}, ${DNS2}]
 NETEOF

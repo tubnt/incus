@@ -79,6 +79,11 @@ validate_vm() {
 # ── 主流程 ──────────────────────────────────────────
 log "开始绑定 IP: VM=${VM_NAME}, IP=${IP_ADDR}"
 
+# 校验 VM 名称格式
+if ! [[ "$VM_NAME" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]]; then
+    die "VM 名称不合法（仅允许小写字母、数字和连字符，长度 1-63）: ${VM_NAME}"
+fi
+
 validate_ip "$IP_ADDR"
 log "IP 地址校验通过"
 

@@ -86,6 +86,12 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# 校验网关 IP 格式（防止命令注入）
+if ! [[ "$GATEWAY_IP" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+    echo "错误: 网关 IP 格式无效: ${GATEWAY_IP}" >&2
+    exit 1
+fi
+
 # 检查 VM 是否存在且运行中
 if ! incus info "$VM_NAME" &>/dev/null; then
     echo "错误: 虚拟机 '${VM_NAME}' 不存在" >&2
