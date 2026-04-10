@@ -62,8 +62,11 @@ setup_ssh_audit() {
         local audit_rule="-a always,exit -F arch=b64 -S execve -F uid=0 -k admin_cmd"
         if ! auditctl -l 2>/dev/null | grep -q "admin_cmd"; then
             auditctl ${audit_rule} 2>/dev/null || true
-            # 持久化规则
-            echo "${audit_rule}" >> /etc/audit/rules.d/admin-commands.rules 2>/dev/null || true
+            # 持久化规则（幂等：仅在规则不存在时写入）
+            local rules_file="/etc/audit/rules.d/admin-commands.rules"
+            if [[ ! -f "${rules_file}" ]] || ! grep -qF "admin_cmd" "${rules_file}" 2>/dev/null; then
+                echo "${audit_rule}" >> "${rules_file}" 2>/dev/null || true
+            fi
             log "auditd 规则已添加"
         else
             log "auditd admin_cmd 规则已存在"

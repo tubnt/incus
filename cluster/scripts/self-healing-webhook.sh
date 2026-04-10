@@ -8,8 +8,10 @@ set -euo pipefail
 
 # ==================== 配置 ====================
 LISTEN_PORT="${WEBHOOK_PORT:-9095}"
+LISTEN_ADDR="${WEBHOOK_BIND:-127.0.0.1}"  # 绑定地址，默认仅本地
 AUDIT_LOG="/var/log/self-healing/audit.log"
 ALLOWED_IPS="${ALLOWED_IPS:-127.0.0.1}"  # 逗号分隔，Alertmanager IP 白名单
+MAX_BODY_SIZE=1048576  # 最大请求体 1MB
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # ==================== 工具函数 ====================
@@ -24,8 +26,14 @@ audit() {
     local action="$1" alert="$2" result="$3" detail="${4:-}"
     local ts
     ts=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
-    printf '{"time":"%s","action":"%s","alert":"%s","result":"%s","detail":"%s"}\n' \
-        "${ts}" "${action}" "${alert}" "${result}" "${detail}" >> "${AUDIT_LOG}"
+    jq -n -c \
+        --arg time "${ts}" \
+        --arg action "${action}" \
+        --arg alert "${alert}" \
+        --arg result "${result}" \
+        --arg detail "${detail}" \
+        '{time:$time,action:$action,alert:$alert,result:$result,detail:$detail}' \
+        >> "${AUDIT_LOG}"
 }
 
 check_ip() {
@@ -186,8 +194,13 @@ serve_one() {
         fi
     done
 
-    # 读取 body
+    # 读取 body（限制大小防 OOM）
     local body=""
+    if [[ "${content_length}" -gt "${MAX_BODY_SIZE}" ]]; then
+        echo "HTTP/1.1 413 Payload Too Large"
+        echo ""
+        return
+    fi
     if [[ "${content_length}" -gt 0 ]]; then
         body=$(head -c "${content_length}")
     fi
@@ -209,8 +222,8 @@ main() {
     log "INFO" "自愈 webhook 服务启动，监听端口 ${LISTEN_PORT}"
     log "INFO" "允许的 IP: ${ALLOWED_IPS}"
 
-    exec socat "TCP-LISTEN:${LISTEN_PORT},reuseaddr,fork" \
-        SYSTEM:"bash $0 --serve-one"
+    exec socat "TCP-LISTEN:${LISTEN_PORT},bind=${LISTEN_ADDR},reuseaddr,fork" \
+        SYSTEM:"bash \"$0\" --serve-one"
 }
 
 if [[ "${1:-}" == "--serve-one" ]]; then

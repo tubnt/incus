@@ -12,10 +12,11 @@ RestartSec=10
 
 # 环境变量
 Environment=WEBHOOK_PORT=9095
+Environment=WEBHOOK_BIND=127.0.0.1
 Environment=ALLOWED_IPS=127.0.0.1
 
 # 安全加固
-NoNewPrivileges=no
+NoNewPrivileges=yes
 ProtectSystem=full
 ProtectHome=yes
 PrivateTmp=yes
