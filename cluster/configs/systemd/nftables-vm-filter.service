@@ -1,0 +1,27 @@
+[Unit]
+Description=nftables VM 隔离防火墙规则（集群版）
+Documentation=file:///etc/nftables-vm-filter.conf
+
+# 在 Incus 启动前加载，确保手写规则 priority -10 先于 Incus ACL priority 0
+Before=incus.service incus.socket
+After=network-pre.target
+Wants=network-pre.target
+
+# 加载失败不阻塞 Incus 启动
+DefaultDependencies=no
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+
+ExecStart=/usr/sbin/nft -f /etc/nftables-vm-filter.conf
+ExecReload=/usr/sbin/nft -f /etc/nftables-vm-filter.conf
+
+# 停止时清除 vm_filter 表（host_filter 保留，由主 nftables 管理）
+ExecStop=/usr/sbin/nft delete table bridge vm_filter
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
