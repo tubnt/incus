@@ -58,11 +58,17 @@ function RootLayout() {
                 <Link to="/admin/vms" className="text-foreground/70 hover:text-foreground [&.active]:text-foreground [&.active]:font-medium">
                   All VMs
                 </Link>
-                <Link to="/admin/create-vm" className="text-foreground/70 hover:text-foreground [&.active]:text-foreground [&.active]:font-medium">
-                  + Create VM
+                <Link to="/admin/ip-pools" className="text-foreground/70 hover:text-foreground [&.active]:text-foreground [&.active]:font-medium">
+                  IP Pools
+                </Link>
+                <Link to="/admin/monitoring" className="text-foreground/70 hover:text-foreground [&.active]:text-foreground [&.active]:font-medium">
+                  Monitor
                 </Link>
                 <Link to="/admin/users" className="text-foreground/70 hover:text-foreground [&.active]:text-foreground [&.active]:font-medium">
                   Users
+                </Link>
+                <Link to="/admin/create-vm" className="text-foreground/70 hover:text-foreground [&.active]:text-foreground [&.active]:font-medium">
+                  + VM
                 </Link>
               </>
             )}

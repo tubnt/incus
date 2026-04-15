@@ -13,6 +13,8 @@ import { Route as VmsRouteImport } from './routes/vms'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AdminVmsRouteImport } from './routes/admin/vms'
 import { Route as AdminUsersRouteImport } from './routes/admin/users'
+import { Route as AdminMonitoringRouteImport } from './routes/admin/monitoring'
+import { Route as AdminIpPoolsRouteImport } from './routes/admin/ip-pools'
 import { Route as AdminCreateVmRouteImport } from './routes/admin/create-vm'
 import { Route as AdminClustersRouteImport } from './routes/admin/clusters'
 
@@ -36,6 +38,16 @@ const AdminUsersRoute = AdminUsersRouteImport.update({
   path: '/admin/users',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AdminMonitoringRoute = AdminMonitoringRouteImport.update({
+  id: '/admin/monitoring',
+  path: '/admin/monitoring',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AdminIpPoolsRoute = AdminIpPoolsRouteImport.update({
+  id: '/admin/ip-pools',
+  path: '/admin/ip-pools',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const AdminCreateVmRoute = AdminCreateVmRouteImport.update({
   id: '/admin/create-vm',
   path: '/admin/create-vm',
@@ -52,6 +64,8 @@ export interface FileRoutesByFullPath {
   '/vms': typeof VmsRoute
   '/admin/clusters': typeof AdminClustersRoute
   '/admin/create-vm': typeof AdminCreateVmRoute
+  '/admin/ip-pools': typeof AdminIpPoolsRoute
+  '/admin/monitoring': typeof AdminMonitoringRoute
   '/admin/users': typeof AdminUsersRoute
   '/admin/vms': typeof AdminVmsRoute
 }
@@ -60,6 +74,8 @@ export interface FileRoutesByTo {
   '/vms': typeof VmsRoute
   '/admin/clusters': typeof AdminClustersRoute
   '/admin/create-vm': typeof AdminCreateVmRoute
+  '/admin/ip-pools': typeof AdminIpPoolsRoute
+  '/admin/monitoring': typeof AdminMonitoringRoute
   '/admin/users': typeof AdminUsersRoute
   '/admin/vms': typeof AdminVmsRoute
 }
@@ -69,6 +85,8 @@ export interface FileRoutesById {
   '/vms': typeof VmsRoute
   '/admin/clusters': typeof AdminClustersRoute
   '/admin/create-vm': typeof AdminCreateVmRoute
+  '/admin/ip-pools': typeof AdminIpPoolsRoute
+  '/admin/monitoring': typeof AdminMonitoringRoute
   '/admin/users': typeof AdminUsersRoute
   '/admin/vms': typeof AdminVmsRoute
 }
@@ -79,6 +97,8 @@ export interface FileRouteTypes {
     | '/vms'
     | '/admin/clusters'
     | '/admin/create-vm'
+    | '/admin/ip-pools'
+    | '/admin/monitoring'
     | '/admin/users'
     | '/admin/vms'
   fileRoutesByTo: FileRoutesByTo
@@ -87,6 +107,8 @@ export interface FileRouteTypes {
     | '/vms'
     | '/admin/clusters'
     | '/admin/create-vm'
+    | '/admin/ip-pools'
+    | '/admin/monitoring'
     | '/admin/users'
     | '/admin/vms'
   id:
@@ -95,6 +117,8 @@ export interface FileRouteTypes {
     | '/vms'
     | '/admin/clusters'
     | '/admin/create-vm'
+    | '/admin/ip-pools'
+    | '/admin/monitoring'
     | '/admin/users'
     | '/admin/vms'
   fileRoutesById: FileRoutesById
@@ -104,6 +128,8 @@ export interface RootRouteChildren {
   VmsRoute: typeof VmsRoute
   AdminClustersRoute: typeof AdminClustersRoute
   AdminCreateVmRoute: typeof AdminCreateVmRoute
+  AdminIpPoolsRoute: typeof AdminIpPoolsRoute
+  AdminMonitoringRoute: typeof AdminMonitoringRoute
   AdminUsersRoute: typeof AdminUsersRoute
   AdminVmsRoute: typeof AdminVmsRoute
 }
@@ -138,6 +164,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AdminUsersRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/admin/monitoring': {
+      id: '/admin/monitoring'
+      path: '/admin/monitoring'
+      fullPath: '/admin/monitoring'
+      preLoaderRoute: typeof AdminMonitoringRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/admin/ip-pools': {
+      id: '/admin/ip-pools'
+      path: '/admin/ip-pools'
+      fullPath: '/admin/ip-pools'
+      preLoaderRoute: typeof AdminIpPoolsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/admin/create-vm': {
       id: '/admin/create-vm'
       path: '/admin/create-vm'
@@ -160,6 +200,8 @@ const rootRouteChildren: RootRouteChildren = {
   VmsRoute: VmsRoute,
   AdminClustersRoute: AdminClustersRoute,
   AdminCreateVmRoute: AdminCreateVmRoute,
+  AdminIpPoolsRoute: AdminIpPoolsRoute,
+  AdminMonitoringRoute: AdminMonitoringRoute,
   AdminUsersRoute: AdminUsersRoute,
   AdminVmsRoute: AdminVmsRoute,
 }

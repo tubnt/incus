@@ -32,7 +32,7 @@ type AdminRouteRegistrar interface {
 	AdminRoutes(r chi.Router)
 }
 
-func New(cfg *config.Config, userLookup func(ctx context.Context, email string) (int64, string, error), adminHandler RouteRegistrar, portalHandler RouteRegistrar, userHandler AdminRouteRegistrar) *Server {
+func New(cfg *config.Config, userLookup func(ctx context.Context, email string) (int64, string, error), adminHandler RouteRegistrar, portalHandler RouteRegistrar, userHandler AdminRouteRegistrar, ipPoolHandler AdminRouteRegistrar) *Server {
 	r := chi.NewRouter()
 
 	r.Use(chimw.RequestID)
@@ -63,6 +63,9 @@ func New(cfg *config.Config, userLookup func(ctx context.Context, email string) 
 			}
 			if userHandler != nil {
 				userHandler.AdminRoutes(r)
+			}
+			if ipPoolHandler != nil {
+				ipPoolHandler.AdminRoutes(r)
 			}
 		})
 

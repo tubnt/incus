@@ -79,8 +79,9 @@ func main() {
 	adminHandler := portal.NewAdminVMHandler(vmSvc, clusterMgr, scheduler)
 	portalHandler := portal.NewVMHandler(vmSvc, vmRepo, clusterMgr)
 	userHandler := portal.NewUserHandler(userRepo)
+	ipPoolHandler := portal.NewIPPoolHandler(clusterMgr)
 
-	srv := server.New(cfg, userLookup, adminHandler, portalHandler, userHandler)
+	srv := server.New(cfg, userLookup, adminHandler, portalHandler, userHandler, ipPoolHandler)
 
 	if err := srv.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "server error: %v\n", err)
