@@ -61,20 +61,49 @@
 
 ## Proposal
 
-### Phase 1: Critical UX fixes (immediate bugs)
+### Phase 1: Unified order flow + Admin DB fix (P0)
 
-**1.1 Admin VM create → show password result**
-- After `CreateVM` success, show a modal/alert with VM name, IP, username, password
-- Frontend: `admin/create-vm.tsx` — display `createMutation.data` on success
+**1.1 Remove free-create path (Q2)**
+- DELETE `vms.tsx`: Remove `CreateVMForm` component, `SIZES` constant, and `+ Create VM` button
+- DELETE `vm.go`: Remove `POST /portal/services` route and `CreateService` handler
+- User "My VMs" page becomes read-only list + order link
+- All VM creation redirects to billing page
 
-**1.2 User portal VM → fix "My VMs" visibility**
-- Root cause: `CreateService` (portal) writes to `vms` DB and creates via Incus, but `ListServices` queries DB. The order-driven flow (`Pay`) also creates DB record. Need to verify the DB record is correct and refreshing works.
-- Fix: After payment success, invalidate `["myServices"]` query + show success banner
+**1.2 Redesign billing page as unified VM creation hub**
+- Fetch products from `/portal/products` — show as cards (DO-style)
+- Each card: name, CPU/RAM/Disk, price, **OS image selector**, **VM name input**
+- "Buy" → creates order with `product_id` + `os_image` + `vm_name`
+- "Pay" → deduct balance → auto-provision VM → **show credentials modal** (IP, user, password)
+- Insufficient balance → show "Top up" prompt (admin can self-top-up)
 
-**1.3 User VM creation → use DB products (not hardcoded S/M/L)**
-- Replace `vms.tsx` hardcoded `SIZES` with dynamic product list from `/portal/products`
-- User selects product → creates order → pays → VM auto-provisioned
-- If no products defined, fall back to current S/M/L
+**1.3 Fix admin create-vm to use order flow (Q2)**
+- Redesign `admin/create-vm.tsx`: same product selection as user billing
+- Admin creates order → pays from own balance → VM provisioned
+- Admin privilege: can top-up own balance via Users page
+- Alternative: keep admin direct-create but fix DB write (see 1.4)
+
+**1.4 Admin CreateVM writes DB + shows credentials (Q1)**
+- `AdminVMHandler.CreateVM`: add `vmRepo` field, get `userID` from `middleware.CtxUserID`
+- After `vmSvc.Create`, call `vmRepo.Create(vm)` with admin's `userID`
+- Frontend `admin/create-vm.tsx`: show credentials modal `onSuccess` instead of navigating away
+
+**1.5 Admin DeleteVM updates DB**
+- Add `vmRepo` to `AdminVMHandler`
+- After `vmSvc.Delete`, call `vmRepo.Delete(id)` or `vmRepo.UpdateStatus(id, "deleted")`
+
+**1.6 Remove hardcoded storage/network values**
+- Replace `"ceph-pool"` (4 occurrences) → read from cluster config `cc.StoragePool`
+- Replace `"br-pub"` (3 occurrences) → read from cluster config `cc.Network`
+- Add `StoragePool` and `Network` fields to `ClusterConfig` struct
+- Add corresponding DB columns to `clusters` table
+
+**1.7 Delete dead feature API files (Q8)**
+- Delete: `features/ssh-keys/api.ts`, `features/billing/api.ts`, `features/users/api.ts`, `features/api-tokens/api.ts`, `features/audit/api.ts`
+
+**1.8 Fix snapshot-panel for portal users**
+- `snapshot-panel.tsx`: accept `apiBase` prop ("/portal" or "/admin")
+- Add portal snapshot routes: `GET/POST/DELETE /portal/vms/{name}/snapshots`
+- Backend: verify ownership via `vmRepo.GetByName`
 
 ### Phase 2: Networking & IP management
 
@@ -121,11 +150,11 @@
 
 ### Phase 5: Missing UX polish
 
-**5.1 Logout button** — clear oauth2-proxy session + redirect
-**5.2 Global toast/notification system** — success/error feedback
-**5.3 Admin create VM → select cluster** (not just first)
-**5.4 Admin VM actions → update DB status** (currently only Incus)
-**5.5 Order-driven flow complete** — billing page "Buy" → OS selection → create order → pay → result with credentials
+**5.1 Logout button** — `GET /oauth2/sign_out` + clear cookies + redirect to `/`
+**5.2 Global toast/notification system** — success/error/warning toasts for all mutations
+**5.3 Console "Back" link** — dynamic: admin→`/admin/vms`, user→`/vms`
+**5.4 Fix `findClusterName`** — actually use clusterID or remove the parameter
+**5.5 Order cluster selection** — when multiple clusters, let user choose in billing
 
 ### Phase 6: Operations — Storage (Ceph Dashboard)
 
@@ -238,7 +267,7 @@ Reference: [Proxmox Cluster Manager](https://pve.proxmox.com/wiki/Cluster_Manage
 
 | Phase | Content | Effort | Priority |
 |-------|---------|--------|----------|
-| **1** | Critical UX fixes (password, VM list, products) | Small | **P0** |
+| **1** | Unified order flow + Admin DB + dead code + snapshot portal (8 items) | **Large** | **P0** |
 | **2** | IP/VLAN management | Medium | P1 |
 | **3** | Cluster + node UI (add cluster, add node, Ceph) | Large | P1 |
 | **4** | VM detail page (DO-style) | Large | P2 |
