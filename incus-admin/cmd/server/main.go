@@ -83,6 +83,14 @@ func main() {
 		return user.Role, nil
 	}
 
+	balanceLookup := func(ctx context.Context, userID int64) (float64, error) {
+		user, err := userRepo.GetByID(ctx, userID)
+		if err != nil || user == nil {
+			return 0, fmt.Errorf("user not found")
+		}
+		return user.Balance, nil
+	}
+
 	vmRepo := repository.NewVMRepo(db)
 	sshKeyRepo := repository.NewSSHKeyRepo(db)
 	ticketRepo := repository.NewTicketRepo(db)
@@ -100,9 +108,9 @@ func main() {
 		return t.UserID, nil
 	})
 
-	srv := server.New(cfg, userLookup, roleLookup, server.Handlers{
+	srv := server.New(cfg, userLookup, roleLookup, balanceLookup, server.Handlers{
 		Admin:     portal.NewAdminVMHandler(vmSvc, clusterMgr, scheduler),
-		Portal:    portal.NewVMHandler(vmSvc, vmRepo, clusterMgr),
+		Portal:    portal.NewVMHandler(vmSvc, vmRepo, sshKeyRepo, clusterMgr),
 		Users:     portal.NewUserHandler(userRepo),
 		IPPools:   portal.NewIPPoolHandler(clusterMgr),
 		Console:   portal.NewConsoleHandler(clusterMgr),
@@ -111,7 +119,7 @@ func main() {
 		SSHKeys:   portal.NewSSHKeyHandler(sshKeyRepo),
 		Tickets:   portal.NewTicketHandler(ticketRepo),
 		Products:  portal.NewProductHandler(productRepo),
-		Orders:    portal.NewOrderHandler(orderRepo, productRepo),
+		Orders:    portal.NewOrderHandler(orderRepo, productRepo, vmSvc, vmRepo, sshKeyRepo, clusterMgr),
 		Audit:     portal.NewAuditHandler(auditRepo),
 		APITokens: portal.NewAPITokenHandler(apiTokenRepo),
 		Invoices:  portal.NewInvoiceHandler(invoiceRepo),

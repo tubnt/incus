@@ -22,11 +22,12 @@ import (
 type VMHandler struct {
 	vmSvc    *service.VMService
 	vmRepo   *repository.VMRepo
+	sshKeys  *repository.SSHKeyRepo
 	clusters *cluster.Manager
 }
 
-func NewVMHandler(vmSvc *service.VMService, vmRepo *repository.VMRepo, clusters *cluster.Manager) *VMHandler {
-	return &VMHandler{vmSvc: vmSvc, vmRepo: vmRepo, clusters: clusters}
+func NewVMHandler(vmSvc *service.VMService, vmRepo *repository.VMRepo, sshKeys *repository.SSHKeyRepo, clusters *cluster.Manager) *VMHandler {
+	return &VMHandler{vmSvc: vmSvc, vmRepo: vmRepo, sshKeys: sshKeys, clusters: clusters}
 }
 
 func (h *VMHandler) Routes(r chi.Router) {
@@ -113,6 +114,7 @@ func (h *VMHandler) CreateService(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
+		Name     string `json:"name"`
 		CPU      int    `json:"cpu"`
 		MemoryMB int    `json:"memory_mb"`
 		DiskGB   int    `json:"disk_gb"`
@@ -126,6 +128,8 @@ func (h *VMHandler) CreateService(w http.ResponseWriter, r *http.Request) {
 	if req.MemoryMB == 0 { req.MemoryMB = 2048 }
 	if req.DiskGB == 0 { req.DiskGB = 50 }
 	if req.OSImage == "" { req.OSImage = "images:ubuntu/24.04/cloud" }
+
+	sshKeys, _ := h.sshKeys.GetByUser(r.Context(), userID)
 
 	if h.clusters == nil || len(h.clusters.List()) == 0 {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "no clusters available"})
@@ -151,10 +155,12 @@ func (h *VMHandler) CreateService(w http.ResponseWriter, r *http.Request) {
 		ClusterName: client.Name,
 		Project:     "customers",
 		UserID:      userID,
+		VMName:      req.Name,
 		CPU:         req.CPU,
 		MemoryMB:    req.MemoryMB,
 		DiskGB:      req.DiskGB,
 		OSImage:     req.OSImage,
+		SSHKeys:     sshKeys,
 		IP:          ip,
 		Gateway:     gateway,
 		SubnetCIDR:  cidr,
@@ -337,7 +343,28 @@ func (h *AdminVMHandler) CreateVM(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *AdminVMHandler) ListAllVMs(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"vms": []any{}})
+	var allInstances []json.RawMessage
+	for _, client := range h.clusters.List() {
+		cc, ok := h.clusters.ConfigByName(client.Name)
+		if !ok {
+			continue
+		}
+		for _, proj := range cc.Projects {
+			instances, err := h.vmSvc.ListInstances(r.Context(), client.Name, proj.Name)
+			if err != nil {
+				continue
+			}
+			allInstances = append(allInstances, instances...)
+		}
+		if len(cc.Projects) == 0 {
+			instances, _ := h.vmSvc.ListInstances(r.Context(), client.Name, "default")
+			allInstances = append(allInstances, instances...)
+		}
+	}
+	if allInstances == nil {
+		allInstances = []json.RawMessage{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"vms": allInstances, "count": len(allInstances)})
 }
 
 func (h *AdminVMHandler) ChangeVMState(w http.ResponseWriter, r *http.Request) {
@@ -352,7 +379,14 @@ func (h *AdminVMHandler) ChangeVMState(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid body"})
 		return
 	}
-	if req.Cluster == "" { req.Cluster = h.clusters.List()[0].Name }
+	if req.Cluster == "" {
+		clients := h.clusters.List()
+		if len(clients) == 0 {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "no clusters"})
+			return
+		}
+		req.Cluster = clients[0].Name
+	}
 	if req.Project == "" { req.Project = "customers" }
 
 	err := h.vmSvc.ChangeState(r.Context(), req.Cluster, req.Project, vmName, req.Action, req.Force)
@@ -369,8 +403,13 @@ func (h *AdminVMHandler) DeleteVM(w http.ResponseWriter, r *http.Request) {
 	vmName := chi.URLParam(r, "name")
 	clusterParam := r.URL.Query().Get("cluster")
 	projectParam := r.URL.Query().Get("project")
-	if clusterParam == "" && len(h.clusters.List()) > 0 {
-		clusterParam = h.clusters.List()[0].Name
+	if clusterParam == "" {
+		clients := h.clusters.List()
+		if len(clients) == 0 {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "no clusters"})
+			return
+		}
+		clusterParam = clients[0].Name
 	}
 	if projectParam == "" { projectParam = "customers" }
 

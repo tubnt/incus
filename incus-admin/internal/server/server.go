@@ -72,7 +72,9 @@ type Handlers struct {
 	}
 }
 
-func New(cfg *config.Config, userLookup func(ctx context.Context, email string) (int64, string, error), roleLookup func(ctx context.Context, userID int64) (string, error), h Handlers) *Server {
+type UserBalanceLookup func(ctx context.Context, userID int64) (float64, error)
+
+func New(cfg *config.Config, userLookup func(ctx context.Context, email string) (int64, string, error), roleLookup func(ctx context.Context, userID int64) (string, error), balanceLookup UserBalanceLookup, h Handlers) *Server {
 	r := chi.NewRouter()
 
 	r.Use(chimw.RequestID)
@@ -159,12 +161,16 @@ func New(cfg *config.Config, userLookup func(ctx context.Context, email string) 
 			email, _ := r.Context().Value(middleware.CtxUserEmail).(string)
 			userID, _ := r.Context().Value(middleware.CtxUserID).(int64)
 			role, _ := r.Context().Value(middleware.CtxUserRole).(string)
+			var balance float64
+			if balanceLookup != nil && userID > 0 {
+				balance, _ = balanceLookup(r.Context(), userID)
+			}
 			writeJSON(w, http.StatusOK, map[string]any{
-				"id":    userID,
-				"email": email,
-				"name":  email,
-				"role":  role,
-				"balance": 0,
+				"id":      userID,
+				"email":   email,
+				"name":    email,
+				"role":    role,
+				"balance": balance,
 			})
 		})
 	})

@@ -2,22 +2,31 @@ package portal
 
 import (
 	"encoding/json"
+	"log/slog"
+	"net"
 	"net/http"
 	"strconv"
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/incuscloud/incus-admin/internal/cluster"
 	"github.com/incuscloud/incus-admin/internal/middleware"
+	"github.com/incuscloud/incus-admin/internal/model"
 	"github.com/incuscloud/incus-admin/internal/repository"
+	"github.com/incuscloud/incus-admin/internal/service"
 )
 
 type OrderHandler struct {
 	orders   *repository.OrderRepo
 	products *repository.ProductRepo
+	vmSvc    *service.VMService
+	vmRepo   *repository.VMRepo
+	sshKeys  *repository.SSHKeyRepo
+	clusters *cluster.Manager
 }
 
-func NewOrderHandler(orders *repository.OrderRepo, products *repository.ProductRepo) *OrderHandler {
-	return &OrderHandler{orders: orders, products: products}
+func NewOrderHandler(orders *repository.OrderRepo, products *repository.ProductRepo, vmSvc *service.VMService, vmRepo *repository.VMRepo, sshKeys *repository.SSHKeyRepo, clusters *cluster.Manager) *OrderHandler {
+	return &OrderHandler{orders: orders, products: products, vmSvc: vmSvc, vmRepo: vmRepo, sshKeys: sshKeys, clusters: clusters}
 }
 
 func (h *OrderHandler) PortalRoutes(r chi.Router) {
@@ -38,6 +47,9 @@ func (h *OrderHandler) ListMine(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to list orders"})
 		return
 	}
+	if orders == nil {
+		orders = []model.Order{}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"orders": orders})
 }
 
@@ -47,6 +59,9 @@ func (h *OrderHandler) ListAll(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to list orders"})
 		return
 	}
+	if orders == nil {
+		orders = []model.Order{}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"orders": orders})
 }
 
@@ -54,8 +69,9 @@ func (h *OrderHandler) Create(w http.ResponseWriter, r *http.Request) {
 	userID, _ := r.Context().Value(middleware.CtxUserID).(int64)
 
 	var req struct {
-		ProductID int64 `json:"product_id"`
-		ClusterID int64 `json:"cluster_id"`
+		ProductID int64  `json:"product_id"`
+		VMName    string `json:"vm_name"`
+		OSImage   string `json:"os_image"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid body"})
@@ -67,8 +83,18 @@ func (h *OrderHandler) Create(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "product not found"})
 		return
 	}
+	if req.OSImage == "" {
+		req.OSImage = "images:ubuntu/24.04/cloud"
+	}
 
-	order, err := h.orders.Create(r.Context(), userID, req.ProductID, req.ClusterID, product.PriceMonthly)
+	clients := h.clusters.List()
+	if len(clients) == 0 {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "no clusters"})
+		return
+	}
+	clusterID := int64(1)
+
+	order, err := h.orders.Create(r.Context(), userID, req.ProductID, clusterID, product.PriceMonthly)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
@@ -92,7 +118,89 @@ func (h *OrderHandler) Pay(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"status": "paid"})
+	product, _ := h.products.GetByID(r.Context(), order.ProductID)
+	if product == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"status": "paid", "note": "product not found, VM not created"})
+		return
+	}
+
+	clients := h.clusters.List()
+	if len(clients) == 0 {
+		writeJSON(w, http.StatusOK, map[string]any{"status": "paid", "note": "no cluster, VM not created"})
+		return
+	}
+
+	client := clients[0]
+	cc, _ := h.clusters.ConfigByName(client.Name)
+
+	ip, gateway, cidr := "", "", ""
+	if len(cc.IPPools) > 0 {
+		p := cc.IPPools[0]
+		gateway = p.Gateway
+		cidr = extractCIDR(p.CIDR)
+		ip = pickNextIP(r.Context(), h.vmSvc, client.Name, "customers", p.Range)
+	}
+
+	sshKeys, _ := h.sshKeys.GetByUser(r.Context(), userID)
+
+	var req struct {
+		VMName  string `json:"vm_name"`
+		OSImage string `json:"os_image"`
+	}
+	json.NewDecoder(r.Body).Decode(&req)
+
+	result, err := h.vmSvc.Create(r.Context(), service.CreateVMParams{
+		ClusterName: client.Name,
+		Project:     "customers",
+		UserID:      userID,
+		VMName:      req.VMName,
+		CPU:         product.CPU,
+		MemoryMB:    product.MemoryMB,
+		DiskGB:      product.DiskGB,
+		OSImage:     req.OSImage,
+		SSHKeys:     sshKeys,
+		IP:          ip,
+		Gateway:     gateway,
+		SubnetCIDR:  cidr,
+		StoragePool: "ceph-pool",
+		Network:     "br-pub",
+	})
+	if err != nil {
+		slog.Error("auto-provision VM failed after payment", "order", orderID, "error", err)
+		h.orders.UpdateStatus(r.Context(), orderID, model.OrderPaid)
+		writeJSON(w, http.StatusOK, map[string]any{"status": "paid", "error": "VM provisioning failed: " + err.Error()})
+		return
+	}
+
+	h.orders.UpdateStatus(r.Context(), orderID, model.OrderActive)
+
+	vm := &model.VM{
+		Name:      result.VMName,
+		ClusterID: 1,
+		UserID:    userID,
+		OrderID:   &orderID,
+		Status:    model.VMStatusRunning,
+		CPU:       product.CPU,
+		MemoryMB:  product.MemoryMB,
+		DiskGB:    product.DiskGB,
+		OSImage:   req.OSImage,
+		Node:      result.Node,
+		Password:  result.Password,
+	}
+	if result.IP != "" {
+		ipAddr := net.ParseIP(result.IP)
+		vm.IP = &ipAddr
+	}
+	h.vmRepo.Create(r.Context(), vm)
+
+	slog.Info("VM auto-provisioned after payment", "order", orderID, "vm", result.VMName)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":   "provisioned",
+		"vm_name":  result.VMName,
+		"ip":       result.IP,
+		"password": result.Password,
+		"username": result.Username,
+	})
 }
 
 func (h *OrderHandler) UpdateStatus(w http.ResponseWriter, r *http.Request) {

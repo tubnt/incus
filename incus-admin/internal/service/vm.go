@@ -25,6 +25,7 @@ type CreateVMParams struct {
 	ClusterName string
 	Project     string
 	UserID      int64
+	VMName      string
 	CPU         int
 	MemoryMB    int
 	DiskGB      int
@@ -52,7 +53,12 @@ func (s *VMService) Create(ctx context.Context, params CreateVMParams) (*CreateV
 	}
 
 	password := generatePassword()
-	vmName := fmt.Sprintf("vm-%d", params.UserID)
+	vmName := params.VMName
+	if vmName == "" {
+		b := make([]byte, 3)
+		rand.Read(b)
+		vmName = fmt.Sprintf("vm-%s", hex.EncodeToString(b))
+	}
 
 	cloudInit := buildCloudInit(password, params.SSHKeys)
 	networkConfig := buildNetworkConfig(params.IP, params.SubnetCIDR, params.Gateway)
