@@ -1,0 +1,116 @@
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { useState } from "react";
+import { http } from "@/shared/lib/http";
+import { queryClient } from "@/shared/lib/query-client";
+
+interface SnapshotInfo {
+  name: string;
+  created_at: string;
+  stateful: boolean;
+}
+
+interface SnapshotPanelProps {
+  vmName: string;
+  cluster: string;
+  project: string;
+}
+
+export function SnapshotPanel({ vmName, cluster, project }: SnapshotPanelProps) {
+  const [newName, setNewName] = useState("");
+
+  const { data, isLoading } = useQuery({
+    queryKey: ["snapshots", vmName, cluster, project],
+    queryFn: () =>
+      http.get<{ snapshots: SnapshotInfo[] }>(`/admin/vms/${vmName}/snapshots`, { cluster, project }),
+  });
+
+  const createMutation = useMutation({
+    mutationFn: (name: string) =>
+      http.post(`/admin/vms/${vmName}/snapshots`, { cluster, project, name: name || undefined }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["snapshots", vmName] });
+      setNewName("");
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (snap: string) =>
+      http.delete(`/admin/vms/${vmName}/snapshots/${snap}`, { cluster, project }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["snapshots", vmName] }),
+  });
+
+  const restoreMutation = useMutation({
+    mutationFn: (snap: string) =>
+      http.post(`/admin/vms/${vmName}/snapshots/${snap}/restore`, { cluster, project }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["snapshots", vmName] }),
+  });
+
+  const snapshots = data?.snapshots ?? [];
+
+  return (
+    <div className="p-4 bg-card/50 border-t border-border">
+      <div className="flex items-center justify-between mb-3">
+        <h4 className="font-medium text-sm">Snapshots ({snapshots.length})</h4>
+        <div className="flex gap-2">
+          <input
+            type="text"
+            value={newName}
+            onChange={(e) => setNewName(e.target.value)}
+            placeholder="snapshot name (optional)"
+            className="px-2 py-1 text-xs border border-border rounded bg-card w-48"
+          />
+          <button
+            onClick={() => createMutation.mutate(newName)}
+            disabled={createMutation.isPending}
+            className="px-3 py-1 text-xs bg-primary text-primary-foreground rounded disabled:opacity-50"
+          >
+            {createMutation.isPending ? "Creating..." : "+ Snapshot"}
+          </button>
+        </div>
+      </div>
+
+      {isLoading ? (
+        <div className="text-xs text-muted-foreground">Loading...</div>
+      ) : snapshots.length === 0 ? (
+        <div className="text-xs text-muted-foreground">No snapshots yet.</div>
+      ) : (
+        <div className="space-y-1">
+          {snapshots.map((snap) => (
+            <div key={snap.name} className="flex items-center justify-between px-3 py-2 rounded border border-border text-xs">
+              <div>
+                <span className="font-mono">{snap.name}</span>
+                <span className="text-muted-foreground ml-2">
+                  {new Date(snap.created_at).toLocaleString()}
+                </span>
+              </div>
+              <div className="flex gap-1">
+                <button
+                  onClick={() => {
+                    if (confirm(`Restore ${vmName} to snapshot "${snap.name}"? Current state will be lost.`)) {
+                      restoreMutation.mutate(snap.name);
+                    }
+                  }}
+                  disabled={restoreMutation.isPending}
+                  className="px-2 py-1 rounded bg-primary/20 text-primary hover:bg-primary/30 disabled:opacity-50"
+                >
+                  Restore
+                </button>
+                <button
+                  onClick={() => {
+                    if (confirm(`Delete snapshot "${snap.name}"?`)) {
+                      deleteMutation.mutate(snap.name);
+                    }
+                  }}
+                  disabled={deleteMutation.isPending}
+                  className="px-2 py-1 rounded bg-destructive/20 text-destructive hover:bg-destructive/30 disabled:opacity-50"
+                >
+                  Delete
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}

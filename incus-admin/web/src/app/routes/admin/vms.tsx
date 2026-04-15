@@ -1,7 +1,9 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMutation, useQuery } from "@tanstack/react-query";
+import { useState } from "react";
 import { http } from "@/shared/lib/http";
 import { queryClient } from "@/shared/lib/query-client";
+import { SnapshotPanel } from "@/features/snapshots/snapshot-panel";
 
 export const Route = createFileRoute("/admin/vms")({
   component: AllVMsPage,
@@ -12,6 +14,7 @@ interface IncusInstance {
   status: string;
   type: string;
   location: string;
+  project: string;
   config: Record<string, string>;
   state?: {
     network?: Record<string, {
@@ -87,8 +90,9 @@ function ClusterVMs({ clusterName, displayName }: { clusterName: string; display
 }
 
 function VMRow({ vm, clusterName }: { vm: IncusInstance; clusterName: string }) {
+  const [showSnaps, setShowSnaps] = useState(false);
   const ip = extractIP(vm);
-  const project = vm.config?.["volatile.uuid"] ? "customers" : "default";
+  const project = vm.project || "default";
 
   const stateMutation = useMutation({
     mutationFn: (action: string) =>
@@ -109,6 +113,7 @@ function VMRow({ vm, clusterName }: { vm: IncusInstance; clusterName: string }) 
   const isActing = stateMutation.isPending || deleteMutation.isPending;
 
   return (
+    <>
     <tr className="border-t border-border">
       <td className="px-4 py-2 font-mono">{vm.name}</td>
       <td className="px-4 py-2">
@@ -139,6 +144,8 @@ function VMRow({ vm, clusterName }: { vm: IncusInstance; clusterName: string }) 
                 onClick={() => stateMutation.mutate("restart")} />
             </>
           )}
+          <ActionBtn label="Snaps" color="muted" disabled={false}
+            onClick={() => setShowSnaps(!showSnaps)} />
           <ActionBtn label="Delete" color="destructive" disabled={isActing}
             onClick={() => {
               if (confirm(`Delete ${vm.name}? This cannot be undone.`)) {
@@ -148,6 +155,14 @@ function VMRow({ vm, clusterName }: { vm: IncusInstance; clusterName: string }) 
         </div>
       </td>
     </tr>
+    {showSnaps && (
+      <tr>
+        <td colSpan={6} className="p-0">
+          <SnapshotPanel vmName={vm.name} cluster={clusterName} project={project} />
+        </td>
+      </tr>
+    )}
+    </>
   );
 }
 
