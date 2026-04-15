@@ -114,6 +114,17 @@ func Load() (*Config, error) {
 				{Name: "default", Access: "internal", Description: "Default project"},
 				{Name: "customers", Access: "public", Description: "Customer VMs"},
 			},
+			IPPools: func() []IPPoolConfig {
+				if r := envOr("CLUSTER_IP_RANGE", ""); r != "" {
+					return []IPPoolConfig{{
+						CIDR:    envOr("CLUSTER_IP_CIDR", "202.151.179.224/27"),
+						Gateway: envOr("CLUSTER_IP_GATEWAY", "202.151.179.225"),
+						Range:   r,
+						VLAN:    376,
+					}}
+				}
+				return nil
+			}(),
 		})
 	}
 

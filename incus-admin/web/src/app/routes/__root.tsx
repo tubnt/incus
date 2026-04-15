@@ -58,6 +58,9 @@ function RootLayout() {
                 <Link to="/admin/vms" className="text-foreground/70 hover:text-foreground [&.active]:text-foreground [&.active]:font-medium">
                   All VMs
                 </Link>
+                <Link to="/admin/create-vm" className="text-foreground/70 hover:text-foreground [&.active]:text-foreground [&.active]:font-medium">
+                  + Create VM
+                </Link>
                 <Link to="/admin/users" className="text-foreground/70 hover:text-foreground [&.active]:text-foreground [&.active]:font-medium">
                   Users
                 </Link>
