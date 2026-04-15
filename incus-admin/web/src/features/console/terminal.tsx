@@ -49,11 +49,15 @@ export function ConsoleTerminal({ vmName, project, cluster }: ConsoleTerminalPro
       terminal.writeln("Connected.\r\n");
     };
 
+    ws.binaryType = "arraybuffer";
+
     ws.onmessage = (event) => {
-      if (typeof event.data === "string") {
+      if (event.data instanceof ArrayBuffer) {
+        terminal.write(new Uint8Array(event.data));
+      } else if (typeof event.data === "string") {
         terminal.write(event.data);
       } else if (event.data instanceof Blob) {
-        event.data.text().then((text) => terminal.write(text));
+        event.data.arrayBuffer().then((buf) => terminal.write(new Uint8Array(buf)));
       }
     };
 
@@ -67,7 +71,8 @@ export function ConsoleTerminal({ vmName, project, cluster }: ConsoleTerminalPro
 
     terminal.onData((data) => {
       if (ws.readyState === WebSocket.OPEN) {
-        ws.send(data);
+        const encoder = new TextEncoder();
+        ws.send(encoder.encode(data));
       }
     });
 

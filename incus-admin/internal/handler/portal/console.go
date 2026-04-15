@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"time"
 
 	"github.com/gorilla/websocket"
 
@@ -45,10 +46,15 @@ func (h *ConsoleHandler) HandleConsole(w http.ResponseWriter, r *http.Request) {
 	cc, _ := h.clusters.ConfigByName(clusterName)
 
 	execBody, _ := json.Marshal(map[string]any{
-		"command":              []string{"/bin/bash"},
-		"wait-for-websocket":  true,
-		"interactive":         true,
-		"environment":         map[string]string{"TERM": "xterm-256color"},
+		"command":             []string{"/bin/bash", "-l"},
+		"wait-for-websocket": true,
+		"interactive":        true,
+		"width":              120,
+		"height":             40,
+		"environment": map[string]string{
+			"TERM": "xterm-256color",
+			"HOME": "/root",
+		},
 	})
 
 	execPath := fmt.Sprintf("/1.0/instances/%s/exec?project=%s", vmName, project)
@@ -68,12 +74,15 @@ func (h *ConsoleHandler) HandleConsole(w http.ResponseWriter, r *http.Request) {
 	json.Unmarshal(resp.Metadata, &opMeta)
 
 	fd0Secret := opMeta.Metadata.FDs["0"]
+	controlSecret := opMeta.Metadata.FDs["control"]
 	if fd0Secret == "" {
+		slog.Error("no fd secret", "metadata", string(resp.Metadata))
 		http.Error(w, "no fd secret in exec response", http.StatusInternalServerError)
 		return
 	}
 
 	incusWSURL := buildIncusWSURL(client.APIURL, opMeta.ID, fd0Secret)
+	controlWSURL := buildIncusWSURL(client.APIURL, opMeta.ID, controlSecret)
 
 	tlsConfig := &tls.Config{InsecureSkipVerify: true}
 	if cc.CertFile != "" && cc.KeyFile != "" {
@@ -83,14 +92,29 @@ func (h *ConsoleHandler) HandleConsole(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	dialer := websocket.Dialer{TLSClientConfig: tlsConfig}
-	incusConn, _, err := dialer.Dial(incusWSURL, nil)
+	dialer := websocket.Dialer{
+		TLSClientConfig:  tlsConfig,
+		HandshakeTimeout: 10 * time.Second,
+		EnableCompression: false,
+	}
+	headers := http.Header{}
+	incusConn, _, err := dialer.Dial(incusWSURL, headers)
 	if err != nil {
-		slog.Error("incus ws connect failed", "url", incusWSURL, "error", err)
+		slog.Error("incus ws dial failed", "url", incusWSURL, "error", err)
 		http.Error(w, "incus websocket failed: "+err.Error(), http.StatusBadGateway)
 		return
 	}
 	defer incusConn.Close()
+
+	// Control WebSocket must be connected for Incus to start the shell
+	if controlWSURL != "" {
+		controlConn, _, err := dialer.Dial(controlWSURL, headers)
+		if err != nil {
+			slog.Warn("control ws dial failed", "error", err)
+		} else {
+			defer controlConn.Close()
+		}
+	}
 
 	clientConn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -99,38 +123,44 @@ func (h *ConsoleHandler) HandleConsole(w http.ResponseWriter, r *http.Request) {
 	}
 	defer clientConn.Close()
 
-	slog.Info("console connected", "vm", vmName, "project", project)
+	slog.Info("console session started", "vm", vmName, "project", project, "cluster", clusterName)
 
 	done := make(chan struct{}, 2)
 
+	// Incus → Client
 	go func() {
 		defer func() { done <- struct{}{} }()
 		for {
-			_, msg, err := incusConn.ReadMessage()
+			msgType, msg, err := incusConn.ReadMessage()
 			if err != nil {
+				slog.Debug("incus read done", "error", err)
 				return
 			}
-			if err := clientConn.WriteMessage(websocket.BinaryMessage, msg); err != nil {
+			if err := clientConn.WriteMessage(msgType, msg); err != nil {
+				slog.Debug("client write done", "error", err)
 				return
 			}
 		}
 	}()
 
+	// Client → Incus
 	go func() {
 		defer func() { done <- struct{}{} }()
 		for {
-			_, msg, err := clientConn.ReadMessage()
+			msgType, msg, err := clientConn.ReadMessage()
 			if err != nil {
+				slog.Debug("client read done", "error", err)
 				return
 			}
-			if err := incusConn.WriteMessage(websocket.BinaryMessage, msg); err != nil {
+			if err := incusConn.WriteMessage(msgType, msg); err != nil {
+				slog.Debug("incus write done", "error", err)
 				return
 			}
 		}
 	}()
 
 	<-done
-	slog.Info("console disconnected", "vm", vmName)
+	slog.Info("console session ended", "vm", vmName)
 }
 
 func buildIncusWSURL(apiURL, operationID, secret string) string {
@@ -141,4 +171,3 @@ func buildIncusWSURL(apiURL, operationID, secret string) string {
 	}
 	return fmt.Sprintf("%s://%s/1.0/operations/%s/websocket?secret=%s", scheme, u.Host, operationID, secret)
 }
-
