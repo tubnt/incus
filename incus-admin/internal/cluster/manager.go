@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/incuscloud/incus-admin/internal/config"
 )
@@ -99,6 +100,7 @@ func buildHTTPClient(cc config.ClusterConfig) (*http.Client, error) {
 		return nil, err
 	}
 	return &http.Client{
+		Timeout:   30 * time.Second,
 		Transport: &http.Transport{TLSClientConfig: tlsConfig},
 	}, nil
 }
