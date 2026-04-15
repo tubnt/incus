@@ -143,6 +143,46 @@ Recommend: 6A → 6B → 6C sequentially. 6D deferred.
 | incus-deploy (Ansible) | Official, comprehensive | Ansible dependency |
 | Cloud-init + PXE boot | Zero-touch | Requires DHCP/PXE infra |
 
+## Completeness Review (2026-04-15 19:00, Graph-verified)
+
+### Current cluster.Manager architecture
+
+Graph `file_summary` on `manager.go` shows:
+- `Manager` struct holds `map[string]*Client` (static, built at startup)
+- `NewManager([]config.ClusterConfig)` — config-only, no DB
+- `Get(name)`, `List()`, `ConfigByName(name)` — read-only accessors
+- `buildHTTPClient` — **no timeout set** on http.Client (I8 from PLAN-005)
+- **No methods for**: add cluster, remove cluster, get healing status, evacuate node
+
+### Implications for PLAN-006
+
+| Phase | Prerequisite changes to existing code |
+|-------|--------------------------------------|
+| 6A (HA) | Add `Client.GetClusterConfig()` and `Client.SetClusterConfig()` for healing_threshold. Add `Client.EvacuateNode()` and `Client.RestoreNode()`. |
+| 6B (Node mgmt) | Add `Client.AddClusterMember()` (generate join token) and `Client.RemoveClusterMember()`. Need SSH execution capability (new package `internal/provisioner/`). |
+| 6C (Standalone) | Refactor `Manager` to support runtime add/remove. Move cluster storage from `config.ClusterConfig` env vars to `clusters` DB table. Add `Manager.AddCluster()` and `Manager.RemoveCluster()` with mutex. |
+
+### Missing Incus API coverage
+
+Current `Client` methods: `APIGet`, `APIPost`, `APIPut`, `APIDelete`, `RawGet`, `WaitForOperation`, `GetClusterMembers`, `GetInstances`, `GetInstance`, `GetInstanceState`.
+
+Needed for PLAN-006:
+- `PUT /1.0` — set server config (healing_threshold)
+- `POST /1.0/cluster/members` — add member (get join token)
+- `DELETE /1.0/cluster/members/{name}` — remove member
+- `POST /1.0/cluster/members/{name}/state` — evacuate/restore node
+- `GET /1.0/cluster/members/{name}` — get member status
+- `GET /1.0/events` — SSE stream for cluster events (evacuation progress)
+
+### Dependencies on PLAN-005
+
+PLAN-006 Phase 6C (dynamic cluster config) depends on PLAN-005 Phase C (backend refactor) being completed first, specifically:
+- Consistent API response format
+- Input validation
+- golangci-lint passing
+
+Recommended order: PLAN-005 A0→A1→C (critical fixes + security + backend) → PLAN-006 6A → PLAN-005 A→B (frontend) → PLAN-006 6B→6C
+
 ## Annotations
 
 (User annotations and responses. Keep all history.)

@@ -216,6 +216,77 @@ Original PLAN-005 was UI refactor + code quality. With these findings, PLAN-005 
 
 Estimated additional effort: +40% over original estimate.
 
+## Completeness Review (2026-04-15 19:00, Graph + Serena verified)
+
+Second-pass audit using `query_graph callers_of/callees_of` confirmed all CRITICAL findings with zero false positives:
+
+### Graph-verified dead code (zero callers)
+
+| Function | File | Implication |
+|----------|------|-------------|
+| `SSHKeyRepo.GetByUser` | repository/sshkey.go | SSH keys never injected into VMs |
+| `AuditRepo.Log` | repository/audit.go | Audit logs never written |
+| `VMRepo.CountByUser` | repository/vm.go | Quota never enforced |
+| `AdminVMHandler.ListAllVMs` | handler/portal/vm.go | Endpoint is a stub |
+
+### Graph-verified broken call chains
+
+| Call chain | Expected | Actual |
+|------------|----------|--------|
+| `CreateService` → `SSHKeyRepo.GetByUser` | Should inject SSH keys | Not called |
+| `CreateVM` → `SSHKeyRepo.GetByUser` | Should inject SSH keys | Not called |
+| `PayWithBalance` → `VMService.Create` | Should provision VM | Not called |
+| `DeleteVM` → `VMRepo.UpdateStatus` | Should mark deleted in DB | Not called |
+| `HandleConsole` → ownership check | Should verify VM belongs to user | Not called |
+
+### pma-web compliance gaps
+
+| Requirement | Status |
+|-------------|--------|
+| `import type` usage | 2/18 files (11%) |
+| Feature API hooks (`features/*/api.ts`) | 0 files exist |
+| ESLint (@antfu/eslint-config) | Not configured |
+| Vitest | Not configured |
+| shadcn/ui components | None |
+| ThemeProvider | None |
+| providers.tsx | Exists but incomplete |
+
+### pma-go compliance gaps
+
+| Requirement | Status |
+|-------------|--------|
+| golangci-lint v2 | Not configured |
+| go-playground/validator | Not used |
+| Taskfile.yml | Not present |
+| `%w` error wrapping | 40 occurrences (good) |
+| Table-driven tests | 0 test files |
+| gosec | Not configured |
+
+### Additional findings (not in first audit)
+
+- **C8 (new)**: `VMRepo.CountByUser` has 0 callers — quota system is 100% dead code across all layers
+- **W17 (new)**: `CreateVM` admin handler also doesn't inject SSH keys (both paths broken, not just portal)
+- **W18 (new)**: `findClusterName` always returns first cluster regardless of `clusterID` — affects VM state changes and deletes when multiple clusters exist
+- **W19 (new)**: Dashboard index page hardcodes "My VMs: —" and "Open Tickets: 0" instead of querying real data
+- **W20 (new)**: User portal VMs page has no Console/Snapshot/Reinstall access — these features are admin-only
+- **W21 (new)**: Console page "Back to VMs" link always goes to `/admin/vms`, not `/vms` for regular users
+
+### PLAN-005 final scope assessment
+
+Total issues to address: **8 CRITICAL + 21 WARNING + 8 INFO = 37 items**
+
+Phased execution plan (updated):
+
+| Phase | Content | Issues addressed |
+|-------|---------|-----------------|
+| **A0: Critical fixes** | Fix C1-C8 (business logic) | 8 CRITICAL |
+| **A1: Security fixes** | Fix W1-W3 (Console/metrics authz, CSRF) | 3 WARNING |
+| **A: Frontend scaffold** | shadcn/ui, sidebar, theme, providers, ESLint | pma-web compliance |
+| **B: Page migration** | Feature hooks, shadcn components, fix W16-W21 | 6 WARNING + pma-web |
+| **C: Backend refactor** | golangci-lint, validator, responses, fix W4-W15 | 12 WARNING + pma-go |
+| **D: Quality gates** | Vitest, Go tests, gosec | pma-web/pma-go |
+| **E: Performance** | Caching, indexes, rate limiting | 8 INFO |
+
 ## Annotations
 
 (User annotations and responses. Keep all history.)
