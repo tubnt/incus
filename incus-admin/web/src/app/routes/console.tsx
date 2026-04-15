@@ -1,4 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { useQuery } from "@tanstack/react-query";
+import { fetchCurrentUser, isAdmin } from "@/shared/lib/auth";
 import { ConsoleTerminal } from "@/features/console/terminal";
 
 export const Route = createFileRoute("/console")({
@@ -12,6 +14,8 @@ export const Route = createFileRoute("/console")({
 
 function ConsolePage() {
   const { vm, project, cluster } = Route.useSearch();
+  const { data: user } = useQuery({ queryKey: ["currentUser"], queryFn: fetchCurrentUser });
+  const backUrl = user && isAdmin(user) ? "/admin/vms" : "/vms";
 
   if (!vm || !cluster) {
     return (
@@ -30,7 +34,7 @@ function ConsolePage() {
           <h1 className="text-xl font-bold">Console: {vm}</h1>
           <p className="text-sm text-muted-foreground">{cluster} / {project}</p>
         </div>
-        <a href="/admin/vms" className="text-sm text-primary hover:underline">
+        <a href={backUrl} className="text-sm text-primary hover:underline">
           ← Back to VMs
         </a>
       </div>

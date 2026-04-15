@@ -1,5 +1,5 @@
 import { useTranslation } from "react-i18next";
-import { Moon, Sun, Monitor, Globe } from "lucide-react";
+import { Moon, Sun, Monitor, Globe, LogOut } from "lucide-react";
 import { useTheme } from "@/shared/components/theme-provider";
 import { cn } from "@/shared/lib/utils";
 
@@ -40,6 +40,9 @@ export function AppHeader({ email, balance, sidebarCollapsed }: AppHeaderProps) 
         <span className="text-xs font-mono text-muted-foreground">${balance.toFixed(2)}</span>
       )}
       <span className="text-sm text-muted-foreground">{email}</span>
+      <a href="/oauth2/sign_out?rd=/" className="p-1.5 rounded hover:bg-muted/50 text-muted-foreground" title="Logout">
+        <LogOut size={16} />
+      </a>
     </header>
   );
 }

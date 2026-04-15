@@ -207,7 +207,7 @@ func (h *VMHandler) CreateService(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, result)
 }
 
-func findClusterName(mgr *cluster.Manager, clusterID int64) string {
+func findClusterName(mgr *cluster.Manager, _ int64) string {
 	clients := mgr.List()
 	if len(clients) > 0 {
 		return clients[0].Name
