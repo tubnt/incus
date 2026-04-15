@@ -1,0 +1,87 @@
+{
+  "nav": {
+    "dashboard": "Dashboard",
+    "myVms": "My VMs",
+    "sshKeys": "SSH Keys",
+    "tickets": "Tickets",
+    "billing": "Billing",
+    "apiTokens": "API",
+    "clusters": "Clusters",
+    "allVms": "All VMs",
+    "ipPools": "IP Pools",
+    "monitor": "Monitor",
+    "users": "Users",
+    "products": "Products",
+    "orders": "Orders",
+    "auditLogs": "Audit",
+    "createVm": "+ VM"
+  },
+  "common": {
+    "loading": "Loading...",
+    "save": "Save",
+    "cancel": "Cancel",
+    "delete": "Delete",
+    "confirm": "Confirm",
+    "create": "Create",
+    "edit": "Edit",
+    "search": "Search",
+    "noData": "No data",
+    "signIn": "Sign in with SSO",
+    "signOut": "Sign out"
+  },
+  "vm": {
+    "title": "My VMs",
+    "create": "Create VM",
+    "start": "Start",
+    "stop": "Stop",
+    "restart": "Restart",
+    "console": "Console",
+    "monitor": "Monitor",
+    "snapshots": "Snapshots",
+    "reinstall": "Reinstall",
+    "delete": "Delete",
+    "name": "Name",
+    "status": "Status",
+    "node": "Node",
+    "config": "Config",
+    "ip": "IP",
+    "actions": "Actions"
+  },
+  "billing": {
+    "title": "Billing",
+    "orders": "My Orders",
+    "invoices": "Invoices",
+    "products": "Available Plans",
+    "buy": "Buy",
+    "pay": "Pay with Balance",
+    "amount": "Amount",
+    "status": "Status",
+    "expires": "Expires"
+  },
+  "ticket": {
+    "title": "Tickets",
+    "create": "New Ticket",
+    "subject": "Subject",
+    "reply": "Reply",
+    "close": "Close",
+    "reopen": "Reopen",
+    "noTickets": "No tickets yet. Submit one if you need help."
+  },
+  "sshKey": {
+    "title": "SSH Keys",
+    "add": "Add Key",
+    "noKeys": "No SSH keys. Keys will be injected into new VMs."
+  },
+  "monitoring": {
+    "title": "Cluster Monitoring",
+    "refresh": "Auto-refresh every 30s",
+    "cpu": "CPU Usage (%)",
+    "memory": "Memory Usage",
+    "disk": "Disk Usage (%)",
+    "network": "Network Traffic (MB)",
+    "vmCount": "VM Count",
+    "avgCpu": "Avg CPU",
+    "totalMemory": "Total Memory",
+    "totalDisk": "Total Disk"
+  }
+}

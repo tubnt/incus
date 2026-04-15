@@ -1,12 +1,19 @@
-import { createRootRoute, Link, Outlet } from "@tanstack/react-router";
+import { createRootRoute, Outlet } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
+import { useState } from "react";
 import { fetchCurrentUser, isAdmin } from "@/shared/lib/auth";
+import { useTranslation } from "react-i18next";
+import { AppSidebar } from "@/shared/components/layout/app-sidebar";
+import { AppHeader } from "@/shared/components/layout/app-header";
+import { cn } from "@/shared/lib/utils";
 
 export const Route = createRootRoute({
   component: RootLayout,
 });
 
 function RootLayout() {
+  const { t } = useTranslation();
+  const [collapsed, setCollapsed] = useState(false);
   const { data: user, isLoading, isError } = useQuery({
     queryKey: ["currentUser"],
     queryFn: fetchCurrentUser,
@@ -16,7 +23,7 @@ function RootLayout() {
   if (isLoading) {
     return (
       <div className="flex items-center justify-center min-h-screen">
-        <div className="text-muted-foreground">Loading...</div>
+        <div className="text-muted-foreground">{t("common.loading")}</div>
       </div>
     );
   }
@@ -30,7 +37,7 @@ function RootLayout() {
           href="/oauth2/start?rd=/"
           className="px-6 py-2 bg-primary text-primary-foreground rounded-md font-medium hover:opacity-90"
         >
-          Sign in with SSO
+          {t("common.signIn")}
         </a>
       </div>
     );
@@ -38,72 +45,23 @@ function RootLayout() {
 
   return (
     <div className="min-h-screen bg-background">
-      <nav className="border-b border-border bg-card">
-        <div className="max-w-7xl mx-auto px-4 flex items-center h-14 gap-6">
-          <Link to="/" className="font-bold text-lg">
-            IncusAdmin
-          </Link>
-          <div className="flex gap-4 text-sm">
-            <Link to="/" className="text-foreground/70 hover:text-foreground [&.active]:text-foreground [&.active]:font-medium">
-              Dashboard
-            </Link>
-            <Link to="/vms" className="text-foreground/70 hover:text-foreground [&.active]:text-foreground [&.active]:font-medium">
-              My VMs
-            </Link>
-            <Link to="/ssh-keys" className="text-foreground/70 hover:text-foreground [&.active]:text-foreground [&.active]:font-medium">
-              SSH Keys
-            </Link>
-            <Link to="/tickets" className="text-foreground/70 hover:text-foreground [&.active]:text-foreground [&.active]:font-medium">
-              工单
-            </Link>
-            <Link to="/billing" className="text-foreground/70 hover:text-foreground [&.active]:text-foreground [&.active]:font-medium">
-              账单
-            </Link>
-            <Link to="/api-tokens" className="text-foreground/70 hover:text-foreground [&.active]:text-foreground [&.active]:font-medium">
-              API
-            </Link>
-            {user && isAdmin(user) && (
-              <>
-                <Link to="/admin/clusters" className="text-foreground/70 hover:text-foreground [&.active]:text-foreground [&.active]:font-medium">
-                  Clusters
-                </Link>
-                <Link to="/admin/vms" className="text-foreground/70 hover:text-foreground [&.active]:text-foreground [&.active]:font-medium">
-                  All VMs
-                </Link>
-                <Link to="/admin/ip-pools" className="text-foreground/70 hover:text-foreground [&.active]:text-foreground [&.active]:font-medium">
-                  IP Pools
-                </Link>
-                <Link to="/admin/monitoring" className="text-foreground/70 hover:text-foreground [&.active]:text-foreground [&.active]:font-medium">
-                  Monitor
-                </Link>
-                <Link to="/admin/users" className="text-foreground/70 hover:text-foreground [&.active]:text-foreground [&.active]:font-medium">
-                  Users
-                </Link>
-                <Link to="/admin/products" className="text-foreground/70 hover:text-foreground [&.active]:text-foreground [&.active]:font-medium">
-                  Products
-                </Link>
-                <Link to="/admin/tickets" className="text-foreground/70 hover:text-foreground [&.active]:text-foreground [&.active]:font-medium">
-                  Tickets
-                </Link>
-                <Link to="/admin/orders" className="text-foreground/70 hover:text-foreground [&.active]:text-foreground [&.active]:font-medium">
-                  Orders
-                </Link>
-                <Link to="/admin/audit-logs" className="text-foreground/70 hover:text-foreground [&.active]:text-foreground [&.active]:font-medium">
-                  Audit
-                </Link>
-                <Link to="/admin/create-vm" className="text-foreground/70 hover:text-foreground [&.active]:text-foreground [&.active]:font-medium">
-                  + VM
-                </Link>
-              </>
-            )}
-          </div>
-          <div className="ml-auto text-sm text-muted-foreground">
-            {user?.email}
-          </div>
+      <AppSidebar
+        isAdmin={isAdmin(user)}
+        collapsed={collapsed}
+        onToggle={() => setCollapsed(!collapsed)}
+      />
+      <AppHeader
+        email={user.email}
+        balance={user.balance}
+        sidebarCollapsed={collapsed}
+      />
+      <main className={cn(
+        "pt-14 transition-all min-h-screen",
+        collapsed ? "pl-16" : "pl-60",
+      )}>
+        <div className="max-w-7xl mx-auto px-6 py-6">
+          <Outlet />
         </div>
-      </nav>
-      <main className="max-w-7xl mx-auto px-4 py-6">
-        <Outlet />
       </main>
     </div>
   );

@@ -1,0 +1,87 @@
+{
+  "nav": {
+    "dashboard": "仪表盘",
+    "myVms": "我的云主机",
+    "sshKeys": "SSH 密钥",
+    "tickets": "工单",
+    "billing": "账单",
+    "apiTokens": "API",
+    "clusters": "集群",
+    "allVms": "所有云主机",
+    "ipPools": "IP 池",
+    "monitor": "监控",
+    "users": "用户",
+    "products": "套餐",
+    "orders": "订单",
+    "auditLogs": "审计",
+    "createVm": "+ 云主机"
+  },
+  "common": {
+    "loading": "加载中...",
+    "save": "保存",
+    "cancel": "取消",
+    "delete": "删除",
+    "confirm": "确认",
+    "create": "创建",
+    "edit": "编辑",
+    "search": "搜索",
+    "noData": "暂无数据",
+    "signIn": "SSO 登录",
+    "signOut": "退出"
+  },
+  "vm": {
+    "title": "我的云主机",
+    "create": "创建云主机",
+    "start": "启动",
+    "stop": "关机",
+    "restart": "重启",
+    "console": "控制台",
+    "monitor": "监控",
+    "snapshots": "快照",
+    "reinstall": "重装",
+    "delete": "删除",
+    "name": "名称",
+    "status": "状态",
+    "node": "节点",
+    "config": "配置",
+    "ip": "IP",
+    "actions": "操作"
+  },
+  "billing": {
+    "title": "账单中心",
+    "orders": "我的订单",
+    "invoices": "发票",
+    "products": "可选套餐",
+    "buy": "购买",
+    "pay": "余额支付",
+    "amount": "金额",
+    "status": "状态",
+    "expires": "到期"
+  },
+  "ticket": {
+    "title": "工单",
+    "create": "提交工单",
+    "subject": "主题",
+    "reply": "回复",
+    "close": "关闭",
+    "reopen": "重开",
+    "noTickets": "暂无工单。如需帮助请提交工单。"
+  },
+  "sshKey": {
+    "title": "SSH 密钥",
+    "add": "添加密钥",
+    "noKeys": "暂无 SSH 密钥。添加后将自动注入新建云主机。"
+  },
+  "monitoring": {
+    "title": "集群监控",
+    "refresh": "每 30 秒自动刷新",
+    "cpu": "CPU 使用率 (%)",
+    "memory": "内存使用",
+    "disk": "磁盘使用率 (%)",
+    "network": "网络流量 (MB)",
+    "vmCount": "云主机数量",
+    "avgCpu": "平均 CPU",
+    "totalMemory": "总内存使用",
+    "totalDisk": "总磁盘使用"
+  }
+}
