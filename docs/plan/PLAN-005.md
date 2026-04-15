@@ -183,6 +183,39 @@ Total: ~80 files touched or created. Recommend executing A→B→C→D sequentia
 
 **Recommendation**: Phase C does lint + validation + response consistency (quick wins). sqlc migration deferred to a separate PLAN-006 after the platform stabilizes.
 
+## Deep Audit Findings (2026-04-15 18:30)
+
+Full code audit using Graph + Serena + manual code tracing revealed 7 CRITICAL, 14 WARNING, and 8 INFO issues. These must be addressed in the refactor.
+
+### CRITICAL (must fix in PLAN-005)
+
+1. **C1: SSH keys not injected into VMs** — `SSHKeyRepo.GetByUser()` exists but never called in `CreateService` or `CreateVM`. SSH key feature is decorative.
+2. **C2: VM naming collision** — `vm-{userID}` means each user can only have 1 VM. Fix: `vm-{userID}-{timestamp}` or `vm-{userID}-{seq}`.
+3. **C3: Order payment doesn't trigger VM provisioning** — `PayWithBalance` ends at invoice creation. No code transitions to provisioning. Billing flow is broken end-to-end.
+4. **C4: `/api/auth/me` balance hardcoded to 0** — User balance always shows $0. Fix: query user from DB.
+5. **C5: `ListAllVMs` returns hardcoded empty array** — Endpoint registered but not implemented.
+6. **C6: Panic on empty cluster list** — `clusters.List()[0]` without bounds check in `ChangeVMState` and `DeleteVM`.
+7. **C7: User ticket detail/reply has no frontend** — Table rows look clickable but have no onClick. Backend endpoints exist but unused.
+
+### WARNING (must fix for production)
+
+W1: Portal metrics no ownership check. W2: Console WebSocket no ownership check (SECURITY). W3: WebSocket CheckOrigin always true (CSRF). W4: Quota system never enforced. W5: Portal CreateService bypasses order/payment. W7: Admin DeleteVM doesn't update DB. W8: findClusterName ignores clusterID. W10: Audit logs never written. W11: IP allocation race condition. W12: API Token auth doesn't set email. W13: No input validation (negative CPU/RAM). W14: Password stored/displayed in plaintext. W15: Emergency login incomplete. W16: Mixed Chinese/English, inconsistent currency symbols.
+
+### INFO (performance)
+
+I1-I4: N+1 queries and missing caching in IP pool, pickNextIP, metrics, scheduler. I5: nil→null JSON serialization. I6: Missing DB indexes. I7: No rate limiting. I8: HTTP client no timeout.
+
+### Impact on PLAN-005 scope
+
+Original PLAN-005 was UI refactor + code quality. With these findings, PLAN-005 must also include:
+- **Phase A0 (new)**: Fix all CRITICAL bugs before any refactor
+- **Phase A**: Frontend scaffold (unchanged)
+- **Phase B**: Page migration + fix WARNING UI issues
+- **Phase C**: Backend refactor + fix WARNING backend issues
+- **Phase D**: Quality gates (unchanged)
+
+Estimated additional effort: +40% over original estimate.
+
 ## Annotations
 
 (User annotations and responses. Keep all history.)

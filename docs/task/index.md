@@ -33,3 +33,6 @@ Each task is a single line linking to its detail file. All detailed information 
 
 - [ ] [**REFACTOR-001 Refactor frontend to pma-web standards**](REFACTOR-001.md) `P1`
 - [ ] [**REFACTOR-002 Refactor backend to pma-go standards**](REFACTOR-002.md) `P1`
+- [ ] [**INFRA-001 Enable VM auto-failover with cluster healing**](INFRA-001.md) `P1`
+- [ ] [**INFRA-002 Build cluster node management UI and automation**](INFRA-002.md) `P1`
+- [ ] [**INFRA-003 Add standalone Incus host management**](INFRA-003.md) `P2`
