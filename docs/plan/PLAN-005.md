@@ -270,10 +270,14 @@ Second-pass audit using `query_graph callers_of/callees_of` confirmed all CRITIC
 - **W19 (new)**: Dashboard index page hardcodes "My VMs: —" and "Open Tickets: 0" instead of querying real data
 - **W20 (new)**: User portal VMs page has no Console/Snapshot/Reinstall access — these features are admin-only
 - **W21 (new)**: Console page "Back to VMs" link always goes to `/admin/vms`, not `/vms` for regular users
+- **W22 (new)**: Portal `VMAction` (start/stop/restart) also uses `findClusterName` — multi-cluster broken for user VM operations too
+- **W23 (new)**: `VMService.Reinstall` calls `buildCloudInit` without SSH keys — reinstalled VMs also lose SSH access
+- **W24 (new)**: `billing.tsx` hardcodes `cluster_id: 1` in order creation — breaks if DB cluster ID ≠ 1
+- **W25 (new)**: Dashboard `index.tsx` calls `/admin/clusters` API — 403 for regular users, Dashboard broken for non-admins
 
-### PLAN-005 final scope assessment
+### PLAN-005 final scope assessment (Round 3)
 
-Total issues to address: **8 CRITICAL + 21 WARNING + 8 INFO = 37 items**
+Total issues to address: **8 CRITICAL + 25 WARNING + 8 INFO = 41 items**
 
 Phased execution plan (updated):
 
