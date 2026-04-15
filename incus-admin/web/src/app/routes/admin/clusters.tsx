@@ -1,6 +1,9 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { useTranslation } from "react-i18next";
 import { http } from "@/shared/lib/http";
+import { queryClient } from "@/shared/lib/query-client";
+import { fmtBytes } from "@/shared/lib/utils";
 
 export const Route = createFileRoute("/admin/clusters")({
   component: ClustersPage,
@@ -26,6 +29,7 @@ interface NodeInfo {
 }
 
 function ClustersPage() {
+  const { t } = useTranslation();
   const { data, isLoading } = useQuery({
     queryKey: ["adminClusters"],
     queryFn: () => http.get<{ clusters: ClusterInfo[] }>("/admin/clusters"),
@@ -35,12 +39,12 @@ function ClustersPage() {
 
   return (
     <div>
-      <h1 className="text-2xl font-bold mb-6">Clusters</h1>
+      <h1 className="text-2xl font-bold mb-6">{t("nav.clusters")}</h1>
       {isLoading ? (
-        <div className="text-muted-foreground">Loading...</div>
+        <div className="text-muted-foreground">{t("common.loading")}</div>
       ) : clusters.length === 0 ? (
         <div className="border border-border rounded-lg p-8 text-center text-muted-foreground">
-          No clusters configured.
+          {t("common.noData")}
         </div>
       ) : (
         <div className="space-y-6">
@@ -54,9 +58,10 @@ function ClustersPage() {
 }
 
 function ClusterCard({ cluster }: { cluster: ClusterInfo }) {
-  const { data } = useQuery({
+  const { data, refetch } = useQuery({
     queryKey: ["adminNodes", cluster.name],
     queryFn: () => http.get<{ nodes: NodeInfo[] }>(`/admin/clusters/${cluster.name}/nodes`),
+    refetchInterval: 30_000,
   });
 
   const nodes = data?.nodes ?? [];
@@ -85,35 +90,12 @@ function ClusterCard({ cluster }: { cluster: ClusterInfo }) {
                 <th className="text-left px-4 py-2 font-medium">CPU</th>
                 <th className="text-left px-4 py-2 font-medium">Memory</th>
                 <th className="text-left px-4 py-2 font-medium">Free %</th>
+                <th className="text-right px-4 py-2 font-medium">Actions</th>
               </tr>
             </thead>
             <tbody>
               {nodes.map((n) => (
-                <tr key={n.server_name} className="border-t border-border">
-                  <td className="px-4 py-2 font-mono">{n.server_name}</td>
-                  <td className="px-4 py-2">
-                    <span className={`px-2 py-0.5 rounded text-xs font-medium ${n.status === "Online" ? "bg-success/20 text-success" : "bg-destructive/20 text-destructive"}`}>
-                      {n.status}
-                    </span>
-                  </td>
-                  <td className="px-4 py-2">{n.cpu_total} cores</td>
-                  <td className="px-4 py-2">
-                    {formatBytes(n.mem_used)} / {formatBytes(n.mem_total)}
-                  </td>
-                  <td className="px-4 py-2">
-                    <div className="flex items-center gap-2">
-                      <div className="w-16 h-2 bg-muted rounded-full overflow-hidden">
-                        <div
-                          className="h-full bg-success rounded-full"
-                          style={{ width: `${(n.free_ratio * 100).toFixed(0)}%` }}
-                        />
-                      </div>
-                      <span className="text-xs text-muted-foreground">
-                        {(n.free_ratio * 100).toFixed(0)}%
-                      </span>
-                    </div>
-                  </td>
-                </tr>
+                <NodeRow key={n.server_name} node={n} clusterName={cluster.name} onDone={refetch} />
               ))}
             </tbody>
           </table>
@@ -123,10 +105,64 @@ function ClusterCard({ cluster }: { cluster: ClusterInfo }) {
   );
 }
 
-function formatBytes(bytes: number): string {
-  if (bytes === 0) return "0 B";
-  const gb = bytes / (1024 * 1024 * 1024);
-  if (gb >= 1) return `${gb.toFixed(1)} GB`;
-  const mb = bytes / (1024 * 1024);
-  return `${mb.toFixed(0)} MB`;
+function NodeRow({ node: n, clusterName, onDone }: { node: NodeInfo; clusterName: string; onDone: () => void }) {
+  const evacuateMutation = useMutation({
+    mutationFn: () => http.post(`/admin/clusters/${clusterName}/nodes/${n.server_name}/evacuate`),
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["adminNodes"] }); onDone(); },
+  });
+
+  const restoreMutation = useMutation({
+    mutationFn: () => http.post(`/admin/clusters/${clusterName}/nodes/${n.server_name}/restore`),
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["adminNodes"] }); onDone(); },
+  });
+
+  const isOnline = n.status === "Online";
+  const isEvacuated = n.status === "Evacuated" || n.message?.includes("evacuated");
+  const acting = evacuateMutation.isPending || restoreMutation.isPending;
+
+  return (
+    <tr className="border-t border-border">
+      <td className="px-4 py-2 font-mono">{n.server_name}</td>
+      <td className="px-4 py-2">
+        <span className={`px-2 py-0.5 rounded text-xs font-medium ${isOnline ? "bg-success/20 text-success" : isEvacuated ? "bg-yellow-500/20 text-yellow-600" : "bg-destructive/20 text-destructive"}`}>
+          {n.status}
+        </span>
+        {n.message && n.message !== "Fully operational" && (
+          <span className="text-xs text-muted-foreground ml-2">{n.message}</span>
+        )}
+      </td>
+      <td className="px-4 py-2">{n.cpu_total} cores</td>
+      <td className="px-4 py-2">{fmtBytes(n.mem_used)} / {fmtBytes(n.mem_total)}</td>
+      <td className="px-4 py-2">
+        <div className="flex items-center gap-2">
+          <div className="w-16 h-2 bg-muted rounded-full overflow-hidden">
+            <div className="h-full bg-success rounded-full" style={{ width: `${(n.free_ratio * 100).toFixed(0)}%` }} />
+          </div>
+          <span className="text-xs text-muted-foreground">{(n.free_ratio * 100).toFixed(0)}%</span>
+        </div>
+      </td>
+      <td className="px-4 py-2 text-right">
+        <div className="flex gap-1 justify-end">
+          {isOnline && (
+            <button
+              onClick={() => { if (confirm(`Evacuate ${n.server_name}?`)) evacuateMutation.mutate(); }}
+              disabled={acting}
+              className="px-2 py-1 text-xs bg-yellow-500/20 text-yellow-600 rounded hover:bg-yellow-500/30 disabled:opacity-50"
+            >
+              Evacuate
+            </button>
+          )}
+          {isEvacuated && (
+            <button
+              onClick={() => restoreMutation.mutate()}
+              disabled={acting}
+              className="px-2 py-1 text-xs bg-success/20 text-success rounded hover:bg-success/30 disabled:opacity-50"
+            >
+              Restore
+            </button>
+          )}
+        </div>
+      </td>
+    </tr>
+  );
 }

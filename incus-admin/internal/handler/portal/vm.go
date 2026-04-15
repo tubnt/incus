@@ -225,6 +225,7 @@ func (h *AdminVMHandler) Routes(r chi.Router) {
 	r.Post("/clusters/{name}/vms", h.CreateVM)
 	r.Get("/clusters/{name}/ha", h.GetHAStatus)
 	r.Post("/clusters/{name}/nodes/{node}/evacuate", h.EvacuateNode)
+	r.Post("/clusters/{name}/nodes/{node}/restore", h.RestoreNode)
 	r.Get("/vms", h.ListAllVMs)
 	r.Put("/vms/{name}/state", h.ChangeVMState)
 	r.Post("/vms/{name}/reinstall", h.ReinstallVM)
@@ -327,6 +328,36 @@ func (h *AdminVMHandler) EvacuateNode(w http.ResponseWriter, r *http.Request) {
 	audit(r.Context(), r, "node.evacuate", "node", 0, map[string]any{"cluster": clusterName, "node": nodeName})
 	slog.Info("node evacuated", "cluster", clusterName, "node", nodeName)
 	writeJSON(w, http.StatusOK, map[string]any{"status": "evacuated", "node": nodeName})
+}
+
+func (h *AdminVMHandler) RestoreNode(w http.ResponseWriter, r *http.Request) {
+	clusterName := chi.URLParam(r, "name")
+	nodeName := chi.URLParam(r, "node")
+	client, ok := h.clusters.Get(clusterName)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "cluster not found"})
+		return
+	}
+
+	body, _ := json.Marshal(map[string]any{"action": "restore"})
+	path := fmt.Sprintf("/1.0/cluster/members/%s/state", nodeName)
+	resp, err := client.APIPost(r.Context(), path, bytes.NewReader(body))
+	if err != nil {
+		slog.Error("restore node failed", "node", nodeName, "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	if resp.Type == "async" {
+		var op struct{ ID string }
+		json.Unmarshal(resp.Metadata, &op)
+		if op.ID != "" {
+			client.WaitForOperation(r.Context(), op.ID)
+		}
+	}
+
+	audit(r.Context(), r, "node.restore", "node", 0, map[string]any{"cluster": clusterName, "node": nodeName})
+	slog.Info("node restored", "cluster", clusterName, "node", nodeName)
+	writeJSON(w, http.StatusOK, map[string]any{"status": "restored", "node": nodeName})
 }
 
 func (h *AdminVMHandler) ListClusterVMs(w http.ResponseWriter, r *http.Request) {
