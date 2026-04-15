@@ -344,3 +344,20 @@ Expanded from 5 phases to 10 phases based on Proxmox VE, OpenStack Horizon, Ceph
 - No global success/error toast notification system
 - Console "Back to VMs" hardcoded to `/admin/vms`
 - Dashboard VM count only queries first cluster
+
+### 2026-04-15 23:30 — User decisions (8 items confirmed)
+
+Q1: Admin VM → belongs to admin (creator userID). User/admin views independent, switchable.
+Q2: All VM creation unified through orders. Admin privilege = can top up own balance. Remove free-create path.
+Q3: IP pools → DB migration. Also migrate: CLUSTER_* (7 vars) → clusters table, CLUSTER_IP_* (3 vars) → ip_pools table, ADMIN_EMAILS → initial seed only. Keep in env: LISTEN, DATABASE_URL, SESSION_SECRET, EMERGENCY_TOKEN.
+Q4: Ceph → Manager REST API (port 8443).
+Q5: Node deploy → SSH direct, support jump host and SOCKS5 proxy for nodes without public IP.
+Q6: Events → Incus SSE (`/1.0/events`) → backend proxy → frontend WebSocket.
+Q7: golangci-lint → strict mode (revive + govet + errcheck + staticcheck + gosec + gocritic).
+Q8: Dead feature API files → delete 5 unused files.
+
+### Env → DB migration scope
+
+Keep in env (infra secrets): LISTEN, EMERGENCY_LISTEN, DATABASE_URL, SESSION_SECRET, EMERGENCY_TOKEN
+Migrate to DB: CLUSTER_* → clusters table, CLUSTER_IP_* → ip_pools table
+Consider DB/settings: DOMAIN, BILLING_CURRENCY, PROMETHEUS_URL, GRAFANA_URL, ADMIN_EMAILS
