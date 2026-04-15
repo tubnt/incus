@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"crypto/subtle"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"os"
@@ -49,7 +50,23 @@ func New(cfg *config.Config, userLookup func(ctx context.Context, email string) 
 			r.Use(middleware.RequireRole("admin"))
 			// Admin routes registered by handler packages
 		})
+
+		r.Get("/auth/me", func(w http.ResponseWriter, r *http.Request) {
+			email, _ := r.Context().Value(middleware.CtxUserEmail).(string)
+			userID, _ := r.Context().Value(middleware.CtxUserID).(int64)
+			role, _ := r.Context().Value(middleware.CtxUserRole).(string)
+			writeJSON(w, http.StatusOK, map[string]any{
+				"id":    userID,
+				"email": email,
+				"name":  email,
+				"role":  role,
+				"balance": 0,
+			})
+		})
 	})
+
+	// SPA static files (catch-all, must be last)
+	r.NotFound(staticHandler().ServeHTTP)
 
 	return &Server{cfg: cfg, router: r}
 }
@@ -176,6 +193,12 @@ func (s *Server) emergencyRouter() http.Handler {
 	})
 
 	return r
+}
+
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(v)
 }
 
 func constantTimeEqual(a, b string) bool {
