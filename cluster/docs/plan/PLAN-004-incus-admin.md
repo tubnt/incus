@@ -30,9 +30,8 @@
 │                   IncusAdmin（Go 单体服务）                     │
 │                                                               │
 │  ┌─ HTTP API ────────────────────────────────────────────┐   │
-│  │  /api/admin/*    管理运维 API（需 admin 权限）          │   │
-│  │  /api/portal/*   售卖端 API（用户权限）                 │   │
-│  │  /api/internal/* 内部员工 API（SSO 权限）              │   │
+│  │  /api/admin/*    Admin API (admin role)                │   │
+│  │  /api/portal/*   Portal API (all authenticated users) │   │
 │  └───────────────────────────────────────────────────────┘   │
 │                                                               │
 │  ┌─ 核心模块 ────────────────────────────────────────────┐   │
@@ -47,7 +46,7 @@
 │  └───────────────────────────────────────────────────────┘   │
 │                                                               │
 │  ┌─ 数据库 ──────────────────────────────────────────────┐   │
-│  │  PostgreSQL（或 SQLite 起步）                           │   │
+│  │  PostgreSQL                                            │   │
 │  │  表：users, clusters, vms, ips, orders, invoices...    │   │
 │  └───────────────────────────────────────────────────────┘   │
 └──────────┬───────────────┬───────────────┬───────────────────┘
@@ -206,14 +205,12 @@ clusters:
     # ...
 
 auth:
-  provider: logto
-  client_id: "${LOGTO_CLIENT_ID}"
-  client_secret: "${LOGTO_CLIENT_SECRET}"
-  issuer: "https://auth.l.5ok.co/oidc"
-  redirect_uri: "https://vmc.5ok.co/auth/callback"
-  post_logout_uri: "https://vmc.5ok.co/"
+  # IncusAdmin does NOT handle OIDC directly — oauth2-proxy does.
+  # IncusAdmin reads X-Auth-Email header from oauth2-proxy.
+  admin_emails: "${ADMIN_EMAILS}"          # auto-promote to admin on first login
   session_secret: "${SESSION_SECRET}"
   session_ttl: "24h"
+  emergency_token: "${EMERGENCY_TOKEN}"    # 64-char fallback when Logto is down
 
 billing:
   stripe_key: "${STRIPE_SECRET_KEY}"
@@ -224,157 +221,294 @@ monitor:
   grafana_url: "http://localhost:3000"
 ```
 
-## 用户角色模型
+## User Roles (Phase 1: 2 roles only)
 
 ```
-超级管理员 (super_admin)
-  └── 所有权限
+admin
+  └── Full access: clusters, all VMs, users, billing, IP pools, monitoring, settings
 
-集群管理员 (cluster_admin)
-  └── 管理指定集群的所有资源
-
-运维人员 (operator)
-  └── VM 操作 / 监控 / 不能改计费
-
-内部员工 (internal_user)
-  └── 在内部集群创建/管理自己的 VM / 无需付费
-
-外部客户 (customer)
-  └── 在公共集群购买/管理自己的 VM / 需要付费
+customer (default)
+  └── Own VMs only: create, manage, console, snapshots, tickets, account
+  └── No billing limits in Phase 1 (internal use)
+  └── Balance-based billing added in Phase 2
 ```
 
-## API 设计概览
+Future roles (add when needed): `operator` (VM ops + monitoring, no billing), `viewer` (read-only).
+
+## API Design
+
+Auth is handled entirely by oauth2-proxy + Logto. IncusAdmin reads `X-Auth-Email`
+header. No `/auth/login` or `/auth/register` endpoints — those happen at Logto.
 
 ```
-管理 API（/api/admin/）：
-  GET    /clusters                    列出所有集群
-  GET    /clusters/:id/nodes          集群节点列表
-  GET    /clusters/:id/vms            集群 VM 列表
-  POST   /clusters/:id/vms            创建 VM（管理员直接创建）
-  POST   /vms/:id/migrate             迁移 VM
-  GET    /ip-pools                    IP 池管理
-  POST   /ip-pools                    创建 IP 池
-  GET    /users                       用户列表
-  POST   /users                       创建用户
-  GET    /orders                      所有订单
-  GET    /monitor/dashboard           监控数据
+System endpoints (no auth):
+  GET    /api/health                  Health check
+  GET    /auth/emergency              Emergency login form (skip oauth2-proxy)
+  POST   /auth/emergency              Verify emergency token → issue session
+  GET    /auth/me                     Current user info (from proxy header)
 
-售卖 API（/api/portal/）：
-  POST   /auth/register               注册
-  POST   /auth/login                  登录
-  GET    /products                    产品列表
-  POST   /orders                      下单
-  POST   /orders/:id/pay              支付
-  GET    /services                    我的服务列表
-  GET    /services/:id                服务详情（VM 信息）
-  POST   /services/:id/actions/:act   VM 操作（start/stop/restart）
-  GET    /services/:id/console        WebSocket 终端
-  GET    /billing/invoices            我的账单
-  POST   /tickets                     创建工单
+Portal API (/api/portal/) — all users:
+  GET    /products                    Product list (filtered by role/region)
+  GET    /products/:slug              Product detail
+  POST   /orders                      Place order (deduct balance)
+  GET    /services                    My services (VMs)
+  GET    /services/:id                Service detail (VM info: IP/user/pass)
+  POST   /services/:id/actions/:act   VM action (start/stop/restart)
+  WS     /services/:id/console        WebSocket terminal
+  POST   /services/:id/reinstall      Reinstall OS
+  GET    /services/:id/snapshots      List snapshots
+  POST   /services/:id/snapshots      Create snapshot
+  DELETE /services/:id/snapshots/:sid Delete snapshot
+  POST   /services/:id/snapshots/:sid/restore  Restore snapshot
+  GET    /billing/balance             My balance
+  GET    /billing/invoices            My invoices
+  GET    /billing/transactions        My transactions
+  GET    /ssh-keys                    My SSH keys
+  POST   /ssh-keys                    Add SSH key
+  DELETE /ssh-keys/:id                Delete SSH key
+  GET    /tickets                     My tickets
+  POST   /tickets                     Create ticket
+  GET    /tickets/:id                 Ticket detail
+  POST   /tickets/:id/messages        Reply to ticket
+  GET    /account                     My profile
+  PUT    /account                     Update profile
+  GET    /account/api-tokens          My API tokens
+  POST   /account/api-tokens          Create API token
+  DELETE /account/api-tokens/:id      Revoke API token
 
-内部 API（/api/internal/）：
-  POST   /auth/sso                    SSO 登录
-  POST   /vms/request                 申请 VM（走审批流）
-  GET    /vms                         我的 VM 列表
+Admin API (/api/admin/) — admin role only:
+  GET    /clusters                    List all clusters
+  GET    /clusters/:id                Cluster detail
+  GET    /clusters/:id/nodes          Node list
+  GET    /clusters/:id/nodes/:name    Node detail (resources)
+  GET    /clusters/:id/vms            All VMs in cluster
+  POST   /clusters/:id/vms            Create VM (admin, skip billing)
+  GET    /vms                         All VMs across clusters
+  GET    /vms/:id                     VM detail
+  PUT    /vms/:id/state               Change VM state (start/stop/force-stop)
+  POST   /vms/:id/migrate             Migrate VM to another node
+  DELETE /vms/:id                     Delete VM
+  POST   /vms/bulk-action             Bulk start/stop/delete
+  GET    /ip-pools                    List IP pools
+  POST   /ip-pools                    Create IP pool
+  PUT    /ip-pools/:id                Update IP pool
+  GET    /ip-pools/:id/addresses      List IPs in pool
+  GET    /users                       List all users
+  GET    /users/:id                   User detail
+  PUT    /users/:id/role              Change user role
+  POST   /users/:id/balance           Top up user balance
+  GET    /users/:id/quota             Get user quota
+  PUT    /users/:id/quota             Update user quota
+  GET    /products                    All products
+  POST   /products                    Create product
+  PUT    /products/:id                Update product
+  DELETE /products/:id                Delete product
+  GET    /orders                      All orders
+  GET    /invoices                    All invoices
+  GET    /monitor/dashboard           Cluster metrics (Prometheus)
+  GET    /audit-log                   Audit log
+  GET    /tickets                     All tickets
+  PUT    /tickets/:id/status          Close/assign ticket
 ```
 
-## 数据库表设计
+## Database Schema
 
 ```sql
--- 集群（配置也可以从 YAML 加载，DB 存运行时状态）
+-- Clusters (loaded from YAML config, DB stores runtime state)
 CREATE TABLE clusters (
-    id          SERIAL PRIMARY KEY,
-    name        TEXT UNIQUE NOT NULL,
+    id           SERIAL PRIMARY KEY,
+    name         TEXT UNIQUE NOT NULL,
     display_name TEXT,
-    api_url     TEXT NOT NULL,
-    status      TEXT DEFAULT 'active',
-    created_at  TIMESTAMPTZ DEFAULT NOW()
+    api_url      TEXT NOT NULL,
+    status       TEXT DEFAULT 'active',
+    created_at   TIMESTAMPTZ DEFAULT NOW(),
+    updated_at   TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 用户
+-- Users (no password — all auth via Logto SSO)
 CREATE TABLE users (
-    id          SERIAL PRIMARY KEY,
-    email       TEXT UNIQUE NOT NULL,
-    password    TEXT,                    -- 外部用户
-    name        TEXT,
-    role        TEXT DEFAULT 'customer', -- super_admin/cluster_admin/operator/internal_user/customer
-    sso_id      TEXT,                    -- 内部 SSO
-    created_at  TIMESTAMPTZ DEFAULT NOW()
+    id           SERIAL PRIMARY KEY,
+    email        TEXT UNIQUE NOT NULL,
+    name         TEXT,
+    role         TEXT DEFAULT 'customer',  -- customer / admin
+    logto_sub    TEXT UNIQUE,              -- Logto ID token `sub` claim
+    balance      DECIMAL(10,2) DEFAULT 0,  -- account balance
+    created_at   TIMESTAMPTZ DEFAULT NOW(),
+    updated_at   TIMESTAMPTZ DEFAULT NOW()
 );
 
--- VM（追踪 Incus 实例与用户/订单的关系）
+-- Quotas (per user, multi-dimension)
+CREATE TABLE quotas (
+    id            SERIAL PRIMARY KEY,
+    user_id       INT UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+    max_vms       INT DEFAULT 5,
+    max_vcpus     INT DEFAULT 8,
+    max_ram_mb    INT DEFAULT 16384,
+    max_disk_gb   INT DEFAULT 200,
+    max_ips       INT DEFAULT 3,
+    max_snapshots INT DEFAULT 10
+);
+
+-- SSH Keys
+CREATE TABLE ssh_keys (
+    id           SERIAL PRIMARY KEY,
+    user_id      INT REFERENCES users(id) ON DELETE CASCADE,
+    name         TEXT NOT NULL,
+    public_key   TEXT NOT NULL,
+    fingerprint  TEXT NOT NULL,
+    created_at   TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- VMs (tracks Incus instances ↔ users/orders)
 CREATE TABLE vms (
-    id          SERIAL PRIMARY KEY,
-    name        TEXT NOT NULL,           -- incus instance name
-    cluster_id  INT REFERENCES clusters(id),
-    user_id     INT REFERENCES users(id),
-    order_id    INT REFERENCES orders(id),
-    ip          INET,
-    status      TEXT DEFAULT 'creating',
-    cpu         INT,
-    memory      TEXT,
-    disk        TEXT,
-    os_image    TEXT,
-    node        TEXT,                    -- 所在节点
-    password    TEXT,                    -- 初始密码（加密存储）
-    created_at  TIMESTAMPTZ DEFAULT NOW()
+    id           SERIAL PRIMARY KEY,
+    name         TEXT NOT NULL,            -- incus instance name (e.g. vm-42)
+    cluster_id   INT REFERENCES clusters(id),
+    user_id      INT REFERENCES users(id),
+    order_id     INT REFERENCES orders(id),
+    ip           INET,
+    status       TEXT DEFAULT 'creating',  -- creating/running/stopped/suspended/error/deleted
+    cpu          INT,
+    memory_mb    INT,
+    disk_gb      INT,
+    os_image     TEXT,
+    node         TEXT,                     -- cluster node name
+    password     TEXT,                     -- initial password (encrypted at rest)
+    created_at   TIMESTAMPTZ DEFAULT NOW(),
+    updated_at   TIMESTAMPTZ DEFAULT NOW()
 );
 
--- IP 池
+-- Snapshots
+CREATE TABLE snapshots (
+    id           SERIAL PRIMARY KEY,
+    vm_id        INT REFERENCES vms(id) ON DELETE CASCADE,
+    name         TEXT NOT NULL,
+    size_bytes   BIGINT DEFAULT 0,
+    created_at   TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- IP Pools
 CREATE TABLE ip_pools (
-    id          SERIAL PRIMARY KEY,
-    cluster_id  INT REFERENCES clusters(id),
-    cidr        CIDR NOT NULL,
-    gateway     INET NOT NULL,
-    vlan_id     INT
+    id           SERIAL PRIMARY KEY,
+    cluster_id   INT REFERENCES clusters(id),
+    cidr         CIDR NOT NULL,
+    gateway      INET NOT NULL,
+    vlan_id      INT,
+    created_at   TIMESTAMPTZ DEFAULT NOW()
 );
 
 CREATE TABLE ip_addresses (
-    id          SERIAL PRIMARY KEY,
-    pool_id     INT REFERENCES ip_pools(id),
-    ip          INET UNIQUE NOT NULL,
-    vm_id       INT REFERENCES vms(id),
-    status      TEXT DEFAULT 'available' -- available/assigned/reserved/cooldown
+    id           SERIAL PRIMARY KEY,
+    pool_id      INT REFERENCES ip_pools(id),
+    ip           INET UNIQUE NOT NULL,
+    vm_id        INT REFERENCES vms(id),
+    status       TEXT DEFAULT 'available', -- available/assigned/reserved/cooldown
+    cooldown_until TIMESTAMPTZ,            -- when cooldown expires
+    updated_at   TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 产品
+-- Products
 CREATE TABLE products (
-    id          SERIAL PRIMARY KEY,
-    name        TEXT NOT NULL,
-    slug        TEXT UNIQUE,
-    cpu         INT,
-    memory      TEXT,
-    disk        TEXT,
-    bandwidth   TEXT,
-    price_monthly DECIMAL(10,2),
-    cluster_ids INT[],                   -- 可用集群
-    access      TEXT DEFAULT 'public',   -- public/internal
-    active      BOOLEAN DEFAULT TRUE
+    id             SERIAL PRIMARY KEY,
+    name           TEXT NOT NULL,
+    slug           TEXT UNIQUE,
+    cpu            INT,
+    memory_mb      INT,
+    disk_gb        INT,
+    bandwidth_tb   INT,
+    price_monthly  DECIMAL(10,2),
+    access         TEXT DEFAULT 'public',   -- public / internal
+    active         BOOLEAN DEFAULT TRUE,
+    sort_order     INT DEFAULT 0,
+    created_at     TIMESTAMPTZ DEFAULT NOW(),
+    updated_at     TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 订单
+-- Product ↔ Cluster availability (join table, replaces INT[])
+CREATE TABLE product_clusters (
+    product_id   INT REFERENCES products(id) ON DELETE CASCADE,
+    cluster_id   INT REFERENCES clusters(id) ON DELETE CASCADE,
+    PRIMARY KEY (product_id, cluster_id)
+);
+
+-- Orders (lifecycle: pending → paid → provisioning → active → expired → cancelled)
 CREATE TABLE orders (
-    id          SERIAL PRIMARY KEY,
-    user_id     INT REFERENCES users(id),
-    product_id  INT REFERENCES products(id),
-    cluster_id  INT REFERENCES clusters(id),
-    status      TEXT DEFAULT 'pending',  -- pending/paid/active/cancelled
-    amount      DECIMAL(10,2),
-    payment_id  TEXT,                    -- Stripe payment ID
-    expires_at  TIMESTAMPTZ,
-    created_at  TIMESTAMPTZ DEFAULT NOW()
+    id           SERIAL PRIMARY KEY,
+    user_id      INT REFERENCES users(id),
+    product_id   INT REFERENCES products(id),
+    cluster_id   INT REFERENCES clusters(id),
+    status       TEXT DEFAULT 'pending',
+    amount       DECIMAL(10,2),
+    expires_at   TIMESTAMPTZ,
+    created_at   TIMESTAMPTZ DEFAULT NOW(),
+    updated_at   TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 发票
+-- Invoices (N:1 with orders — initial + renewals)
 CREATE TABLE invoices (
-    id          SERIAL PRIMARY KEY,
-    order_id    INT REFERENCES orders(id),
-    user_id     INT REFERENCES users(id),
-    amount      DECIMAL(10,2),
-    status      TEXT DEFAULT 'unpaid',
-    due_at      TIMESTAMPTZ,
-    paid_at     TIMESTAMPTZ,
-    created_at  TIMESTAMPTZ DEFAULT NOW()
+    id           SERIAL PRIMARY KEY,
+    order_id     INT REFERENCES orders(id),
+    user_id      INT REFERENCES users(id),
+    amount       DECIMAL(10,2),
+    status       TEXT DEFAULT 'unpaid',    -- unpaid / paid / cancelled
+    due_at       TIMESTAMPTZ,
+    paid_at      TIMESTAMPTZ,
+    created_at   TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Transactions (balance ledger — deposits and deductions)
+CREATE TABLE transactions (
+    id           SERIAL PRIMARY KEY,
+    user_id      INT REFERENCES users(id),
+    amount       DECIMAL(10,2) NOT NULL,   -- positive = deposit, negative = deduction
+    type         TEXT NOT NULL,            -- deposit / purchase / renewal / refund
+    description  TEXT,
+    invoice_id   INT REFERENCES invoices(id),
+    created_by   INT REFERENCES users(id), -- admin who made the deposit
+    created_at   TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Tickets
+CREATE TABLE tickets (
+    id           SERIAL PRIMARY KEY,
+    user_id      INT REFERENCES users(id),
+    subject      TEXT NOT NULL,
+    status       TEXT DEFAULT 'open',      -- open / replied / closed
+    priority     TEXT DEFAULT 'normal',    -- low / normal / high
+    created_at   TIMESTAMPTZ DEFAULT NOW(),
+    updated_at   TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE ticket_messages (
+    id           SERIAL PRIMARY KEY,
+    ticket_id    INT REFERENCES tickets(id) ON DELETE CASCADE,
+    user_id      INT REFERENCES users(id),
+    body         TEXT NOT NULL,
+    is_staff     BOOLEAN DEFAULT FALSE,
+    created_at   TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Audit Log
+CREATE TABLE audit_logs (
+    id           SERIAL PRIMARY KEY,
+    user_id      INT REFERENCES users(id),
+    action       TEXT NOT NULL,            -- vm.create, user.role_change, balance.deposit, etc.
+    target_type  TEXT,                     -- vm / user / order / etc.
+    target_id    INT,
+    details      JSONB,
+    ip_address   INET,
+    created_at   TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- API Tokens
+CREATE TABLE api_tokens (
+    id           SERIAL PRIMARY KEY,
+    user_id      INT REFERENCES users(id) ON DELETE CASCADE,
+    name         TEXT NOT NULL,
+    token_hash   TEXT UNIQUE NOT NULL,     -- SHA-256 of the token
+    last_used_at TIMESTAMPTZ,
+    expires_at   TIMESTAMPTZ,
+    created_at   TIMESTAMPTZ DEFAULT NOW()
 );
 ```
 
@@ -513,24 +647,24 @@ CREATE TABLE quotas (
 ## 部署架构（确认 2026-04-15）
 
 ```
-用户浏览器
+User Browser
   │ HTTPS
   ▼
 Cloudflare CDN (vmc.5ok.co)
   │ HTTP
   ▼
-IncusAdmin 主控 (139.162.24.177, Linode SG)
-  ├── Go 二进制 :8080
-  ├── MySQL 8.0
-  └── WireGuard 隧道 (10.100.0.1)
+oauth2-proxy (:4180)
+  │ X-Auth-Email header
+  ▼
+IncusAdmin Go (:8080)
+  ├── PostgreSQL
+  └── WireGuard tunnel (10.100.0.1)
        │
        ▼
-Incus 集群入口 node1 (10.100.0.10 / 10.0.20.1:8443)
-  ├── 5 节点 Incus + Ceph
+Incus Cluster node1 (10.100.0.10 / 10.0.20.1:8443)
+  ├── 5-node Incus + Ceph
   ├── Prometheus + Grafana
   └── br-pub VLAN 376
-
-认证：Logto SSO (auth.l.5ok.co) → OIDC 授权码流程
 ```
 
 ### 关键端点
@@ -557,12 +691,13 @@ Normal path:
     → IncusAdmin finds/creates local user → serves page by role
 
 Emergency path (Logto down):
-  Admin → https://vmc.5ok.co/auth/emergency
-    → oauth2-proxy skips this path (skip_auth_routes)
-    → IncusAdmin shows token input form
+  Admin → SSH tunnel to server → http://localhost:8081/auth/emergency
+    → IncusAdmin secondary port (:8081, localhost only, no oauth2-proxy)
+    → Shows token input form
     → Admin enters EMERGENCY_TOKEN (from .env)
-    → IncusAdmin verifies token + checks ADMIN_EMAILS
-    → Issues admin session cookie directly
+    → Verifies token + checks ADMIN_EMAILS
+    → Issues admin session directly on :8081
+    → Admin can manage cluster via localhost:8081
 ```
 
 ### oauth2-proxy Configuration
@@ -575,10 +710,11 @@ oidc_issuer_url = "https://auth.l.5ok.co/oidc"
 allowed_groups = ["23hldzpnetw6"]
 set_xauthrequest = true
 pass_access_token = true
-skip_auth_routes = ["/auth/emergency", "/api/health"]
+proxy_websockets = true                    # required for VM console WebSocket
+skip_auth_routes = ["/api/health"]         # emergency login on :8081, not here
 upstreams = ["http://127.0.0.1:8080"]
 http_address = "0.0.0.0:4180"
-cookie_secure = false
+cookie_secure = false                      # CF CDN terminates HTTPS
 ```
 
 ### Role Assignment
@@ -610,3 +746,41 @@ One React application at `vmc.5ok.co`. Menu items rendered by user role:
 |------|-------------|
 | customer | My VMs, Create VM, Tickets, Account |
 | admin | + Clusters, All VMs, Users, Billing, IP Pools, Monitoring, Settings |
+
+## Performance Considerations
+
+| Area | Issue | Mitigation |
+|------|-------|------------|
+| VM creation | Image download on first create: 30s+ | Pre-cache images on all nodes during setup |
+| Node scheduling | Per-create API queries to all nodes is slow | Cache node resources in memory, refresh every 60s |
+| VM list (admin) | N API calls for N VMs across clusters | Use Incus `?recursion=2` to batch, cache 10s TTL |
+| WireGuard latency | ~30ms RTT per Incus API call (SG↔TW) | Cache aggressively for read operations |
+| VM status sync | DB status can drift from Incus reality | Background goroutine reconciles every 60s, or query Incus on detail page with short cache |
+
+## Review Findings Log (2026-04-15)
+
+Issues found during user journey audit, tracked for implementation:
+
+**Fixed in this revision:**
+- Removed dead `/api/portal/auth/*` endpoints (auth is via Logto, not IncusAdmin)
+- Removed `/api/internal/*` namespace (internal = external, unified flow)
+- Removed `password` column from users table
+- Renamed `sso_id` to `logto_sub`
+- Simplified roles: 5 → 2 (customer / admin)
+- Added missing tables: quotas, ssh_keys, snapshots, transactions, tickets, ticket_messages, audit_logs, api_tokens
+- Replaced `cluster_ids INT[]` with `product_clusters` join table
+- Changed memory/disk from TEXT to INT (MB/GB) for quota arithmetic
+- Fixed deployment diagram: MySQL→PostgreSQL, added oauth2-proxy
+- Fixed oauth2-proxy config: added `proxy_websockets`, removed auth `redirect_uri` from IncusAdmin config
+- Emergency login moved to secondary port (:8081 localhost only)
+- Added admin balance top-up and quota management endpoints
+- Added full admin VM management endpoints (force-stop, migrate, delete, bulk)
+- Added order lifecycle states: pending→paid→provisioning→active→expired→cancelled
+- Added `updated_at` to all tables
+
+**Deferred to implementation phase:**
+- Billing scheduler (cron for renewals/suspensions) — design in Phase 2
+- Image cache management across clusters
+- API rate limiting middleware
+- Notifications (email/webhook)
+- IncusAdmin PostgreSQL backup strategy
