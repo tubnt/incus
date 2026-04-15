@@ -104,6 +104,27 @@ func (c *Client) APIDelete(ctx context.Context, path string) (*IncusResponse, er
 	return c.apiRequest(ctx, http.MethodDelete, path, nil)
 }
 
+func (c *Client) RawGet(ctx context.Context, path string) (string, error) {
+	url := c.APIURL + path
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", fmt.Errorf("create request: %w", err)
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("http request: %w", err)
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("read body: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(data))
+	}
+	return string(data), nil
+}
+
 // WaitForOperation blocks until an async operation completes.
 func (c *Client) WaitForOperation(ctx context.Context, operationID string) error {
 	path := fmt.Sprintf("/1.0/operations/%s/wait?timeout=120", operationID)

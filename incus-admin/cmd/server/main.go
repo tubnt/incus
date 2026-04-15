@@ -82,8 +82,9 @@ func main() {
 	ipPoolHandler := portal.NewIPPoolHandler(clusterMgr)
 	consoleHandler := portal.NewConsoleHandler(clusterMgr)
 	snapshotHandler := portal.NewSnapshotHandler(clusterMgr)
+	metricsHandler := portal.NewMetricsHandler(clusterMgr)
 
-	srv := server.New(cfg, userLookup, adminHandler, portalHandler, userHandler, ipPoolHandler, consoleHandler, snapshotHandler)
+	srv := server.New(cfg, userLookup, adminHandler, portalHandler, userHandler, ipPoolHandler, consoleHandler, snapshotHandler, metricsHandler)
 
 	if err := srv.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "server error: %v\n", err)

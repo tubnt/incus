@@ -36,7 +36,14 @@ type ConsoleHandlerFunc interface {
 	HandleConsole(w http.ResponseWriter, r *http.Request)
 }
 
-func New(cfg *config.Config, userLookup func(ctx context.Context, email string) (int64, string, error), adminHandler RouteRegistrar, portalHandler RouteRegistrar, userHandler AdminRouteRegistrar, ipPoolHandler AdminRouteRegistrar, consoleHandler ConsoleHandlerFunc, snapshotHandler AdminRouteRegistrar) *Server {
+type PortalRouteRegistrar interface {
+	PortalRoutes(r chi.Router)
+}
+
+func New(cfg *config.Config, userLookup func(ctx context.Context, email string) (int64, string, error), adminHandler RouteRegistrar, portalHandler RouteRegistrar, userHandler AdminRouteRegistrar, ipPoolHandler AdminRouteRegistrar, consoleHandler ConsoleHandlerFunc, snapshotHandler AdminRouteRegistrar, metricsHandler interface {
+	AdminRouteRegistrar
+	PortalRouteRegistrar
+}) *Server {
 	r := chi.NewRouter()
 
 	r.Use(chimw.RequestID)
@@ -58,6 +65,9 @@ func New(cfg *config.Config, userLookup func(ctx context.Context, email string) 
 			if portalHandler != nil {
 				portalHandler.Routes(r)
 			}
+			if metricsHandler != nil {
+				metricsHandler.PortalRoutes(r)
+			}
 		})
 
 		r.Route("/api/admin", func(r chi.Router) {
@@ -73,6 +83,9 @@ func New(cfg *config.Config, userLookup func(ctx context.Context, email string) 
 			}
 			if snapshotHandler != nil {
 				snapshotHandler.AdminRoutes(r)
+			}
+			if metricsHandler != nil {
+				metricsHandler.AdminRoutes(r)
 			}
 		})
 

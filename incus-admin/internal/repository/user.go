@@ -20,7 +20,7 @@ func NewUserRepo(db *sql.DB) *UserRepo {
 func (r *UserRepo) FindOrCreate(ctx context.Context, email, name, logtoSub string, adminEmails []string) (*model.User, error) {
 	var user model.User
 	err := r.db.QueryRowContext(ctx,
-		`SELECT id, email, name, role, logto_sub, balance, created_at, updated_at FROM users WHERE email = $1`,
+		`SELECT id, email, name, role, COALESCE(logto_sub, ''), balance, created_at, updated_at FROM users WHERE email = $1`,
 		email,
 	).Scan(&user.ID, &user.Email, &user.Name, &user.Role, &user.LogtoSub, &user.Balance, &user.CreatedAt, &user.UpdatedAt)
 
@@ -33,10 +33,14 @@ func (r *UserRepo) FindOrCreate(ctx context.Context, email, name, logtoSub strin
 			}
 		}
 
+		var subParam any
+		if logtoSub != "" {
+			subParam = logtoSub
+		}
 		err = r.db.QueryRowContext(ctx,
 			`INSERT INTO users (email, name, role, logto_sub) VALUES ($1, $2, $3, $4)
-			 RETURNING id, email, name, role, logto_sub, balance, created_at, updated_at`,
-			email, name, role, logtoSub,
+			 RETURNING id, email, name, role, COALESCE(logto_sub, ''), balance, created_at, updated_at`,
+			email, name, role, subParam,
 		).Scan(&user.ID, &user.Email, &user.Name, &user.Role, &user.LogtoSub, &user.Balance, &user.CreatedAt, &user.UpdatedAt)
 		if err != nil {
 			return nil, fmt.Errorf("create user: %w", err)
@@ -66,7 +70,7 @@ func (r *UserRepo) FindOrCreate(ctx context.Context, email, name, logtoSub strin
 func (r *UserRepo) GetByEmail(ctx context.Context, email string) (*model.User, error) {
 	var user model.User
 	err := r.db.QueryRowContext(ctx,
-		`SELECT id, email, name, role, logto_sub, balance, created_at, updated_at FROM users WHERE email = $1`,
+		`SELECT id, email, name, role, COALESCE(logto_sub, ''), balance, created_at, updated_at FROM users WHERE email = $1`,
 		email,
 	).Scan(&user.ID, &user.Email, &user.Name, &user.Role, &user.LogtoSub, &user.Balance, &user.CreatedAt, &user.UpdatedAt)
 	if err == sql.ErrNoRows {
@@ -81,7 +85,7 @@ func (r *UserRepo) GetByEmail(ctx context.Context, email string) (*model.User, e
 func (r *UserRepo) GetByID(ctx context.Context, id int64) (*model.User, error) {
 	var user model.User
 	err := r.db.QueryRowContext(ctx,
-		`SELECT id, email, name, role, logto_sub, balance, created_at, updated_at FROM users WHERE id = $1`,
+		`SELECT id, email, name, role, COALESCE(logto_sub, ''), balance, created_at, updated_at FROM users WHERE id = $1`,
 		id,
 	).Scan(&user.ID, &user.Email, &user.Name, &user.Role, &user.LogtoSub, &user.Balance, &user.CreatedAt, &user.UpdatedAt)
 	if err == sql.ErrNoRows {
@@ -131,7 +135,7 @@ func (r *UserRepo) AdjustBalance(ctx context.Context, userID int64, amount float
 
 func (r *UserRepo) ListAll(ctx context.Context) ([]model.User, error) {
 	rows, err := r.db.QueryContext(ctx,
-		`SELECT id, email, name, role, logto_sub, balance, created_at, updated_at FROM users ORDER BY id`)
+		`SELECT id, email, name, role, COALESCE(logto_sub, ''), balance, created_at, updated_at FROM users ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}

@@ -3,6 +3,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { http } from "@/shared/lib/http";
 import { queryClient } from "@/shared/lib/query-client";
+import { VMMetricsPanel } from "@/features/monitoring/vm-metrics-panel";
 
 export const Route = createFileRoute("/vms")({
   component: MyVMs,
@@ -76,6 +77,7 @@ function MyVMs() {
 }
 
 function VMCard({ vm }: { vm: VMService }) {
+  const [showMetrics, setShowMetrics] = useState(false);
   const actionMutation = useMutation({
     mutationFn: (action: string) =>
       http.post(`/portal/services/${vm.id}/actions/${action}`),
@@ -83,8 +85,8 @@ function VMCard({ vm }: { vm: VMService }) {
   });
 
   return (
-    <div className="border border-border rounded-lg bg-card p-4">
-      <div className="flex items-center justify-between">
+    <div className="border border-border rounded-lg bg-card overflow-hidden">
+      <div className="p-4 flex items-center justify-between">
         <div>
           <div className="flex items-center gap-3">
             <span className="font-mono font-semibold">{vm.name}</span>
@@ -103,6 +105,7 @@ function VMCard({ vm }: { vm: VMService }) {
         <div className="flex flex-col gap-2">
           {vm.status === "running" && (
             <>
+              <ActionBtn label="Monitor" onClick={() => setShowMetrics(!showMetrics)} disabled={false} />
               <ActionBtn label="Stop" onClick={() => actionMutation.mutate("stop")} disabled={actionMutation.isPending} />
               <ActionBtn label="Restart" onClick={() => actionMutation.mutate("restart")} disabled={actionMutation.isPending} />
             </>
@@ -112,6 +115,9 @@ function VMCard({ vm }: { vm: VMService }) {
           )}
         </div>
       </div>
+      {showMetrics && vm.status === "running" && (
+        <VMMetricsPanel vmName={vm.name} apiBase="/portal" />
+      )}
     </div>
   );
 }

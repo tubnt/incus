@@ -213,6 +213,7 @@ func (h *AdminVMHandler) Routes(r chi.Router) {
 	r.Post("/clusters/{name}/vms", h.CreateVM)
 	r.Get("/vms", h.ListAllVMs)
 	r.Put("/vms/{name}/state", h.ChangeVMState)
+	r.Post("/vms/{name}/reinstall", h.ReinstallVM)
 	r.Delete("/vms/{name}", h.DeleteVM)
 }
 
@@ -383,6 +384,48 @@ func (h *AdminVMHandler) DeleteVM(w http.ResponseWriter, r *http.Request) {
 	}
 	slog.Info("vm deleted", "vm", vmName)
 	writeJSON(w, http.StatusOK, map[string]any{"status": "deleted"})
+}
+
+func (h *AdminVMHandler) ReinstallVM(w http.ResponseWriter, r *http.Request) {
+	vmName := chi.URLParam(r, "name")
+	var req struct {
+		Cluster string `json:"cluster"`
+		Project string `json:"project"`
+		OSImage string `json:"os_image"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid body"})
+		return
+	}
+	if req.Cluster == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "cluster required"})
+		return
+	}
+	if req.Project == "" {
+		req.Project = "default"
+	}
+	if req.OSImage == "" {
+		req.OSImage = "images:ubuntu/24.04/cloud"
+	}
+
+	result, err := h.vmSvc.Reinstall(r.Context(), service.ReinstallParams{
+		ClusterName: req.Cluster,
+		Project:     req.Project,
+		VMName:      vmName,
+		NewOSImage:  req.OSImage,
+	})
+	if err != nil {
+		slog.Error("reinstall VM failed", "vm", vmName, "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+
+	slog.Info("vm reinstalled", "vm", vmName, "os", req.OSImage)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":   "reinstalled",
+		"password": result.Password,
+		"username": result.Username,
+	})
 }
 
 func extractCIDR(cidr string) string {

@@ -183,6 +183,108 @@ func (s *VMService) Delete(ctx context.Context, clusterName, project, vmName str
 	return err
 }
 
+type ReinstallParams struct {
+	ClusterName string
+	Project     string
+	VMName      string
+	NewOSImage  string
+}
+
+type ReinstallResult struct {
+	Password string `json:"password"`
+	Username string `json:"username"`
+}
+
+func (s *VMService) Reinstall(ctx context.Context, params ReinstallParams) (*ReinstallResult, error) {
+	client, ok := s.clusters.Get(params.ClusterName)
+	if !ok {
+		return nil, fmt.Errorf("cluster %q not found", params.ClusterName)
+	}
+
+	instData, err := client.GetInstance(ctx, params.Project, params.VMName)
+	if err != nil {
+		return nil, fmt.Errorf("get instance: %w", err)
+	}
+
+	var inst struct {
+		Config   map[string]string         `json:"config"`
+		Devices  map[string]map[string]any `json:"devices"`
+		Location string                    `json:"location"`
+	}
+	if err := json.Unmarshal(instData, &inst); err != nil {
+		return nil, fmt.Errorf("parse instance: %w", err)
+	}
+
+	_ = s.ChangeState(ctx, params.ClusterName, params.Project, params.VMName, "stop", true)
+
+	delPath := fmt.Sprintf("/1.0/instances/%s?project=%s", params.VMName, params.Project)
+	_, err = client.APIDelete(ctx, delPath)
+	if err != nil {
+		return nil, fmt.Errorf("delete instance: %w", err)
+	}
+
+	password := generatePassword()
+	sshKeys := []string{}
+	cloudInit := buildCloudInit(password, sshKeys)
+
+	osImage := params.NewOSImage
+	if len(osImage) > 7 && osImage[:7] == "images:" {
+		osImage = osImage[7:]
+	}
+
+	inst.Config["user.cloud-init"] = cloudInit
+
+	body := map[string]any{
+		"name": params.VMName,
+		"type": "virtual-machine",
+		"source": map[string]any{
+			"type":     "image",
+			"alias":    osImage,
+			"server":   "https://images.linuxcontainers.org",
+			"protocol": "simplestreams",
+		},
+		"config":  inst.Config,
+		"devices": inst.Devices,
+	}
+
+	bodyJSON, _ := json.Marshal(body)
+	createPath := fmt.Sprintf("/1.0/instances?project=%s&target=%s", params.Project, inst.Location)
+	resp, err := client.APIPost(ctx, createPath, bytes.NewReader(bodyJSON))
+	if err != nil {
+		return nil, fmt.Errorf("recreate instance: %w", err)
+	}
+
+	if resp.Type == "async" {
+		var op struct{ ID string }
+		json.Unmarshal(resp.Metadata, &op)
+		if op.ID != "" {
+			if err := client.WaitForOperation(ctx, op.ID); err != nil {
+				slog.Error("wait for reinstall create failed", "vm", params.VMName, "error", err)
+			}
+		}
+	}
+
+	startBody, _ := json.Marshal(map[string]any{"action": "start", "timeout": 60})
+	startPath := fmt.Sprintf("/1.0/instances/%s/state?project=%s", params.VMName, params.Project)
+	startResp, err := client.APIPut(ctx, startPath, bytes.NewReader(startBody))
+	if err != nil {
+		slog.Error("start reinstalled instance failed", "vm", params.VMName, "error", err)
+	} else if startResp.Type == "async" {
+		var op struct{ ID string }
+		json.Unmarshal(startResp.Metadata, &op)
+		if op.ID != "" {
+			client.WaitForOperation(ctx, op.ID)
+		}
+	}
+
+	slog.Info("vm reinstalled", "name", params.VMName, "os", params.NewOSImage, "cluster", params.ClusterName)
+
+	return &ReinstallResult{
+		Password: password,
+		Username: "ubuntu",
+	}, nil
+}
+
 func (s *VMService) ListInstances(ctx context.Context, clusterName, project string) ([]json.RawMessage, error) {
 	client, ok := s.clusters.Get(clusterName)
 	if !ok {

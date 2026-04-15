@@ -4,6 +4,7 @@ import { useState } from "react";
 import { http } from "@/shared/lib/http";
 import { queryClient } from "@/shared/lib/query-client";
 import { SnapshotPanel } from "@/features/snapshots/snapshot-panel";
+import { VMMetricsPanel } from "@/features/monitoring/vm-metrics-panel";
 
 export const Route = createFileRoute("/admin/vms")({
   component: AllVMsPage,
@@ -89,8 +90,17 @@ function ClusterVMs({ clusterName, displayName }: { clusterName: string; display
   );
 }
 
+const OS_IMAGES = [
+  { value: "images:ubuntu/24.04/cloud", label: "Ubuntu 24.04 LTS" },
+  { value: "images:ubuntu/22.04/cloud", label: "Ubuntu 22.04 LTS" },
+  { value: "images:debian/12/cloud", label: "Debian 12" },
+  { value: "images:rockylinux/9/cloud", label: "Rocky Linux 9" },
+];
+
 function VMRow({ vm, clusterName }: { vm: IncusInstance; clusterName: string }) {
   const [showSnaps, setShowSnaps] = useState(false);
+  const [showMetrics, setShowMetrics] = useState(false);
+  const [showReinstall, setShowReinstall] = useState(false);
   const ip = extractIP(vm);
   const project = vm.project || "default";
 
@@ -144,8 +154,14 @@ function VMRow({ vm, clusterName }: { vm: IncusInstance; clusterName: string }) 
                 onClick={() => stateMutation.mutate("restart")} />
             </>
           )}
+          {vm.status === "Running" && (
+            <ActionBtn label="Monitor" color="muted" disabled={false}
+              onClick={() => setShowMetrics(!showMetrics)} />
+          )}
           <ActionBtn label="Snaps" color="muted" disabled={false}
             onClick={() => setShowSnaps(!showSnaps)} />
+          <ActionBtn label="Reinstall" color="muted" disabled={isActing}
+            onClick={() => setShowReinstall(!showReinstall)} />
           <ActionBtn label="Delete" color="destructive" disabled={isActing}
             onClick={() => {
               if (confirm(`Delete ${vm.name}? This cannot be undone.`)) {
@@ -155,6 +171,13 @@ function VMRow({ vm, clusterName }: { vm: IncusInstance; clusterName: string }) 
         </div>
       </td>
     </tr>
+    {showMetrics && vm.status === "Running" && (
+      <tr>
+        <td colSpan={6} className="p-0">
+          <VMMetricsPanel vmName={vm.name} apiBase="/admin" cluster={clusterName} />
+        </td>
+      </tr>
+    )}
     {showSnaps && (
       <tr>
         <td colSpan={6} className="p-0">
@@ -162,7 +185,74 @@ function VMRow({ vm, clusterName }: { vm: IncusInstance; clusterName: string }) 
         </td>
       </tr>
     )}
+    {showReinstall && (
+      <tr>
+        <td colSpan={6} className="p-0">
+          <ReinstallPanel vmName={vm.name} cluster={clusterName} project={project}
+            onDone={() => setShowReinstall(false)} />
+        </td>
+      </tr>
+    )}
     </>
+  );
+}
+
+function ReinstallPanel({ vmName, cluster, project, onDone }: {
+  vmName: string; cluster: string; project: string; onDone: () => void;
+}) {
+  const [os, setOs] = useState(OS_IMAGES[0]!.value);
+
+  const mutation = useMutation({
+    mutationFn: () =>
+      http.post<{ status: string; password: string; username: string }>(
+        `/admin/vms/${vmName}/reinstall`,
+        { cluster, project, os_image: os },
+      ),
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["adminClusterVMs"] });
+      alert(`重装完成！\n用户名: ${data.username}\n新密码: ${data.password}`);
+      onDone();
+    },
+  });
+
+  return (
+    <div className="p-4 bg-card/50 border-t border-border">
+      <h4 className="font-medium text-sm mb-3">重装系统 — {vmName}</h4>
+      <p className="text-xs text-destructive mb-3">
+        警告: 重装将删除所有数据并重建 VM，IP 和配置保持不变。
+      </p>
+      <div className="flex items-center gap-3">
+        <select
+          value={os}
+          onChange={(e) => setOs(e.target.value)}
+          className="px-2 py-1 text-xs border border-border rounded bg-card"
+        >
+          {OS_IMAGES.map((img) => (
+            <option key={img.value} value={img.value}>{img.label}</option>
+          ))}
+        </select>
+        <button
+          onClick={() => {
+            if (confirm(`确认重装 ${vmName}？所有数据将丢失！`)) {
+              mutation.mutate();
+            }
+          }}
+          disabled={mutation.isPending}
+          className="px-3 py-1 text-xs bg-destructive text-destructive-foreground rounded disabled:opacity-50"
+        >
+          {mutation.isPending ? "重装中..." : "确认重装"}
+        </button>
+        <button
+          onClick={onDone}
+          className="px-3 py-1 text-xs bg-muted/50 text-muted-foreground rounded"
+        >
+          取消
+        </button>
+        {mutation.isError && (
+          <span className="text-xs text-destructive">{(mutation.error as Error).message}</span>
+        )}
+      </div>
+    </div>
   );
 }
 
