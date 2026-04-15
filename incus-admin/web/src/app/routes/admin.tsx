@@ -13,7 +13,8 @@ export const Route = createFileRoute("/admin")({
       if (!user || !isAdmin(user)) {
         throw redirect({ to: "/" });
       }
-    } catch {
+    } catch (e) {
+      if (e && typeof e === "object" && "to" in e) throw e;
       throw redirect({ to: "/" });
     }
   },

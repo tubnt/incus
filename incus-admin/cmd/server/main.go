@@ -101,6 +101,7 @@ func main() {
 	invoiceRepo := repository.NewInvoiceRepo(db)
 
 	portal.SetAuditRepo(auditRepo)
+	middleware.SetEmergencySecret(cfg.Auth.EmergencyToken)
 
 	middleware.SetTokenValidator(func(ctx context.Context, token string) (int64, error) {
 		t, err := apiTokenRepo.ValidateToken(ctx, token)

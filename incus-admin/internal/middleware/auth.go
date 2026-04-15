@@ -2,6 +2,10 @@ package middleware
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -18,10 +22,27 @@ const (
 
 type TokenValidator func(ctx context.Context, token string) (userID int64, err error)
 
-var tokenValidator TokenValidator
+var (
+	tokenValidator   TokenValidator
+	emergencySecret  string
+)
 
 func SetTokenValidator(v TokenValidator) {
 	tokenValidator = v
+}
+
+func SetEmergencySecret(secret string) {
+	emergencySecret = secret
+}
+
+func verifyEmergencyCookie(email, sig string) bool {
+	if emergencySecret == "" || email == "" {
+		return false
+	}
+	h := hmac.New(sha256.New, []byte(emergencySecret))
+	h.Write([]byte(email))
+	expected := hex.EncodeToString(h.Sum(nil))
+	return subtle.ConstantTimeCompare([]byte(sig), []byte(expected)) == 1
 }
 
 func ProxyAuth(next http.Handler) http.Handler {
@@ -44,10 +65,10 @@ func ProxyAuth(next http.Handler) http.Handler {
 			}
 		}
 
-		// emergency cookie 认证
+		// emergency cookie 认证（HMAC 签名验证）
 		if cookie, err := r.Cookie("emergency_auth"); err == nil {
 			parts := strings.SplitN(cookie.Value, "|", 2)
-			if len(parts) == 2 && parts[0] != "" {
+			if len(parts) == 2 && verifyEmergencyCookie(parts[0], parts[1]) {
 				ctx := r.Context()
 				ctx = context.WithValue(ctx, CtxUserEmail, parts[0])
 				ctx = context.WithValue(ctx, CtxAuthMethod, "emergency")

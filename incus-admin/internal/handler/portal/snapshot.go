@@ -99,6 +99,10 @@ func (h *SnapshotHandler) Create(w http.ResponseWriter, r *http.Request) {
 func (h *SnapshotHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	vmName := chi.URLParam(r, "name")
 	snapName := chi.URLParam(r, "snap")
+	if !isValidName(vmName) || !isValidName(snapName) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid name"})
+		return
+	}
 	clusterName := r.URL.Query().Get("cluster")
 	project := r.URL.Query().Get("project")
 
@@ -123,6 +127,10 @@ func (h *SnapshotHandler) Delete(w http.ResponseWriter, r *http.Request) {
 func (h *SnapshotHandler) Restore(w http.ResponseWriter, r *http.Request) {
 	vmName := chi.URLParam(r, "name")
 	snapName := chi.URLParam(r, "snap")
+	if !isValidName(vmName) || !isValidName(snapName) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid name"})
+		return
+	}
 	var req struct {
 		Cluster string `json:"cluster"`
 		Project string `json:"project"`

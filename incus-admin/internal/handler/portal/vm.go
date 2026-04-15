@@ -305,6 +305,10 @@ func (h *AdminVMHandler) GetHAStatus(w http.ResponseWriter, r *http.Request) {
 func (h *AdminVMHandler) EvacuateNode(w http.ResponseWriter, r *http.Request) {
 	clusterName := chi.URLParam(r, "name")
 	nodeName := chi.URLParam(r, "node")
+	if !isValidName(nodeName) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid node name"})
+		return
+	}
 	client, ok := h.clusters.Get(clusterName)
 	if !ok {
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "cluster not found"})
@@ -336,6 +340,10 @@ func (h *AdminVMHandler) EvacuateNode(w http.ResponseWriter, r *http.Request) {
 func (h *AdminVMHandler) RestoreNode(w http.ResponseWriter, r *http.Request) {
 	clusterName := chi.URLParam(r, "name")
 	nodeName := chi.URLParam(r, "node")
+	if !isValidName(nodeName) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid node name"})
+		return
+	}
 	client, ok := h.clusters.Get(clusterName)
 	if !ok {
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "cluster not found"})
