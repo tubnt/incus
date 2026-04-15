@@ -107,6 +107,12 @@ func (h *OrderHandler) Pay(w http.ResponseWriter, r *http.Request) {
 	orderID, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	userID, _ := r.Context().Value(middleware.CtxUserID).(int64)
 
+	var payReq struct {
+		VMName  string `json:"vm_name"`
+		OSImage string `json:"os_image"`
+	}
+	json.NewDecoder(r.Body).Decode(&payReq)
+
 	order, err := h.orders.GetByID(r.Context(), orderID)
 	if err != nil || order == nil || order.UserID != userID {
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "order not found"})
@@ -143,21 +149,15 @@ func (h *OrderHandler) Pay(w http.ResponseWriter, r *http.Request) {
 
 	sshKeys, _ := h.sshKeys.GetByUser(r.Context(), userID)
 
-	var req struct {
-		VMName  string `json:"vm_name"`
-		OSImage string `json:"os_image"`
-	}
-	json.NewDecoder(r.Body).Decode(&req)
-
 	result, err := h.vmSvc.Create(r.Context(), service.CreateVMParams{
 		ClusterName: client.Name,
 		Project:     "customers",
 		UserID:      userID,
-		VMName:      req.VMName,
+		VMName:      payReq.VMName,
 		CPU:         product.CPU,
 		MemoryMB:    product.MemoryMB,
 		DiskGB:      product.DiskGB,
-		OSImage:     req.OSImage,
+		OSImage:     payReq.OSImage,
 		SSHKeys:     sshKeys,
 		IP:          ip,
 		Gateway:     gateway,
@@ -183,7 +183,7 @@ func (h *OrderHandler) Pay(w http.ResponseWriter, r *http.Request) {
 		CPU:       product.CPU,
 		MemoryMB:  product.MemoryMB,
 		DiskGB:    product.DiskGB,
-		OSImage:   req.OSImage,
+		OSImage:   payReq.OSImage,
 		Node:      result.Node,
 		Password:  result.Password,
 	}

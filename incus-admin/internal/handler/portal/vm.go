@@ -483,6 +483,10 @@ func (h *AdminVMHandler) ListAllVMs(w http.ResponseWriter, r *http.Request) {
 
 func (h *AdminVMHandler) ChangeVMState(w http.ResponseWriter, r *http.Request) {
 	vmName := chi.URLParam(r, "name")
+	if !isValidName(vmName) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid vm name"})
+		return
+	}
 	var req struct {
 		Action  string `json:"action"`
 		Force   bool   `json:"force"`
@@ -516,6 +520,10 @@ func (h *AdminVMHandler) ChangeVMState(w http.ResponseWriter, r *http.Request) {
 
 func (h *AdminVMHandler) DeleteVM(w http.ResponseWriter, r *http.Request) {
 	vmName := chi.URLParam(r, "name")
+	if !isValidName(vmName) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid vm name"})
+		return
+	}
 	clusterParam := r.URL.Query().Get("cluster")
 	projectParam := r.URL.Query().Get("project")
 	if clusterParam == "" {
@@ -543,6 +551,10 @@ func (h *AdminVMHandler) DeleteVM(w http.ResponseWriter, r *http.Request) {
 
 func (h *AdminVMHandler) ReinstallVM(w http.ResponseWriter, r *http.Request) {
 	vmName := chi.URLParam(r, "name")
+	if !isValidName(vmName) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid vm name"})
+		return
+	}
 	var req struct {
 		Cluster string `json:"cluster"`
 		Project string `json:"project"`

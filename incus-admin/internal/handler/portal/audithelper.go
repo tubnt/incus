@@ -3,6 +3,7 @@ package portal
 import (
 	"context"
 	"net/http"
+	"time"
 
 	"github.com/incuscloud/incus-admin/internal/middleware"
 	"github.com/incuscloud/incus-admin/internal/repository"
@@ -24,5 +25,9 @@ func audit(ctx context.Context, r *http.Request, action, targetType string, targ
 	if userID > 0 {
 		uid = &userID
 	}
-	go auditRepo.Log(ctx, uid, action, targetType, targetID, details, ip)
+	bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	go func() {
+		defer cancel()
+		auditRepo.Log(bgCtx, uid, action, targetType, targetID, details, ip)
+	}()
 }

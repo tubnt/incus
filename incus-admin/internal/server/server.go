@@ -2,7 +2,10 @@ package server
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -299,7 +302,19 @@ func (s *Server) emergencyRouter() http.Handler {
 		failMu.Unlock()
 
 		slog.Warn("emergency login SUCCESS", "ip", r.RemoteAddr)
-		// TODO: set session cookie for the first admin email
+		adminEmail := ""
+		if len(s.cfg.Auth.AdminEmails) > 0 {
+			adminEmail = s.cfg.Auth.AdminEmails[0]
+		}
+		sig := hmacSign(adminEmail, s.cfg.Auth.EmergencyToken)
+		http.SetCookie(w, &http.Cookie{
+			Name:     "emergency_auth",
+			Value:    adminEmail + "|" + sig,
+			Path:     "/",
+			HttpOnly: true,
+			SameSite: http.SameSiteStrictMode,
+			MaxAge:   3600,
+		})
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 	})
 
@@ -318,6 +333,12 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func constantTimeEqual(a, b string) bool {
 	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
+}
+
+func hmacSign(data, key string) string {
+	h := hmac.New(sha256.New, []byte(key))
+	h.Write([]byte(data))
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 func slogMiddleware(next http.Handler) http.Handler {

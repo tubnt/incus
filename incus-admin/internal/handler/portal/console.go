@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -25,7 +24,7 @@ var upgrader = websocket.Upgrader{
 			return true
 		}
 		host := r.Host
-		return strings.Contains(origin, host)
+		return origin == "https://"+host || origin == "http://"+host
 	},
 }
 

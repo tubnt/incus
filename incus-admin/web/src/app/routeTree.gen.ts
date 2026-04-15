@@ -15,6 +15,7 @@ import { Route as SshKeysRouteImport } from './routes/ssh-keys'
 import { Route as ConsoleRouteImport } from './routes/console'
 import { Route as BillingRouteImport } from './routes/billing'
 import { Route as ApiTokensRouteImport } from './routes/api-tokens'
+import { Route as AdminRouteImport } from './routes/admin'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AdminVmsRouteImport } from './routes/admin/vms'
 import { Route as AdminUsersRouteImport } from './routes/admin/users'
@@ -58,69 +59,75 @@ const ApiTokensRoute = ApiTokensRouteImport.update({
   path: '/api-tokens',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AdminRoute = AdminRouteImport.update({
+  id: '/admin',
+  path: '/admin',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AdminVmsRoute = AdminVmsRouteImport.update({
-  id: '/admin/vms',
-  path: '/admin/vms',
-  getParentRoute: () => rootRouteImport,
+  id: '/vms',
+  path: '/vms',
+  getParentRoute: () => AdminRoute,
 } as any)
 const AdminUsersRoute = AdminUsersRouteImport.update({
-  id: '/admin/users',
-  path: '/admin/users',
-  getParentRoute: () => rootRouteImport,
+  id: '/users',
+  path: '/users',
+  getParentRoute: () => AdminRoute,
 } as any)
 const AdminTicketsRoute = AdminTicketsRouteImport.update({
-  id: '/admin/tickets',
-  path: '/admin/tickets',
-  getParentRoute: () => rootRouteImport,
+  id: '/tickets',
+  path: '/tickets',
+  getParentRoute: () => AdminRoute,
 } as any)
 const AdminProductsRoute = AdminProductsRouteImport.update({
-  id: '/admin/products',
-  path: '/admin/products',
-  getParentRoute: () => rootRouteImport,
+  id: '/products',
+  path: '/products',
+  getParentRoute: () => AdminRoute,
 } as any)
 const AdminOrdersRoute = AdminOrdersRouteImport.update({
-  id: '/admin/orders',
-  path: '/admin/orders',
-  getParentRoute: () => rootRouteImport,
+  id: '/orders',
+  path: '/orders',
+  getParentRoute: () => AdminRoute,
 } as any)
 const AdminMonitoringRoute = AdminMonitoringRouteImport.update({
-  id: '/admin/monitoring',
-  path: '/admin/monitoring',
-  getParentRoute: () => rootRouteImport,
+  id: '/monitoring',
+  path: '/monitoring',
+  getParentRoute: () => AdminRoute,
 } as any)
 const AdminIpPoolsRoute = AdminIpPoolsRouteImport.update({
-  id: '/admin/ip-pools',
-  path: '/admin/ip-pools',
-  getParentRoute: () => rootRouteImport,
+  id: '/ip-pools',
+  path: '/ip-pools',
+  getParentRoute: () => AdminRoute,
 } as any)
 const AdminHaRoute = AdminHaRouteImport.update({
-  id: '/admin/ha',
-  path: '/admin/ha',
-  getParentRoute: () => rootRouteImport,
+  id: '/ha',
+  path: '/ha',
+  getParentRoute: () => AdminRoute,
 } as any)
 const AdminCreateVmRoute = AdminCreateVmRouteImport.update({
-  id: '/admin/create-vm',
-  path: '/admin/create-vm',
-  getParentRoute: () => rootRouteImport,
+  id: '/create-vm',
+  path: '/create-vm',
+  getParentRoute: () => AdminRoute,
 } as any)
 const AdminClustersRoute = AdminClustersRouteImport.update({
-  id: '/admin/clusters',
-  path: '/admin/clusters',
-  getParentRoute: () => rootRouteImport,
+  id: '/clusters',
+  path: '/clusters',
+  getParentRoute: () => AdminRoute,
 } as any)
 const AdminAuditLogsRoute = AdminAuditLogsRouteImport.update({
-  id: '/admin/audit-logs',
-  path: '/admin/audit-logs',
-  getParentRoute: () => rootRouteImport,
+  id: '/audit-logs',
+  path: '/audit-logs',
+  getParentRoute: () => AdminRoute,
 } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/admin': typeof AdminRouteWithChildren
   '/api-tokens': typeof ApiTokensRoute
   '/billing': typeof BillingRoute
   '/console': typeof ConsoleRoute
@@ -141,6 +148,7 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/admin': typeof AdminRouteWithChildren
   '/api-tokens': typeof ApiTokensRoute
   '/billing': typeof BillingRoute
   '/console': typeof ConsoleRoute
@@ -162,6 +170,7 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/admin': typeof AdminRouteWithChildren
   '/api-tokens': typeof ApiTokensRoute
   '/billing': typeof BillingRoute
   '/console': typeof ConsoleRoute
@@ -184,6 +193,7 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/admin'
     | '/api-tokens'
     | '/billing'
     | '/console'
@@ -204,6 +214,7 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/admin'
     | '/api-tokens'
     | '/billing'
     | '/console'
@@ -224,6 +235,7 @@ export interface FileRouteTypes {
   id:
     | '__root__'
     | '/'
+    | '/admin'
     | '/api-tokens'
     | '/billing'
     | '/console'
@@ -245,23 +257,13 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  AdminRoute: typeof AdminRouteWithChildren
   ApiTokensRoute: typeof ApiTokensRoute
   BillingRoute: typeof BillingRoute
   ConsoleRoute: typeof ConsoleRoute
   SshKeysRoute: typeof SshKeysRoute
   TicketsRoute: typeof TicketsRoute
   VmsRoute: typeof VmsRoute
-  AdminAuditLogsRoute: typeof AdminAuditLogsRoute
-  AdminClustersRoute: typeof AdminClustersRoute
-  AdminCreateVmRoute: typeof AdminCreateVmRoute
-  AdminHaRoute: typeof AdminHaRoute
-  AdminIpPoolsRoute: typeof AdminIpPoolsRoute
-  AdminMonitoringRoute: typeof AdminMonitoringRoute
-  AdminOrdersRoute: typeof AdminOrdersRoute
-  AdminProductsRoute: typeof AdminProductsRoute
-  AdminTicketsRoute: typeof AdminTicketsRoute
-  AdminUsersRoute: typeof AdminUsersRoute
-  AdminVmsRoute: typeof AdminVmsRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -308,6 +310,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiTokensRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/admin': {
+      id: '/admin'
+      path: '/admin'
+      fullPath: '/admin'
+      preLoaderRoute: typeof AdminRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/': {
       id: '/'
       path: '/'
@@ -317,92 +326,99 @@ declare module '@tanstack/react-router' {
     }
     '/admin/vms': {
       id: '/admin/vms'
-      path: '/admin/vms'
+      path: '/vms'
       fullPath: '/admin/vms'
       preLoaderRoute: typeof AdminVmsRouteImport
-      parentRoute: typeof rootRouteImport
+      parentRoute: typeof AdminRoute
     }
     '/admin/users': {
       id: '/admin/users'
-      path: '/admin/users'
+      path: '/users'
       fullPath: '/admin/users'
       preLoaderRoute: typeof AdminUsersRouteImport
-      parentRoute: typeof rootRouteImport
+      parentRoute: typeof AdminRoute
     }
     '/admin/tickets': {
       id: '/admin/tickets'
-      path: '/admin/tickets'
+      path: '/tickets'
       fullPath: '/admin/tickets'
       preLoaderRoute: typeof AdminTicketsRouteImport
-      parentRoute: typeof rootRouteImport
+      parentRoute: typeof AdminRoute
     }
     '/admin/products': {
       id: '/admin/products'
-      path: '/admin/products'
+      path: '/products'
       fullPath: '/admin/products'
       preLoaderRoute: typeof AdminProductsRouteImport
-      parentRoute: typeof rootRouteImport
+      parentRoute: typeof AdminRoute
     }
     '/admin/orders': {
       id: '/admin/orders'
-      path: '/admin/orders'
+      path: '/orders'
       fullPath: '/admin/orders'
       preLoaderRoute: typeof AdminOrdersRouteImport
-      parentRoute: typeof rootRouteImport
+      parentRoute: typeof AdminRoute
     }
     '/admin/monitoring': {
       id: '/admin/monitoring'
-      path: '/admin/monitoring'
+      path: '/monitoring'
       fullPath: '/admin/monitoring'
       preLoaderRoute: typeof AdminMonitoringRouteImport
-      parentRoute: typeof rootRouteImport
+      parentRoute: typeof AdminRoute
     }
     '/admin/ip-pools': {
       id: '/admin/ip-pools'
-      path: '/admin/ip-pools'
+      path: '/ip-pools'
       fullPath: '/admin/ip-pools'
       preLoaderRoute: typeof AdminIpPoolsRouteImport
-      parentRoute: typeof rootRouteImport
+      parentRoute: typeof AdminRoute
     }
     '/admin/ha': {
       id: '/admin/ha'
-      path: '/admin/ha'
+      path: '/ha'
       fullPath: '/admin/ha'
       preLoaderRoute: typeof AdminHaRouteImport
-      parentRoute: typeof rootRouteImport
+      parentRoute: typeof AdminRoute
     }
     '/admin/create-vm': {
       id: '/admin/create-vm'
-      path: '/admin/create-vm'
+      path: '/create-vm'
       fullPath: '/admin/create-vm'
       preLoaderRoute: typeof AdminCreateVmRouteImport
-      parentRoute: typeof rootRouteImport
+      parentRoute: typeof AdminRoute
     }
     '/admin/clusters': {
       id: '/admin/clusters'
-      path: '/admin/clusters'
+      path: '/clusters'
       fullPath: '/admin/clusters'
       preLoaderRoute: typeof AdminClustersRouteImport
-      parentRoute: typeof rootRouteImport
+      parentRoute: typeof AdminRoute
     }
     '/admin/audit-logs': {
       id: '/admin/audit-logs'
-      path: '/admin/audit-logs'
+      path: '/audit-logs'
       fullPath: '/admin/audit-logs'
       preLoaderRoute: typeof AdminAuditLogsRouteImport
-      parentRoute: typeof rootRouteImport
+      parentRoute: typeof AdminRoute
     }
   }
 }
 
-const rootRouteChildren: RootRouteChildren = {
-  IndexRoute: IndexRoute,
-  ApiTokensRoute: ApiTokensRoute,
-  BillingRoute: BillingRoute,
-  ConsoleRoute: ConsoleRoute,
-  SshKeysRoute: SshKeysRoute,
-  TicketsRoute: TicketsRoute,
-  VmsRoute: VmsRoute,
+interface AdminRouteChildren {
+  AdminAuditLogsRoute: typeof AdminAuditLogsRoute
+  AdminClustersRoute: typeof AdminClustersRoute
+  AdminCreateVmRoute: typeof AdminCreateVmRoute
+  AdminHaRoute: typeof AdminHaRoute
+  AdminIpPoolsRoute: typeof AdminIpPoolsRoute
+  AdminMonitoringRoute: typeof AdminMonitoringRoute
+  AdminOrdersRoute: typeof AdminOrdersRoute
+  AdminProductsRoute: typeof AdminProductsRoute
+  AdminTicketsRoute: typeof AdminTicketsRoute
+  AdminUsersRoute: typeof AdminUsersRoute
+  AdminVmsRoute: typeof AdminVmsRoute
+}
+
+const AdminRouteChildren: AdminRouteChildren = {
   AdminAuditLogsRoute: AdminAuditLogsRoute,
   AdminClustersRoute: AdminClustersRoute,
   AdminCreateVmRoute: AdminCreateVmRoute,
@@ -414,6 +430,19 @@ const rootRouteChildren: RootRouteChildren = {
   AdminTicketsRoute: AdminTicketsRoute,
   AdminUsersRoute: AdminUsersRoute,
   AdminVmsRoute: AdminVmsRoute,
+}
+
+const AdminRouteWithChildren = AdminRoute._addFileChildren(AdminRouteChildren)
+
+const rootRouteChildren: RootRouteChildren = {
+  IndexRoute: IndexRoute,
+  AdminRoute: AdminRouteWithChildren,
+  ApiTokensRoute: ApiTokensRoute,
+  BillingRoute: BillingRoute,
+  ConsoleRoute: ConsoleRoute,
+  SshKeysRoute: SshKeysRoute,
+  TicketsRoute: TicketsRoute,
+  VmsRoute: VmsRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

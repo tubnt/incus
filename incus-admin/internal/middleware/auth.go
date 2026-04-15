@@ -44,6 +44,18 @@ func ProxyAuth(next http.Handler) http.Handler {
 			}
 		}
 
+		// emergency cookie 认证
+		if cookie, err := r.Cookie("emergency_auth"); err == nil {
+			parts := strings.SplitN(cookie.Value, "|", 2)
+			if len(parts) == 2 && parts[0] != "" {
+				ctx := r.Context()
+				ctx = context.WithValue(ctx, CtxUserEmail, parts[0])
+				ctx = context.WithValue(ctx, CtxAuthMethod, "emergency")
+				next.ServeHTTP(w, r.WithContext(ctx))
+				return
+			}
+		}
+
 		// oauth2-proxy header 认证
 		email := r.Header.Get("X-Auth-Request-Email")
 		if email == "" {

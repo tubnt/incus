@@ -100,7 +100,7 @@ function VMCard({ vm }: { vm: VMService }) {
           <div className="text-sm mt-2 space-y-0.5">
             <div>IP: <span className="font-mono">{vm.ip || "assigning..."}</span></div>
             <div>Username: <span className="font-mono">ubuntu</span></div>
-            <div>Password: <span className="font-mono text-xs">{vm.password}</span></div>
+            <div>Password: <PasswordReveal value={vm.password} /></div>
             <div>Node: {vm.node} · Created: {new Date(vm.created_at).toLocaleDateString()}</div>
           </div>
         </div>
@@ -177,6 +177,16 @@ function ActionBtn({ label, onClick, disabled }: { label: string; onClick: () =>
     <button onClick={onClick} disabled={disabled}
       className="px-3 py-1.5 rounded text-xs font-medium bg-muted/50 text-muted-foreground hover:bg-muted disabled:opacity-50">
       {label}
+    </button>
+  );
+}
+
+function PasswordReveal({ value }: { value: string }) {
+  const [show, setShow] = useState(false);
+  if (!value) return <span className="text-muted-foreground text-xs">—</span>;
+  return (
+    <button onClick={() => setShow(!show)} className="font-mono text-xs hover:text-primary">
+      {show ? value : "••••••••••••"}
     </button>
   );
 }
