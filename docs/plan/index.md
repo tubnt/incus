@@ -35,3 +35,4 @@ Each plan is a single line linking to its detail file. All detailed information 
 - [x] [**PLAN-004 IncusAdmin — Self-hosted Cloud Platform Management System**](PLAN-004-incus-admin.md) `2026-04-15`
 - [x] [**PLAN-005 Full-stack refactor to pma-web and pma-go standards**](PLAN-005.md) `2026-04-15`
 - [x] [**PLAN-006 Infrastructure automation — HA failover, node management, standalone host**](PLAN-006.md) `2026-04-15`
+- [ ] [**PLAN-007 UI/UX completeness — compete with DigitalOcean/Vultr/Hetzner**](PLAN-007.md) `2026-04-15`
