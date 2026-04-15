@@ -305,3 +305,42 @@ Reference: [Proxmox Cluster Manager](https://pve.proxmox.com/wiki/Cluster_Manage
 ### 2026-04-15 22:30 — Deep ops research added
 
 Expanded from 5 phases to 10 phases based on Proxmox VE, OpenStack Horizon, Ceph Dashboard, and NetBox research. New phases 6-10 cover storage ops, network IPAM, node lifecycle, alerting/events, and observability. Competitor matrix now covers 17 operations features.
+
+### 2026-04-15 23:00 — Graph-verified root cause analysis
+
+**User Journey 1: Admin creates VM → no password shown**
+- Graph verified: `AdminVMHandler.CreateVM` → `VMService.Create` → returns `CreateVMResult{VMName, IP, Username, Password, Node}` → `writeJSON(w, 201, result)` — **backend returns password correctly**
+- Root cause: `admin/create-vm.tsx` line 40-42: `onSuccess: () => { navigate({ to: "/admin/vms" }) }` — **discards response data, immediately navigates**
+- Fix: show modal with credentials before navigating
+
+**User Journey 2: Admin VM not in "My VMs"**
+- Graph verified: `AdminVMHandler.CreateVM` sets `UserID: 0` (line 445) and **never calls vmRepo.Create** — admin-created VMs are only in Incus, not in DB
+- Root cause: Two disconnected data sources — "My VMs" reads DB (`vmRepo.ListByUser`), "All VMs" reads Incus API (`ListInstances`)
+- Fix: Admin CreateVM should write to DB with admin's userID (or target user)
+
+**User Journey 3: Products not in user VM creation**
+- Graph verified: `vms.tsx` hardcodes `SIZES = [{Small, 1C/1G/25G}, {Medium, 2C/2G/50G}, {Large, 4C/4G/100G}]`
+- Products API `GET /portal/products` exists and works, but `vms.tsx` doesn't call it
+- Fix: Replace hardcoded SIZES with dynamic products from API
+
+**User Journey 4: IP pool management**
+- Graph verified: `IPPoolHandler` has only `ListPools` (read-only), no Create/Update/Delete
+- IP pools come from config `cc.IPPools` (env-based), not DB `ip_pools` table
+- Fix: CRUD for ip_pools table + API + frontend form
+
+**User Journey 5: Add cluster**
+- Backend `POST /admin/clusters/add` exists (`ClusterMgmtHandler.AddCluster`)
+- Frontend: zero UI — Grep found no references to this API in web/src
+- Fix: Add form in clusters page
+
+**User Journey 6: Ceph status**
+- Zero Ceph integration in codebase — only "ceph-pool" string literal
+- Fix: New backend endpoint querying Ceph via SSH or Manager REST API
+
+**Additional gaps found**:
+- Admin `CreateVM` doesn't write to DB → admin VMs invisible to billing/quota/My VMs
+- Admin `DeleteVM` doesn't update DB status → orphaned DB records
+- No logout button in frontend
+- No global success/error toast notification system
+- Console "Back to VMs" hardcoded to `/admin/vms`
+- Dashboard VM count only queries first cluster
