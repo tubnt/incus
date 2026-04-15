@@ -14,6 +14,7 @@
     "products": "套餐",
     "orders": "订单",
     "auditLogs": "审计",
+    "adminTickets": "工单管理",
     "createVm": "+ 云主机"
   },
   "common": {
@@ -26,6 +27,7 @@
     "edit": "编辑",
     "search": "搜索",
     "noData": "暂无数据",
+    "balance": "余额",
     "signIn": "SSO 登录",
     "signOut": "退出"
   },

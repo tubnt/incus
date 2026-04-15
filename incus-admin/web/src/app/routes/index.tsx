@@ -30,7 +30,7 @@ function Dashboard() {
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
         <StatCard title={t("vm.title")} value={String(myVmCount)} />
-        <StatCard title="Balance" value={user ? `$${user.balance.toFixed(2)}` : "—"} />
+        <StatCard title={t("common.balance")} value={user ? `$${user.balance.toFixed(2)}` : "—"} />
         <StatCard title={t("ticket.title")} value={String(openTickets)} />
       </div>
 

@@ -9,7 +9,20 @@ import { cn } from "@/shared/lib/utils";
 
 export const Route = createRootRoute({
   component: RootLayout,
+  notFoundComponent: NotFound,
 });
+
+function NotFound() {
+  return (
+    <div className="flex flex-col items-center justify-center py-20 gap-4">
+      <div className="text-6xl font-bold text-muted-foreground">404</div>
+      <p className="text-muted-foreground">Page not found</p>
+      <a href="/" className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm font-medium hover:opacity-90">
+        Back to Dashboard
+      </a>
+    </div>
+  );
+}
 
 function RootLayout() {
   const { t } = useTranslation();

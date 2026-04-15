@@ -14,6 +14,7 @@
     "products": "Products",
     "orders": "Orders",
     "auditLogs": "Audit",
+    "adminTickets": "Ticket Mgmt",
     "createVm": "+ VM"
   },
   "common": {
@@ -26,6 +27,7 @@
     "edit": "Edit",
     "search": "Search",
     "noData": "No data",
+    "balance": "Balance",
     "signIn": "Sign in with SSO",
     "signOut": "Sign out"
   },
