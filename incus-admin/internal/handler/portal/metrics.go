@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -14,9 +16,36 @@ import (
 	"github.com/incuscloud/incus-admin/internal/repository"
 )
 
+type metricsCache struct {
+	mu      sync.RWMutex
+	data    map[string]map[string]*VMMetric
+	updated time.Time
+}
+
+func (c *metricsCache) get(clusterName string) (map[string]*VMMetric, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if time.Since(c.updated) > 30*time.Second {
+		return nil, false
+	}
+	vms, ok := c.data[clusterName]
+	return vms, ok
+}
+
+func (c *metricsCache) set(clusterName string, vms map[string]*VMMetric) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.data == nil {
+		c.data = make(map[string]map[string]*VMMetric)
+	}
+	c.data[clusterName] = vms
+	c.updated = time.Now()
+}
+
 type MetricsHandler struct {
 	clusters *cluster.Manager
 	vmRepo   *repository.VMRepo
+	cache    metricsCache
 }
 
 func NewMetricsHandler(clusters *cluster.Manager, vmRepo *repository.VMRepo) *MetricsHandler {
@@ -60,6 +89,23 @@ type VMMetric struct {
 	NetTxBytes    int64   `json:"net_tx_bytes"`
 }
 
+func (h *MetricsHandler) fetchVMs(r *http.Request, clusterName string) (map[string]*VMMetric, error) {
+	if vms, ok := h.cache.get(clusterName); ok {
+		return vms, nil
+	}
+	client, ok := h.clusters.Get(clusterName)
+	if !ok {
+		return nil, nil
+	}
+	text, err := client.RawGet(r.Context(), "/1.0/metrics")
+	if err != nil {
+		return nil, err
+	}
+	vms := parseMetricsForAllVMs(text)
+	h.cache.set(clusterName, vms)
+	return vms, nil
+}
+
 func (h *MetricsHandler) VMMetrics(w http.ResponseWriter, r *http.Request) {
 	vmName := chi.URLParam(r, "name")
 	clusterName := r.URL.Query().Get("cluster")
@@ -67,20 +113,13 @@ func (h *MetricsHandler) VMMetrics(w http.ResponseWriter, r *http.Request) {
 		clusterName = h.clusters.List()[0].Name
 	}
 
-	client, ok := h.clusters.Get(clusterName)
-	if !ok {
-		writeJSON(w, http.StatusNotFound, map[string]any{"error": "cluster not found"})
-		return
-	}
-
-	text, err := client.RawGet(r.Context(), "/1.0/metrics")
+	allVMs, err := h.fetchVMs(r, clusterName)
 	if err != nil {
 		slog.Error("fetch metrics failed", "error", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "metrics unavailable"})
 		return
 	}
 
-	allVMs := parseMetricsForAllVMs(text)
 	if m, ok := allVMs[vmName]; ok {
 		writeJSON(w, http.StatusOK, map[string]any{"metrics": m})
 	} else {
@@ -101,16 +140,11 @@ func (h *MetricsHandler) ClusterOverview(w http.ResponseWriter, r *http.Request)
 
 	var results []clusterMetrics
 	for _, ci := range h.clusters.List() {
-		client, ok := h.clusters.Get(ci.Name)
-		if !ok {
-			continue
-		}
-		text, err := client.RawGet(r.Context(), "/1.0/metrics")
+		vmMap, err := h.fetchVMs(r, ci.Name)
 		if err != nil {
 			slog.Error("fetch metrics failed", "cluster", ci.Name, "error", err)
 			continue
 		}
-		vmMap := parseMetricsForAllVMs(text)
 		vms := make([]*VMMetric, 0, len(vmMap))
 		for name, m := range vmMap {
 			m.Name = name
