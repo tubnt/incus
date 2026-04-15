@@ -91,9 +91,9 @@ func (h *VMHandler) VMAction(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cc, _ := h.clusters.ConfigByName(findClusterName(h.clusters, vm.ClusterID))
-	project := "customers"
-	if len(cc.Projects) > 0 {
-		project = cc.Projects[0].Name
+	project := cc.DefaultProject
+	if project == "" {
+		project = "customers"
 	}
 
 	switch action {
@@ -151,16 +151,21 @@ func (h *VMHandler) CreateService(w http.ResponseWriter, r *http.Request) {
 		p := cc.IPPools[0]
 		gateway = p.Gateway
 		cidr = extractCIDR(p.CIDR)
-		ip = pickNextIP(r.Context(), h.vmSvc, client.Name, "customers", p.Range)
+		ip = pickNextIP(r.Context(), h.vmSvc, client.Name, cc.DefaultProject, p.Range)
 	}
 	if ip == "" {
 		writeJSON(w, http.StatusConflict, map[string]any{"error": "no available IPs"})
 		return
 	}
 
+	defPool := cc.StoragePool
+	if defPool == "" { defPool = "ceph-pool" }
+	defNet := cc.Network
+	if defNet == "" { defNet = "br-pub" }
+
 	result, err := h.vmSvc.Create(r.Context(), service.CreateVMParams{
 		ClusterName: client.Name,
-		Project:     "customers",
+		Project:     cc.DefaultProject,
 		UserID:      userID,
 		VMName:      req.Name,
 		CPU:         req.CPU,
@@ -171,8 +176,8 @@ func (h *VMHandler) CreateService(w http.ResponseWriter, r *http.Request) {
 		IP:          ip,
 		Gateway:     gateway,
 		SubnetCIDR:  cidr,
-		StoragePool: "ceph-pool",
-		Network:     "br-pub",
+		StoragePool: defPool,
+		Network:     defNet,
 	})
 	if err != nil {
 		slog.Error("user create VM failed", "user_id", userID, "error", err)
@@ -270,6 +275,8 @@ func (h *AdminVMHandler) GetHAStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	cc, _ := h.clusters.ConfigByName(clusterName)
+
 	members, err := client.GetClusterMembers(r.Context())
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
@@ -297,7 +304,7 @@ func (h *AdminVMHandler) GetHAStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"cluster":            clusterName,
 		"healing_threshold":  300,
-		"storage":            "ceph-pool",
+		"storage":            cc.StoragePool,
 		"nodes":              nodes,
 		"ha_enabled":         true,
 	})
@@ -426,9 +433,13 @@ func (h *AdminVMHandler) CreateVM(w http.ResponseWriter, r *http.Request) {
 	if req.MemoryMB == 0 { req.MemoryMB = 2048 }
 	if req.DiskGB == 0 { req.DiskGB = 50 }
 	if req.OSImage == "" { req.OSImage = "images:ubuntu/24.04/cloud" }
-	if req.Project == "" { req.Project = "customers" }
+	if req.Project == "" { req.Project = "default" }
 
-	ip, gateway, cidr, pool, network := "", "", "", "ceph-pool", "br-pub"
+	pool := cc.StoragePool
+	if pool == "" { pool = "ceph-pool" }
+	network := cc.Network
+	if network == "" { network = "br-pub" }
+	ip, gateway, cidr := "", "", ""
 	if len(cc.IPPools) > 0 {
 		p := cc.IPPools[0]
 		gateway = p.Gateway
@@ -540,7 +551,7 @@ func (h *AdminVMHandler) ChangeVMState(w http.ResponseWriter, r *http.Request) {
 		}
 		req.Cluster = clients[0].Name
 	}
-	if req.Project == "" { req.Project = "customers" }
+	if req.Project == "" { req.Project = "default" }
 
 	err := h.vmSvc.ChangeState(r.Context(), req.Cluster, req.Project, vmName, req.Action, req.Force)
 	if err != nil {
@@ -569,7 +580,7 @@ func (h *AdminVMHandler) DeleteVM(w http.ResponseWriter, r *http.Request) {
 		}
 		clusterParam = clients[0].Name
 	}
-	if projectParam == "" { projectParam = "customers" }
+	if projectParam == "" { projectParam = "default" }
 
 	req := struct{ Cluster, Project string }{clusterParam, projectParam}
 

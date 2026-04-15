@@ -37,14 +37,17 @@ type AuthConfig struct {
 }
 
 type ClusterConfig struct {
-	Name        string          `json:"name"`
-	DisplayName string          `json:"display_name"`
-	APIURL      string          `json:"api_url"`
-	CertFile    string          `json:"cert_file"`
-	KeyFile     string          `json:"key_file"`
-	CAFile      string          `json:"ca_file"`
-	Projects    []ProjectConfig `json:"projects"`
-	IPPools     []IPPoolConfig  `json:"ip_pools"`
+	Name           string          `json:"name"`
+	DisplayName    string          `json:"display_name"`
+	APIURL         string          `json:"api_url"`
+	CertFile       string          `json:"cert_file"`
+	KeyFile        string          `json:"key_file"`
+	CAFile         string          `json:"ca_file"`
+	StoragePool    string          `json:"storage_pool"`
+	Network        string          `json:"network"`
+	DefaultProject string          `json:"default_project"`
+	Projects       []ProjectConfig `json:"projects"`
+	IPPools        []IPPoolConfig  `json:"ip_pools"`
 }
 
 type ProjectConfig struct {
@@ -104,12 +107,15 @@ func Load() (*Config, error) {
 
 	if clusterURL := envOr("CLUSTER_API_URL", ""); clusterURL != "" {
 		cfg.Clusters = append(cfg.Clusters, ClusterConfig{
-			Name:        envOr("CLUSTER_NAME", "default"),
-			DisplayName: envOr("CLUSTER_DISPLAY_NAME", "Default Cluster"),
-			APIURL:      clusterURL,
-			CertFile:    envOr("CLUSTER_CERT_FILE", "/etc/incus-admin/certs/client.crt"),
-			KeyFile:     envOr("CLUSTER_KEY_FILE", "/etc/incus-admin/certs/client.key"),
-			CAFile:      envOr("CLUSTER_CA_FILE", ""),
+			Name:           envOr("CLUSTER_NAME", "default"),
+			DisplayName:    envOr("CLUSTER_DISPLAY_NAME", "Default Cluster"),
+			APIURL:         clusterURL,
+			CertFile:       envOr("CLUSTER_CERT_FILE", "/etc/incus-admin/certs/client.crt"),
+			KeyFile:        envOr("CLUSTER_KEY_FILE", "/etc/incus-admin/certs/client.key"),
+			CAFile:         envOr("CLUSTER_CA_FILE", ""),
+			StoragePool:    envOr("CLUSTER_STORAGE_POOL", "ceph-pool"),
+			Network:        envOr("CLUSTER_NETWORK", "br-pub"),
+			DefaultProject: envOr("CLUSTER_DEFAULT_PROJECT", "customers"),
 			Projects: []ProjectConfig{
 				{Name: "default", Access: "internal", Description: "Default project"},
 				{Name: "customers", Access: "public", Description: "Customer VMs"},

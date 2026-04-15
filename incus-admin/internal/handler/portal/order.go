@@ -139,12 +139,19 @@ func (h *OrderHandler) Pay(w http.ResponseWriter, r *http.Request) {
 	client := clients[0]
 	cc, _ := h.clusters.ConfigByName(client.Name)
 
+	defProject := cc.DefaultProject
+	if defProject == "" { defProject = "customers" }
+	pool := cc.StoragePool
+	if pool == "" { pool = "ceph-pool" }
+	network := cc.Network
+	if network == "" { network = "br-pub" }
+
 	ip, gateway, cidr := "", "", ""
 	if len(cc.IPPools) > 0 {
 		p := cc.IPPools[0]
 		gateway = p.Gateway
 		cidr = extractCIDR(p.CIDR)
-		ip = pickNextIP(r.Context(), h.vmSvc, client.Name, "customers", p.Range)
+		ip = pickNextIP(r.Context(), h.vmSvc, client.Name, defProject, p.Range)
 	}
 
 	sshKeys, _ := h.sshKeys.GetByUser(r.Context(), userID)
@@ -156,7 +163,7 @@ func (h *OrderHandler) Pay(w http.ResponseWriter, r *http.Request) {
 
 	result, err := h.vmSvc.Create(r.Context(), service.CreateVMParams{
 		ClusterName: client.Name,
-		Project:     "customers",
+		Project:     defProject,
 		UserID:      userID,
 		VMName:      payReq.VMName,
 		CPU:         product.CPU,
@@ -167,8 +174,8 @@ func (h *OrderHandler) Pay(w http.ResponseWriter, r *http.Request) {
 		IP:          ip,
 		Gateway:     gateway,
 		SubnetCIDR:  cidr,
-		StoragePool: "ceph-pool",
-		Network:     "br-pub",
+		StoragePool: pool,
+		Network:     network,
 	})
 	if err != nil {
 		slog.Error("auto-provision VM failed after payment", "order", orderID, "error", err)
