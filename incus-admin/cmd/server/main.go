@@ -12,6 +12,7 @@ import (
 	"github.com/incuscloud/incus-admin/internal/cluster"
 	"github.com/incuscloud/incus-admin/internal/config"
 	"github.com/incuscloud/incus-admin/internal/handler/portal"
+	"github.com/incuscloud/incus-admin/internal/middleware"
 	"github.com/incuscloud/incus-admin/internal/repository"
 	"github.com/incuscloud/incus-admin/internal/server"
 	"github.com/incuscloud/incus-admin/internal/service"
@@ -74,6 +75,14 @@ func main() {
 		return user.ID, user.Role, nil
 	}
 
+	roleLookup := func(ctx context.Context, userID int64) (string, error) {
+		user, err := userRepo.GetByID(ctx, userID)
+		if err != nil || user == nil {
+			return "", fmt.Errorf("user not found")
+		}
+		return user.Role, nil
+	}
+
 	vmRepo := repository.NewVMRepo(db)
 	sshKeyRepo := repository.NewSSHKeyRepo(db)
 	ticketRepo := repository.NewTicketRepo(db)
@@ -81,8 +90,17 @@ func main() {
 	orderRepo := repository.NewOrderRepo(db)
 	auditRepo := repository.NewAuditRepo(db)
 	apiTokenRepo := repository.NewAPITokenRepo(db)
+	invoiceRepo := repository.NewInvoiceRepo(db)
 
-	srv := server.New(cfg, userLookup, server.Handlers{
+	middleware.SetTokenValidator(func(ctx context.Context, token string) (int64, error) {
+		t, err := apiTokenRepo.ValidateToken(ctx, token)
+		if err != nil || t == nil {
+			return 0, fmt.Errorf("invalid token")
+		}
+		return t.UserID, nil
+	})
+
+	srv := server.New(cfg, userLookup, roleLookup, server.Handlers{
 		Admin:     portal.NewAdminVMHandler(vmSvc, clusterMgr, scheduler),
 		Portal:    portal.NewVMHandler(vmSvc, vmRepo, clusterMgr),
 		Users:     portal.NewUserHandler(userRepo),
@@ -96,6 +114,7 @@ func main() {
 		Orders:    portal.NewOrderHandler(orderRepo, productRepo),
 		Audit:     portal.NewAuditHandler(auditRepo),
 		APITokens: portal.NewAPITokenHandler(apiTokenRepo),
+		Invoices:  portal.NewInvoiceHandler(invoiceRepo),
 	})
 
 	if err := srv.Run(); err != nil {

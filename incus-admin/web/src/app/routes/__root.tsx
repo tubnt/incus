@@ -56,6 +56,9 @@ function RootLayout() {
             <Link to="/tickets" className="text-foreground/70 hover:text-foreground [&.active]:text-foreground [&.active]:font-medium">
               工单
             </Link>
+            <Link to="/billing" className="text-foreground/70 hover:text-foreground [&.active]:text-foreground [&.active]:font-medium">
+              账单
+            </Link>
             <Link to="/api-tokens" className="text-foreground/70 hover:text-foreground [&.active]:text-foreground [&.active]:font-medium">
               API
             </Link>

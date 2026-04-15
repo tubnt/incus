@@ -13,6 +13,7 @@ import { Route as VmsRouteImport } from './routes/vms'
 import { Route as TicketsRouteImport } from './routes/tickets'
 import { Route as SshKeysRouteImport } from './routes/ssh-keys'
 import { Route as ConsoleRouteImport } from './routes/console'
+import { Route as BillingRouteImport } from './routes/billing'
 import { Route as ApiTokensRouteImport } from './routes/api-tokens'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AdminVmsRouteImport } from './routes/admin/vms'
@@ -44,6 +45,11 @@ const SshKeysRoute = SshKeysRouteImport.update({
 const ConsoleRoute = ConsoleRouteImport.update({
   id: '/console',
   path: '/console',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const BillingRoute = BillingRouteImport.update({
+  id: '/billing',
+  path: '/billing',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiTokensRoute = ApiTokensRouteImport.update({
@@ -110,6 +116,7 @@ const AdminAuditLogsRoute = AdminAuditLogsRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/api-tokens': typeof ApiTokensRoute
+  '/billing': typeof BillingRoute
   '/console': typeof ConsoleRoute
   '/ssh-keys': typeof SshKeysRoute
   '/tickets': typeof TicketsRoute
@@ -128,6 +135,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/api-tokens': typeof ApiTokensRoute
+  '/billing': typeof BillingRoute
   '/console': typeof ConsoleRoute
   '/ssh-keys': typeof SshKeysRoute
   '/tickets': typeof TicketsRoute
@@ -147,6 +155,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/api-tokens': typeof ApiTokensRoute
+  '/billing': typeof BillingRoute
   '/console': typeof ConsoleRoute
   '/ssh-keys': typeof SshKeysRoute
   '/tickets': typeof TicketsRoute
@@ -167,6 +176,7 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/api-tokens'
+    | '/billing'
     | '/console'
     | '/ssh-keys'
     | '/tickets'
@@ -185,6 +195,7 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/api-tokens'
+    | '/billing'
     | '/console'
     | '/ssh-keys'
     | '/tickets'
@@ -203,6 +214,7 @@ export interface FileRouteTypes {
     | '__root__'
     | '/'
     | '/api-tokens'
+    | '/billing'
     | '/console'
     | '/ssh-keys'
     | '/tickets'
@@ -222,6 +234,7 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   ApiTokensRoute: typeof ApiTokensRoute
+  BillingRoute: typeof BillingRoute
   ConsoleRoute: typeof ConsoleRoute
   SshKeysRoute: typeof SshKeysRoute
   TicketsRoute: typeof TicketsRoute
@@ -266,6 +279,13 @@ declare module '@tanstack/react-router' {
       path: '/console'
       fullPath: '/console'
       preLoaderRoute: typeof ConsoleRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/billing': {
+      id: '/billing'
+      path: '/billing'
+      fullPath: '/billing'
+      preLoaderRoute: typeof BillingRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api-tokens': {
@@ -358,6 +378,7 @@ declare module '@tanstack/react-router' {
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   ApiTokensRoute: ApiTokensRoute,
+  BillingRoute: BillingRoute,
   ConsoleRoute: ConsoleRoute,
   SshKeysRoute: SshKeysRoute,
   TicketsRoute: TicketsRoute,

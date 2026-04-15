@@ -136,5 +136,13 @@ func (r *OrderRepo) PayWithBalance(ctx context.Context, orderID int64) error {
 		return fmt.Errorf("record transaction: %w", err)
 	}
 
+	now := time.Now()
+	_, err = tx.ExecContext(ctx,
+		`INSERT INTO invoices (order_id, user_id, amount, status, due_at, paid_at) VALUES ($1, $2, $3, 'paid', $4, $4)`,
+		orderID, o.UserID, o.Amount, now)
+	if err != nil {
+		return fmt.Errorf("create invoice: %w", err)
+	}
+
 	return tx.Commit()
 }

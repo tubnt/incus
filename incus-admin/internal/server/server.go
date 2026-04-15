@@ -66,9 +66,13 @@ type Handlers struct {
 	}
 	Audit     AdminRouteRegistrar
 	APITokens RouteRegistrar
+	Invoices  interface {
+		AdminRouteRegistrar
+		PortalRouteRegistrar
+	}
 }
 
-func New(cfg *config.Config, userLookup func(ctx context.Context, email string) (int64, string, error), h Handlers) *Server {
+func New(cfg *config.Config, userLookup func(ctx context.Context, email string) (int64, string, error), roleLookup func(ctx context.Context, userID int64) (string, error), h Handlers) *Server {
 	r := chi.NewRouter()
 
 	r.Use(chimw.RequestID)
@@ -84,7 +88,7 @@ func New(cfg *config.Config, userLookup func(ctx context.Context, email string) 
 
 	r.Group(func(r chi.Router) {
 		r.Use(middleware.ProxyAuth)
-		r.Use(middleware.UserFromEmail(userLookup))
+		r.Use(middleware.UserFromEmail(userLookup, roleLookup))
 
 		r.Route("/api/portal", func(r chi.Router) {
 			if h.Portal != nil {
@@ -107,6 +111,9 @@ func New(cfg *config.Config, userLookup func(ctx context.Context, email string) 
 			}
 			if h.APITokens != nil {
 				h.APITokens.Routes(r)
+			}
+			if h.Invoices != nil {
+				h.Invoices.PortalRoutes(r)
 			}
 		})
 
@@ -138,6 +145,9 @@ func New(cfg *config.Config, userLookup func(ctx context.Context, email string) 
 			}
 			if h.Audit != nil {
 				h.Audit.AdminRoutes(r)
+			}
+			if h.Invoices != nil {
+				h.Invoices.AdminRoutes(r)
 			}
 		})
 
