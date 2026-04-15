@@ -100,19 +100,25 @@ func (h *AdminVMHandler) ListClusterVMs(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	project := "default"
-	if len(cc.Projects) > 0 {
-		project = cc.Projects[0].Name
+	var allInstances []json.RawMessage
+	for _, proj := range cc.Projects {
+		instances, err := h.vmSvc.ListInstances(r.Context(), clusterName, proj.Name)
+		if err != nil {
+			slog.Warn("list instances failed", "cluster", clusterName, "project", proj.Name, "error", err)
+			continue
+		}
+		allInstances = append(allInstances, instances...)
+	}
+	if len(cc.Projects) == 0 {
+		instances, err := h.vmSvc.ListInstances(r.Context(), clusterName, "default")
+		if err != nil {
+			slog.Error("list instances failed", "cluster", clusterName, "error", err)
+		} else {
+			allInstances = append(allInstances, instances...)
+		}
 	}
 
-	instances, err := h.vmSvc.ListInstances(r.Context(), clusterName, project)
-	if err != nil {
-		slog.Error("list instances failed", "cluster", clusterName, "error", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to list VMs"})
-		return
-	}
-
-	writeJSON(w, http.StatusOK, map[string]any{"vms": instances, "count": len(instances)})
+	writeJSON(w, http.StatusOK, map[string]any{"vms": allInstances, "count": len(allInstances)})
 }
 
 func (h *AdminVMHandler) ListAllVMs(w http.ResponseWriter, r *http.Request) {
