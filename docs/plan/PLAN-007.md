@@ -127,34 +127,181 @@
 **5.4 Admin VM actions → update DB status** (currently only Incus)
 **5.5 Order-driven flow complete** — billing page "Buy" → OS selection → create order → pay → result with credentials
 
-## Scope
+### Phase 6: Operations — Storage (Ceph Dashboard)
 
-| Phase | Effort | Priority |
-|-------|--------|----------|
-| 1: Critical UX fixes | Small | P0 — immediate |
-| 2: IP/VLAN management | Medium | P1 |
-| 3: Cluster infra UI | Large | P1 |
-| 4: VM detail page | Large | P2 |
-| 5: UX polish | Medium | P2 |
+Reference: [Ceph Dashboard](https://docs.ceph.com/en/latest/mgr/dashboard/), Proxmox Ceph integration
+
+**6.1 Ceph cluster overview `/admin/storage`**
+- Health status (HEALTH_OK / WARN / ERR) with color
+- Cluster IOPS, throughput, latency
+- Capacity: total / used / available with pie chart
+- PG status distribution
+
+**6.2 OSD management**
+- List all OSDs: ID, host, status (up/down/in/out), weight, usage %
+- Actions: mark in/out, reweight
+- Performance: commit latency, apply latency per OSD
+
+**6.3 Pool management**
+- List pools: name, size, min_size, PG count, usage, applications
+- Create pool (name, pg_num, size, application type)
+- Edit pool (size, min_size, quotas)
+- Autoscale status
+
+**6.4 Storage alerts**
+- Near-full warnings (>75%, >85%, >95%)
+- OSD down alerts
+- Slow OSD detection
+
+### Phase 7: Operations — Network (IPAM, NetBox-inspired)
+
+Reference: [NetBox IPAM](https://netboxlabs.com/docs/netbox/features/ipam/)
+
+**7.1 IP prefix/subnet management `/admin/networks`**
+- Hierarchical prefix tree (like NetBox)
+- CRUD: add prefix (CIDR, VLAN, gateway, description)
+- Visual utilization bar per prefix
+- Auto-calculate available IPs
+
+**7.2 IP address registry**
+- List all assigned IPs: IP, VM name, status (assigned/available/reserved/cooldown)
+- Manual assign/release
+- Cooldown timer for recently released IPs
+- Search by IP or VM name
+
+**7.3 VLAN management**
+- CRUD VLANs: ID, name, description, associated prefix
+- Map VLANs to network bridges
+- Show which VMs are on which VLAN
+
+**7.4 Network topology view** (future)
+- Visual diagram of nodes, bridges, VLANs, VM connections
+
+### Phase 8: Operations — Node lifecycle (Proxmox-inspired)
+
+Reference: [Proxmox Cluster Manager](https://pve.proxmox.com/wiki/Cluster_Manager)
+
+**8.1 Node detail page `/admin/nodes/:name`**
+- Real-time graphs: CPU, RAM, disk I/O, network I/O (from scheduler cache)
+- VM list running on this node
+- Storage: local disks, OSD status
+- Network interfaces
+- System info: uptime, kernel, Incus version
+
+**8.2 Node provisioning wizard**
+- Step 1: Enter IP, SSH credentials (or key)
+- Step 2: Connectivity check (ping, SSH test)
+- Step 3: Auto-install (Incus + Ceph OSD + monitoring agent)
+- Step 4: Join cluster + verify
+- Progress bar with real-time log output
+
+**8.3 Node maintenance mode**
+- Toggle button: enter/exit maintenance
+- Auto-evacuate VMs before maintenance
+- Prevent new VM placement on maintenance nodes
+- Scheduler respects maintenance flag
+
+**8.4 Node removal wizard**
+- Step 1: Evacuate all VMs
+- Step 2: Remove Ceph OSDs (wait for rebalance)
+- Step 3: Leave Incus cluster
+- Step 4: Remove from monitoring
+
+### Phase 9: Operations — Alerting & Events
+
+**9.1 Event stream `/admin/events`**
+- Real-time SSE feed from Incus `/1.0/events`
+- Filterable: VM lifecycle, cluster, storage, network
+- Timestamp, severity, source node, message
+
+**9.2 Alert rules**
+- Configurable thresholds: CPU > X%, RAM > X%, disk > X%, OSD down, node offline
+- Notification channels: in-app bell icon + future webhook/email
+- Based on Prometheus Alertmanager (already running)
+
+**9.3 Scheduled tasks**
+- Cron-like UI for: auto-backup, expired VM cleanup, bandwidth reset
+- Status: last run, next run, success/fail
+
+### Phase 10: Operations — Observability
+
+**10.1 Integrated Grafana embed** (quick win)
+- Iframe embed of existing Grafana dashboards in admin panel
+- SSO passthrough or anonymous viewer mode
+
+**10.2 Built-in resource graphs**
+- Per-node CPU/RAM/disk/network history (beyond current scheduler 60s snapshot)
+- Store metrics in TimescaleDB or Prometheus long-term storage
+- 1h / 24h / 7d / 30d time ranges
+
+## Scope (Updated)
+
+| Phase | Content | Effort | Priority |
+|-------|---------|--------|----------|
+| **1** | Critical UX fixes (password, VM list, products) | Small | **P0** |
+| **2** | IP/VLAN management | Medium | P1 |
+| **3** | Cluster + node UI (add cluster, add node, Ceph) | Large | P1 |
+| **4** | VM detail page (DO-style) | Large | P2 |
+| **5** | UX polish (logout, toast, cluster selector) | Medium | P2 |
+| **6** | Ceph storage dashboard (OSD, pools, alerts) | Large | **P1** |
+| **7** | Network IPAM (prefix tree, IP registry, VLAN) | Large | P1 |
+| **8** | Node lifecycle (detail, provision, maintenance, remove) | X-Large | P1 |
+| **9** | Alerting & events (event stream, alert rules, cron UI) | Large | P2 |
+| **10** | Observability (Grafana embed, long-term metrics) | Medium | P3 |
 
 ## Risks
 
-1. Ceph health API requires either SSH access to a mon node or REST API — need to research Ceph Manager REST module
-2. Node provisioning via SSH is complex and error-prone
-3. Per-VM firewall requires nftables or Incus device rules — significant new capability
+1. **Ceph Dashboard integration**: Ceph Manager REST module (port 8443) provides all needed data, but requires authentication setup. Alternative: parse `ceph -s` output via SSH.
+2. **Node provisioning via SSH**: Complex multi-step operation. Mitigate with progress UI + rollback on failure.
+3. **Per-VM firewall**: Incus supports security.acls and nftables device rules. Need to design a good UI abstraction.
+4. **Network topology view**: Requires graph rendering library (e.g., vis-network). Defer to Phase 10+.
+5. **Metrics history**: Current system only has 60s scheduler snapshots. Long-term graphs need Prometheus integration or own time-series storage.
+
+## Competitor feature matrix (Operations)
+
+| Feature | Proxmox | OpenStack | Ceph Dashboard | IncusAdmin |
+|---------|---------|-----------|----------------|------------|
+| Node detail (CPU/RAM graphs) | ✅ | ✅ | — | ❌ |
+| Node add/remove wizard | ✅ | ✅ | — | ❌ |
+| Node maintenance mode | ✅ | ✅ | — | ⚠️ evacuate only |
+| OSD management | ✅ | — | ✅ | ❌ |
+| Pool CRUD | ✅ | ✅ | ✅ | ❌ |
+| Storage health/alerts | ✅ | ✅ | ✅ | ❌ |
+| IP prefix tree | — | ✅ | — | ❌ |
+| VLAN CRUD | ✅ | ✅ | — | ❌ |
+| IP address registry | — | ✅ | — | ❌ |
+| Event stream | ✅ | ✅ | ✅ | ❌ |
+| Alert rules | ✅ | ✅ | ✅ | ❌ |
+| Scheduled tasks | ✅ | ✅ | — | ❌ |
+| Grafana integration | ✅ | ✅ | ✅ | ❌ |
+| VM console (browser) | ✅ | ✅ | — | ✅ |
+| VM snapshots | ✅ | ✅ | — | ✅ |
+| VM live migration | ✅ | ✅ | — | ✅ evacuate |
+| Cluster HA | ✅ | ✅ | — | ✅ |
 
 ## Alternatives
 
 ### VM creation flow
+**Recommendation**: Hybrid — products as cards in create form, admin can also customize.
 
+### Ceph integration
 | Option | Pros | Cons |
 |--------|------|------|
-| **Product-based (DigitalOcean style)** | Integrated pricing, one flow | Requires products to be configured first |
-| Keep separate catalog + order | More flexible billing | Two-step UX |
-| Hybrid (recommended) | Products as presets in create form | Best of both |
+| **Ceph Manager REST API (chosen)** | Official, comprehensive | Requires auth setup |
+| Parse `ceph` CLI via SSH | Simple | Fragile, no real-time |
+| Prometheus + Grafana embed | Already running | No write operations |
 
-**Recommendation**: Hybrid — show products as cards in create form, let admin also customize.
+### IPAM
+| Option | Pros | Cons |
+|--------|------|------|
+| **Built-in (chosen)** | Integrated, no dependency | Build from scratch |
+| NetBox integration | Full-featured IPAM | External dependency, complex |
+| DB-only (current) | Simple | No prefix hierarchy |
 
 ## Annotations
 
 (User annotations and responses. Keep all history.)
+
+### 2026-04-15 22:30 — Deep ops research added
+
+Expanded from 5 phases to 10 phases based on Proxmox VE, OpenStack Horizon, Ceph Dashboard, and NetBox research. New phases 6-10 cover storage ops, network IPAM, node lifecycle, alerting/events, and observability. Competitor matrix now covers 17 operations features.
