@@ -100,6 +100,8 @@ func main() {
 	apiTokenRepo := repository.NewAPITokenRepo(db)
 	invoiceRepo := repository.NewInvoiceRepo(db)
 
+	portal.SetAuditRepo(auditRepo)
+
 	middleware.SetTokenValidator(func(ctx context.Context, token string) (int64, error) {
 		t, err := apiTokenRepo.ValidateToken(ctx, token)
 		if err != nil || t == nil {

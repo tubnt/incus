@@ -100,5 +100,6 @@ func (h *UserHandler) TopUpBalance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	slog.Info("balance topped up", "user_id", id, "amount", req.Amount)
+	audit(r.Context(), r, "user.topup", "user", id, map[string]any{"amount": req.Amount})
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
 }

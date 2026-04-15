@@ -4,6 +4,7 @@ import { useState } from "react";
 import { http } from "@/shared/lib/http";
 import { queryClient } from "@/shared/lib/query-client";
 import { VMMetricsPanel } from "@/features/monitoring/vm-metrics-panel";
+import { SnapshotPanel } from "@/features/snapshots/snapshot-panel";
 
 export const Route = createFileRoute("/vms")({
   component: MyVMs,
@@ -78,6 +79,7 @@ function MyVMs() {
 
 function VMCard({ vm }: { vm: VMService }) {
   const [showMetrics, setShowMetrics] = useState(false);
+  const [showSnaps, setShowSnaps] = useState(false);
   const actionMutation = useMutation({
     mutationFn: (action: string) =>
       http.post(`/portal/services/${vm.id}/actions/${action}`),
@@ -105,7 +107,12 @@ function VMCard({ vm }: { vm: VMService }) {
         <div className="flex flex-col gap-2">
           {vm.status === "running" && (
             <>
+              <a href={`/console?vm=${vm.name}&cluster=cn-sz-01&project=customers`}
+                className="px-3 py-1.5 rounded text-xs font-medium bg-primary/20 text-primary hover:bg-primary/30 text-center">
+                Console
+              </a>
               <ActionBtn label="Monitor" onClick={() => setShowMetrics(!showMetrics)} disabled={false} />
+              <ActionBtn label="Snaps" onClick={() => setShowSnaps(!showSnaps)} disabled={false} />
               <ActionBtn label="Stop" onClick={() => actionMutation.mutate("stop")} disabled={actionMutation.isPending} />
               <ActionBtn label="Restart" onClick={() => actionMutation.mutate("restart")} disabled={actionMutation.isPending} />
             </>
@@ -117,6 +124,9 @@ function VMCard({ vm }: { vm: VMService }) {
       </div>
       {showMetrics && vm.status === "running" && (
         <VMMetricsPanel vmName={vm.name} apiBase="/portal" />
+      )}
+      {showSnaps && (
+        <SnapshotPanel vmName={vm.name} cluster="cn-sz-01" project="customers" />
       )}
     </div>
   );

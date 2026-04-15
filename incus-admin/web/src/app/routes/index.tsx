@@ -1,6 +1,10 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
+import { useTranslation } from "react-i18next";
 import { fetchCurrentUser, isAdmin } from "@/shared/lib/auth";
+import { useMyVMsQuery } from "@/features/vms/api";
+import { useMyTicketsQuery } from "@/features/tickets/api";
+import { useClustersQuery } from "@/features/clusters/api";
 import { http } from "@/shared/lib/http";
 
 export const Route = createFileRoute("/")({
@@ -8,19 +12,26 @@ export const Route = createFileRoute("/")({
 });
 
 function Dashboard() {
+  const { t } = useTranslation();
   const { data: user } = useQuery({
     queryKey: ["currentUser"],
     queryFn: fetchCurrentUser,
   });
 
+  const { data: vmsData } = useMyVMsQuery();
+  const { data: ticketsData } = useMyTicketsQuery();
+
+  const myVmCount = vmsData?.services?.length ?? 0;
+  const openTickets = ticketsData?.tickets?.filter((t) => t.status === "open").length ?? 0;
+
   return (
     <div>
-      <h1 className="text-2xl font-bold mb-6">Dashboard</h1>
+      <h1 className="text-2xl font-bold mb-6">{t("nav.dashboard")}</h1>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
-        <StatCard title="My VMs" value="—" />
+        <StatCard title={t("vm.title")} value={String(myVmCount)} />
         <StatCard title="Balance" value={user ? `$${user.balance.toFixed(2)}` : "—"} />
-        <StatCard title="Open Tickets" value="0" />
+        <StatCard title={t("ticket.title")} value={String(openTickets)} />
       </div>
 
       {user && isAdmin(user) && <AdminSection />}
@@ -37,24 +48,13 @@ function StatCard({ title, value }: { title: string; value: string }) {
   );
 }
 
-interface ClusterInfo {
-  name: string;
-  display_name: string;
-  nodes: number;
-  status: string;
-}
-
 function AdminSection() {
   const { data: healthData } = useQuery({
     queryKey: ["adminHealth"],
     queryFn: () => http.get<{ status: string }>("/health"),
   });
 
-  const { data: clustersData } = useQuery({
-    queryKey: ["adminClusters"],
-    queryFn: () => http.get<{ clusters: ClusterInfo[] }>("/admin/clusters"),
-  });
-
+  const { data: clustersData } = useClustersQuery();
   const clusters = clustersData?.clusters ?? [];
   const totalNodes = clusters.reduce((sum, c) => sum + (c.nodes || 0), 0);
 
@@ -70,11 +70,8 @@ function AdminSection() {
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <StatCard title="Clusters" value={String(clusters.length)} />
         <StatCard title="Nodes" value={String(totalNodes)} />
-        <StatCard title="Total VMs" value={String(vmsData?.count ?? "—")} />
-        <StatCard
-          title="API Status"
-          value={healthData?.status === "ok" ? "Healthy" : "—"}
-        />
+        <StatCard title="Total VMs" value={String(vmsData?.count ?? 0)} />
+        <StatCard title="API Status" value={healthData?.status === "ok" ? "Healthy" : "—"} />
       </div>
     </div>
   );

@@ -124,9 +124,13 @@ func (h *VMHandler) CreateService(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid body"})
 		return
 	}
-	if req.CPU == 0 { req.CPU = 2 }
-	if req.MemoryMB == 0 { req.MemoryMB = 2048 }
-	if req.DiskGB == 0 { req.DiskGB = 50 }
+	if req.CPU <= 0 { req.CPU = 2 }
+	if req.MemoryMB <= 0 { req.MemoryMB = 2048 }
+	if req.DiskGB <= 0 { req.DiskGB = 50 }
+	if req.CPU > 32 || req.MemoryMB > 65536 || req.DiskGB > 2000 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "resource limits exceeded"})
+		return
+	}
 	if req.OSImage == "" { req.OSImage = "images:ubuntu/24.04/cloud" }
 
 	sshKeys, _ := h.sshKeys.GetByUser(r.Context(), userID)
@@ -190,6 +194,7 @@ func (h *VMHandler) CreateService(w http.ResponseWriter, r *http.Request) {
 		vm.IP = &ipAddr
 	}
 	h.vmRepo.Create(r.Context(), vm)
+	audit(r.Context(), r, "vm.create", "vm", 0, map[string]any{"name": result.VMName, "ip": result.IP})
 
 	writeJSON(w, http.StatusCreated, result)
 }
@@ -396,6 +401,7 @@ func (h *AdminVMHandler) ChangeVMState(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	slog.Info("vm state changed", "vm", vmName, "action", req.Action)
+	audit(r.Context(), r, "vm."+req.Action, "vm", 0, map[string]any{"name": vmName})
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "action": req.Action})
 }
 
@@ -422,6 +428,7 @@ func (h *AdminVMHandler) DeleteVM(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	slog.Info("vm deleted", "vm", vmName)
+	audit(r.Context(), r, "vm.delete", "vm", 0, map[string]any{"name": vmName})
 	writeJSON(w, http.StatusOK, map[string]any{"status": "deleted"})
 }
 
@@ -460,6 +467,7 @@ func (h *AdminVMHandler) ReinstallVM(w http.ResponseWriter, r *http.Request) {
 	}
 
 	slog.Info("vm reinstalled", "vm", vmName, "os", req.OSImage)
+	audit(r.Context(), r, "vm.reinstall", "vm", 0, map[string]any{"name": vmName, "os": req.OSImage})
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":   "reinstalled",
 		"password": result.Password,
