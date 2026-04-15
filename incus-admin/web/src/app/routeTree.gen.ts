@@ -10,6 +10,7 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as VmsRouteImport } from './routes/vms'
+import { Route as ConsoleRouteImport } from './routes/console'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AdminVmsRouteImport } from './routes/admin/vms'
 import { Route as AdminUsersRouteImport } from './routes/admin/users'
@@ -21,6 +22,11 @@ import { Route as AdminClustersRouteImport } from './routes/admin/clusters'
 const VmsRoute = VmsRouteImport.update({
   id: '/vms',
   path: '/vms',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ConsoleRoute = ConsoleRouteImport.update({
+  id: '/console',
+  path: '/console',
   getParentRoute: () => rootRouteImport,
 } as any)
 const IndexRoute = IndexRouteImport.update({
@@ -61,6 +67,7 @@ const AdminClustersRoute = AdminClustersRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/console': typeof ConsoleRoute
   '/vms': typeof VmsRoute
   '/admin/clusters': typeof AdminClustersRoute
   '/admin/create-vm': typeof AdminCreateVmRoute
@@ -71,6 +78,7 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/console': typeof ConsoleRoute
   '/vms': typeof VmsRoute
   '/admin/clusters': typeof AdminClustersRoute
   '/admin/create-vm': typeof AdminCreateVmRoute
@@ -82,6 +90,7 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/console': typeof ConsoleRoute
   '/vms': typeof VmsRoute
   '/admin/clusters': typeof AdminClustersRoute
   '/admin/create-vm': typeof AdminCreateVmRoute
@@ -94,6 +103,7 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/console'
     | '/vms'
     | '/admin/clusters'
     | '/admin/create-vm'
@@ -104,6 +114,7 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/console'
     | '/vms'
     | '/admin/clusters'
     | '/admin/create-vm'
@@ -114,6 +125,7 @@ export interface FileRouteTypes {
   id:
     | '__root__'
     | '/'
+    | '/console'
     | '/vms'
     | '/admin/clusters'
     | '/admin/create-vm'
@@ -125,6 +137,7 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  ConsoleRoute: typeof ConsoleRoute
   VmsRoute: typeof VmsRoute
   AdminClustersRoute: typeof AdminClustersRoute
   AdminCreateVmRoute: typeof AdminCreateVmRoute
@@ -141,6 +154,13 @@ declare module '@tanstack/react-router' {
       path: '/vms'
       fullPath: '/vms'
       preLoaderRoute: typeof VmsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/console': {
+      id: '/console'
+      path: '/console'
+      fullPath: '/console'
+      preLoaderRoute: typeof ConsoleRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/': {
@@ -197,6 +217,7 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  ConsoleRoute: ConsoleRoute,
   VmsRoute: VmsRoute,
   AdminClustersRoute: AdminClustersRoute,
   AdminCreateVmRoute: AdminCreateVmRoute,

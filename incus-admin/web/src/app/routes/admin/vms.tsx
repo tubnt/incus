@@ -127,6 +127,12 @@ function VMRow({ vm, clusterName }: { vm: IncusInstance; clusterName: string }) 
           )}
           {vm.status === "Running" && (
             <>
+              <a
+                href={`/console?vm=${vm.name}&cluster=${clusterName}&project=${project}`}
+                className="px-2 py-1 rounded text-xs font-medium bg-primary/20 text-primary hover:bg-primary/30"
+              >
+                Console
+              </a>
               <ActionBtn label="Stop" color="muted" disabled={isActing}
                 onClick={() => stateMutation.mutate("stop")} />
               <ActionBtn label="Restart" color="muted" disabled={isActing}

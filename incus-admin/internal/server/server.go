@@ -32,7 +32,11 @@ type AdminRouteRegistrar interface {
 	AdminRoutes(r chi.Router)
 }
 
-func New(cfg *config.Config, userLookup func(ctx context.Context, email string) (int64, string, error), adminHandler RouteRegistrar, portalHandler RouteRegistrar, userHandler AdminRouteRegistrar, ipPoolHandler AdminRouteRegistrar) *Server {
+type ConsoleHandlerFunc interface {
+	HandleConsole(w http.ResponseWriter, r *http.Request)
+}
+
+func New(cfg *config.Config, userLookup func(ctx context.Context, email string) (int64, string, error), adminHandler RouteRegistrar, portalHandler RouteRegistrar, userHandler AdminRouteRegistrar, ipPoolHandler AdminRouteRegistrar, consoleHandler ConsoleHandlerFunc) *Server {
 	r := chi.NewRouter()
 
 	r.Use(chimw.RequestID)
@@ -68,6 +72,10 @@ func New(cfg *config.Config, userLookup func(ctx context.Context, email string) 
 				ipPoolHandler.AdminRoutes(r)
 			}
 		})
+
+		if consoleHandler != nil {
+			r.Get("/api/console", consoleHandler.HandleConsole)
+		}
 
 		r.Get("/api/auth/me", func(w http.ResponseWriter, r *http.Request) {
 			email, _ := r.Context().Value(middleware.CtxUserEmail).(string)
