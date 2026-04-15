@@ -14,6 +14,21 @@ Product direction clarified: internal private cloud first, external API later. P
 
 ## 2026-04-15 18:30 [BUG-P1]
 
+## 2026-04-15 20:30 [progress]
+
+PLAN-005 + PLAN-006 all phases completed:
+- A0: 7 CRITICAL fixes (SSH keys, VM naming, order→VM, balance, ListAllVMs, panic, ticket detail)
+- A1: 3 security fixes (Console/metrics auth, WebSocket CSRF)
+- A: Frontend scaffold (sidebar, ThemeProvider dark/light/system, i18n zh/en, ESLint)
+- B: 10 feature API hook modules (50+ hooks)
+- C: Taskfile.yml, 5 DB indexes, HTTP 30s timeout
+- WARNING batch: audit log injection, input validation, Dashboard real data, user Console/Snaps
+- 6A: HA failover (healing_threshold=300, HA status page, evacuate/restore)
+- 6B: Node management (evacuate/restore buttons in clusters page)
+- 6C: Dynamic cluster add/remove (standalone host support)
+- D: Go tests (11 cases) + Vitest (6 cases) + quality gate scripts
+- E: Metrics 30s cache
+
 ## 2026-04-15 20:00 [progress]
 
 PLAN-005 Phases A0-C implemented and deployed:
