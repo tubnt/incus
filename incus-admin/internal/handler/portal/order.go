@@ -191,7 +191,7 @@ func (h *OrderHandler) Pay(w http.ResponseWriter, r *http.Request) {
 		DiskGB:    product.DiskGB,
 		OSImage:   osImage,
 		Node:      result.Node,
-		Password:  result.Password,
+		Password:  &result.Password,
 	}
 	if result.IP != "" {
 		vm.IP = &result.IP

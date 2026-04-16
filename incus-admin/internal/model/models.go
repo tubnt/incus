@@ -28,7 +28,7 @@ type VM struct {
 	DiskGB    int       `json:"disk_gb" db:"disk_gb"`
 	OSImage   string    `json:"os_image" db:"os_image"`
 	Node      string    `json:"node" db:"node"`
-	Password  string    `json:"password,omitempty" db:"password"`
+	Password  *string   `json:"password,omitempty" db:"password"`
 	CreatedAt time.Time `json:"created_at" db:"created_at"`
 	UpdatedAt time.Time `json:"updated_at" db:"updated_at"`
 }

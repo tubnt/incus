@@ -270,7 +270,7 @@ func (h *VMHandler) CreateService(w http.ResponseWriter, r *http.Request) {
 		DiskGB:    req.DiskGB,
 		OSImage:   req.OSImage,
 		Node:      result.Node,
-		Password:  result.Password,
+		Password:  &result.Password,
 	}
 	if result.IP != "" {
 		vm.IP = &result.IP
@@ -606,7 +606,7 @@ func (h *AdminVMHandler) CreateVM(w http.ResponseWriter, r *http.Request) {
 		DiskGB:    req.DiskGB,
 		OSImage:   req.OSImage,
 		Node:      result.Node,
-		Password:  result.Password,
+		Password:  &result.Password,
 	}
 	if result.IP != "" {
 		vm.IP = &result.IP
