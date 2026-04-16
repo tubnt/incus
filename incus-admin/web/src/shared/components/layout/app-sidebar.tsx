@@ -3,7 +3,7 @@ import { useTranslation } from "react-i18next";
 import {
   LayoutDashboard, Server, Key, CreditCard, MessageSquare, KeyRound,
   Network, ServerCog, Activity, Globe, Users, Package, ShoppingCart,
-  Ticket, FileText, Plus, ChevronLeft, Menu, Shield, HardDrive, BarChart3, MapPin, Terminal,
+  Ticket, FileText, Plus, ChevronLeft, Menu, Shield, HardDrive, BarChart3, MapPin, Terminal, Settings,
 } from "lucide-react";
 import { cn } from "@/shared/lib/utils";
 import { sidebarGroups } from "./sidebar-data";
@@ -11,7 +11,7 @@ import { sidebarGroups } from "./sidebar-data";
 const iconMap: Record<string, React.ElementType> = {
   LayoutDashboard, Server, Key, CreditCard, MessageSquare, KeyRound,
   Network, ServerCog, Activity, Globe, Users, Package, ShoppingCart,
-  Ticket, FileText, Plus, Menu, Shield, HardDrive, BarChart3, MapPin, Terminal,
+  Ticket, FileText, Plus, Menu, Shield, HardDrive, BarChart3, MapPin, Terminal, Settings,
 };
 
 interface AppSidebarProps {
@@ -28,7 +28,7 @@ export function AppSidebar({ isAdmin, collapsed, onToggle }: AppSidebarProps) {
   return (
     <aside className={cn(
       "fixed left-0 top-0 z-40 h-screen bg-card border-r border-border flex flex-col transition-all duration-200",
-      collapsed ? "w-16" : "w-60",
+      collapsed ? "w-16 max-md:-translate-x-full" : "w-60",
     )}>
       <div className="flex items-center justify-between h-14 px-4 border-b border-border">
         {!collapsed && <span className="font-bold text-lg">IncusAdmin</span>}

@@ -1,5 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery } from "@tanstack/react-query";
+import { useState } from "react";
 import { toast } from "sonner";
 import { http } from "@/shared/lib/http";
 import { queryClient } from "@/shared/lib/query-client";
@@ -131,6 +132,8 @@ function StoragePage() {
             </div>
           )}
 
+          <PoolSection />
+
           {hosts.length > 0 && (
             <div className="border border-border rounded-lg bg-card p-4">
               <h3 className="font-semibold text-sm mb-3">Storage Hosts ({hosts.length})</h3>
@@ -145,6 +148,146 @@ function StoragePage() {
             </div>
           )}
         </>
+      )}
+    </div>
+  );
+}
+
+interface CephPool {
+  pool_name: string;
+  pool_id: number;
+  type: string;
+  size: number;
+  pg_num: number;
+  application_metadata?: Record<string, Record<string, unknown>>;
+}
+
+function PoolSection() {
+  const [showCreate, setShowCreate] = useState(false);
+  const [newPool, setNewPool] = useState({ name: "", pg_num: 128, type: "replicated" });
+
+  const { data: pools } = useQuery({
+    queryKey: ["cephPools"],
+    queryFn: () => http.get<CephPool[]>("/admin/ceph/pools"),
+    refetchInterval: 60_000,
+  });
+
+  const createMutation = useMutation({
+    mutationFn: () => http.post("/admin/ceph/pools", newPool),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["cephPools"] });
+      toast.success(`Pool ${newPool.name} 已创建`);
+      setShowCreate(false);
+      setNewPool({ name: "", pg_num: 128, type: "replicated" });
+    },
+    onError: () => toast.error("Pool 创建失败"),
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (name: string) => http.delete(`/admin/ceph/pools/${name}`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["cephPools"] });
+      toast.success("Pool 已删除");
+    },
+    onError: () => toast.error("Pool 删除失败"),
+  });
+
+  const poolList = Array.isArray(pools) ? pools : [];
+
+  return (
+    <div className="border border-border rounded-lg overflow-hidden mb-6">
+      <div className="px-4 py-3 border-b border-border bg-muted/30 flex items-center justify-between">
+        <h3 className="font-semibold text-sm">Pools ({poolList.length})</h3>
+        <button
+          onClick={() => setShowCreate(!showCreate)}
+          className="px-2 py-1 text-xs bg-primary/20 text-primary rounded hover:bg-primary/30"
+        >
+          {showCreate ? "取消" : "+ 创建 Pool"}
+        </button>
+      </div>
+
+      {showCreate && (
+        <div className="px-4 py-3 border-b border-border bg-card/50">
+          <div className="flex gap-2 items-end">
+            <div>
+              <div className="text-xs text-muted-foreground mb-0.5">名称</div>
+              <input
+                value={newPool.name}
+                onChange={(e) => setNewPool({ ...newPool, name: e.target.value })}
+                className="px-2 py-1 rounded border border-border bg-card text-xs w-40"
+                placeholder="pool-name"
+              />
+            </div>
+            <div>
+              <div className="text-xs text-muted-foreground mb-0.5">PG 数</div>
+              <input
+                type="number"
+                value={newPool.pg_num}
+                onChange={(e) => setNewPool({ ...newPool, pg_num: +e.target.value })}
+                className="px-2 py-1 rounded border border-border bg-card text-xs w-20"
+              />
+            </div>
+            <div>
+              <div className="text-xs text-muted-foreground mb-0.5">类型</div>
+              <select
+                value={newPool.type}
+                onChange={(e) => setNewPool({ ...newPool, type: e.target.value })}
+                className="px-2 py-1 rounded border border-border bg-card text-xs"
+              >
+                <option value="replicated">replicated</option>
+                <option value="erasure">erasure</option>
+              </select>
+            </div>
+            <button
+              onClick={() => createMutation.mutate()}
+              disabled={createMutation.isPending || !newPool.name}
+              className="px-3 py-1 text-xs bg-primary text-primary-foreground rounded disabled:opacity-50"
+            >
+              {createMutation.isPending ? "..." : "创建"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {poolList.length > 0 && (
+        <table className="w-full text-sm">
+          <thead className="bg-muted/20">
+            <tr>
+              <th className="text-left px-4 py-2 font-medium">Pool</th>
+              <th className="text-left px-4 py-2 font-medium">Type</th>
+              <th className="text-right px-4 py-2 font-medium">Size</th>
+              <th className="text-right px-4 py-2 font-medium">PGs</th>
+              <th className="text-left px-4 py-2 font-medium">Apps</th>
+              <th className="text-right px-4 py-2 font-medium">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            {poolList.map((p) => (
+              <tr key={p.pool_id} className="border-t border-border">
+                <td className="px-4 py-1.5 font-mono text-xs">{p.pool_name}</td>
+                <td className="px-4 py-1.5 text-xs text-muted-foreground">{p.type === "1" || p.type === "replicated" ? "replicated" : p.type}</td>
+                <td className="px-4 py-1.5 text-right text-xs">{p.size}</td>
+                <td className="px-4 py-1.5 text-right text-xs font-mono">{p.pg_num}</td>
+                <td className="px-4 py-1.5 text-xs text-muted-foreground">
+                  {p.application_metadata ? Object.keys(p.application_metadata).join(", ") : "-"}
+                </td>
+                <td className="px-4 py-1.5 text-right">
+                  <button
+                    onClick={() => {
+                      if (window.confirm(`确认删除 Pool "${p.pool_name}"？此操作不可逆！`)) {
+                        deleteMutation.mutate(p.pool_name);
+                      }
+                    }}
+                    disabled={deleteMutation.isPending}
+                    className="px-2 py-0.5 text-xs border border-destructive/30 text-destructive rounded hover:bg-destructive/10 disabled:opacity-50"
+                  >
+                    删除
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       )}
     </div>
   );

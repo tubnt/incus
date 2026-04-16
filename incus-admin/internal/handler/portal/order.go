@@ -33,6 +33,7 @@ func (h *OrderHandler) PortalRoutes(r chi.Router) {
 	r.Get("/orders", h.ListMine)
 	r.Post("/orders", h.Create)
 	r.Post("/orders/{id}/pay", h.Pay)
+	r.Post("/orders/{id}/cancel", h.Cancel)
 }
 
 func (h *OrderHandler) AdminRoutes(r chi.Router) {
@@ -207,6 +208,29 @@ func (h *OrderHandler) Pay(w http.ResponseWriter, r *http.Request) {
 		"password": result.Password,
 		"username": result.Username,
 	})
+}
+
+func (h *OrderHandler) Cancel(w http.ResponseWriter, r *http.Request) {
+	orderID, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	userID, _ := r.Context().Value(middleware.CtxUserID).(int64)
+
+	order, err := h.orders.GetByID(r.Context(), orderID)
+	if err != nil || order == nil || order.UserID != userID {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "order not found"})
+		return
+	}
+	if order.Status != model.OrderPending {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "only pending orders can be cancelled"})
+		return
+	}
+
+	if err := h.orders.UpdateStatus(r.Context(), orderID, model.OrderCancelled); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+
+	audit(r.Context(), r, "order.cancel", "order", orderID, nil)
+	writeJSON(w, http.StatusOK, map[string]any{"status": "cancelled"})
 }
 
 func (h *OrderHandler) UpdateStatus(w http.ResponseWriter, r *http.Request) {

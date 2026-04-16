@@ -25,6 +25,7 @@ export const sidebarGroups: NavGroup[] = [
       { key: "nav.billing", to: "/billing", icon: "CreditCard" },
       { key: "nav.tickets", to: "/tickets", icon: "MessageSquare" },
       { key: "nav.apiTokens", to: "/api-tokens", icon: "KeyRound" },
+      { key: "nav.settings", to: "/settings", icon: "Settings" },
     ],
   },
   {

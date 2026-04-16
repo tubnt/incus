@@ -4,6 +4,7 @@ import { useState } from "react";
 import { toast } from "sonner";
 import { http } from "@/shared/lib/http";
 import { queryClient } from "@/shared/lib/query-client";
+import { CardSkeleton } from "@/shared/components/ui/skeleton";
 import { VMMetricsPanel } from "@/features/monitoring/vm-metrics-panel";
 import { SnapshotPanel } from "@/features/snapshots/snapshot-panel";
 
@@ -48,7 +49,7 @@ function MyVMs() {
       </div>
 
       {isLoading ? (
-        <div className="text-muted-foreground">Loading...</div>
+        <div className="space-y-3">{Array.from({ length: 3 }).map((_, i) => <CardSkeleton key={i} />)}</div>
       ) : services.length === 0 ? (
         <div className="border border-border rounded-lg p-8 text-center text-muted-foreground">
           No VMs yet. Create your first virtual machine.

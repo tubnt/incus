@@ -99,6 +99,7 @@ func main() {
 	auditRepo := repository.NewAuditRepo(db)
 	apiTokenRepo := repository.NewAPITokenRepo(db)
 	invoiceRepo := repository.NewInvoiceRepo(db)
+	quotaRepo := repository.NewQuotaRepo(db)
 
 	ipAddrRepo := repository.NewIPAddrRepo(db)
 	portal.SetAuditRepo(auditRepo)
@@ -131,6 +132,7 @@ func main() {
 		ClusterMgmt: portal.NewClusterMgmtHandler(clusterMgr),
 		Ceph:        portal.NewCephHandler(cfg.Monitor.CephSSHHost, cfg.Monitor.CephSSHUser, cfg.Monitor.CephSSHKey),
 		NodeOps:     portal.NewNodeOpsHandler(cfg.Monitor.CephSSHUser, cfg.Monitor.CephSSHKey),
+		Quotas:      portal.NewQuotaHandler(quotaRepo, vmRepo),
 	})
 
 	if err := srv.Run(); err != nil {

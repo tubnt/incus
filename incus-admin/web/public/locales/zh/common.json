@@ -17,7 +17,8 @@
     "adminTickets": "工单管理",
     "createVm": "+ 云主机",
     "nodes": "节点",
-    "invoices": "发票"
+    "invoices": "发票",
+    "settings": "设置"
   },
   "common": {
     "loading": "加载中...",

@@ -1,6 +1,6 @@
 import { createRootRoute, Outlet } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { fetchCurrentUser, isAdmin } from "@/shared/lib/auth";
 import { useTranslation } from "react-i18next";
 import { AppSidebar } from "@/shared/components/layout/app-sidebar";
@@ -26,9 +26,20 @@ function NotFound() {
   );
 }
 
+function useIsMobile() {
+  const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
+  useEffect(() => {
+    const handler = () => setIsMobile(window.innerWidth < 768);
+    window.addEventListener("resize", handler);
+    return () => window.removeEventListener("resize", handler);
+  }, []);
+  return isMobile;
+}
+
 function RootLayout() {
   const { t } = useTranslation();
-  const [collapsed, setCollapsed] = useState(false);
+  const isMobile = useIsMobile();
+  const [collapsed, setCollapsed] = useState(isMobile);
   const { data: user, isLoading, isError } = useQuery({
     queryKey: ["currentUser"],
     queryFn: fetchCurrentUser,
@@ -73,9 +84,9 @@ function RootLayout() {
       />
       <main className={cn(
         "pt-14 transition-all min-h-screen",
-        collapsed ? "pl-16" : "pl-60",
+        isMobile ? "pl-0" : collapsed ? "pl-16" : "pl-60",
       )}>
-        <div className="max-w-7xl mx-auto px-6 py-6">
+        <div className="max-w-7xl mx-auto px-4 md:px-6 py-4 md:py-6">
           <ErrorBoundary>
             <Outlet />
           </ErrorBoundary>

@@ -150,24 +150,24 @@ Graph + Grep verification confirmed all 30 original items. 8 new items discovere
 - ✅ BUG-3: VM state polling (optimistic UI + refetch)
 - ✅ NEW-1: Global Toast system (sonner)
 - ✅ NEW-3: ErrorBoundary
-- NEW-5: VM password reset
+- NEW-5: VM password reset (需要 Incus exec WebSocket API)
 - ✅ A6: Admin invoices page
-- A9: Quota management (enforcement + edit UI)
-- O3: Automated node join wizard
+- ✅ A9: Quota management (enforcement + edit UI)
+- ✅ O3: Automated node join wizard
 - ✅ O7: Ceph OSD actions (mark in/out via SSH)
-- O8: Ceph pool CRUD
+- ✅ O8: Ceph pool CRUD
 - ✅ O9: Storage alerts (threshold warnings)
 - O13: Event stream (Incus SSE → WebSocket)
 - ✅ O16: Single-VM live migration
 
 ### P3 — Nice to have
-- NEW-2: Skeleton loading components
-- NEW-4: User settings page
-- NEW-8: Mobile responsive design
+- ✅ NEW-2: Skeleton loading components
+- ✅ NEW-4: User settings page (语言/主题)
+- ✅ NEW-8: Mobile responsive design
 - U18: VM resize/upgrade
 - U19: rDNS
 - U20: Traffic stats
-- A7: Order cancel/refund
+- ✅ A7: Order cancel/refund
 - A8: User deletion
 - A11: Bulk VM operations
 - A12: Email notifications

@@ -2,6 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { useState } from "react";
+import { toast } from "sonner";
 import { http } from "@/shared/lib/http";
 import { queryClient } from "@/shared/lib/query-client";
 
@@ -253,6 +254,14 @@ function OrderRow({ order: o, onProvisioned }: { order: Order; onProvisioned: (c
       if (data.password) onProvisioned(data);
     },
   });
+  const cancelMutation = useMutation({
+    mutationFn: () => http.post(`/portal/orders/${o.id}/cancel`, {}),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["myOrders"] });
+      toast.success(t("billing.orderCancelled", "订单已取消"));
+    },
+    onError: () => toast.error(t("billing.cancelFailed", "取消失败")),
+  });
 
   const colors: Record<string, string> = {
     pending: "bg-yellow-500/20 text-yellow-600",
@@ -274,13 +283,22 @@ function OrderRow({ order: o, onProvisioned }: { order: Order; onProvisioned: (c
       </td>
       <td className="px-4 py-2 text-right">
         {o.status === "pending" && (
-          <button
-            onClick={() => payMutation.mutate()}
-            disabled={payMutation.isPending}
-            className="px-3 py-1 text-xs bg-primary text-primary-foreground rounded disabled:opacity-50"
-          >
-            {payMutation.isPending ? "..." : t("billing.pay")}
-          </button>
+          <div className="flex justify-end gap-1">
+            <button
+              onClick={() => payMutation.mutate()}
+              disabled={payMutation.isPending}
+              className="px-3 py-1 text-xs bg-primary text-primary-foreground rounded disabled:opacity-50"
+            >
+              {payMutation.isPending ? "..." : t("billing.pay")}
+            </button>
+            <button
+              onClick={() => cancelMutation.mutate()}
+              disabled={cancelMutation.isPending}
+              className="px-3 py-1 text-xs border border-destructive/30 text-destructive rounded hover:bg-destructive/10 disabled:opacity-50"
+            >
+              {cancelMutation.isPending ? "..." : t("billing.cancel", "取消")}
+            </button>
+          </div>
         )}
         {payMutation.isError && <span className="text-destructive text-xs ml-2">{(payMutation.error as Error).message}</span>}
       </td>

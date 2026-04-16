@@ -79,6 +79,10 @@ type Handlers struct {
 		AdminRouteRegistrar
 		PortalRouteRegistrar
 	}
+	Quotas interface {
+		AdminRouteRegistrar
+		PortalRouteRegistrar
+	}
 }
 
 type UserBalanceLookup func(ctx context.Context, userID int64) (float64, error)
@@ -130,6 +134,9 @@ func New(cfg *config.Config, userLookup func(ctx context.Context, email string) 
 			if h.Invoices != nil {
 				h.Invoices.PortalRoutes(r)
 			}
+			if h.Quotas != nil {
+				h.Quotas.PortalRoutes(r)
+			}
 		})
 
 		r.Route("/api/admin", func(r chi.Router) {
@@ -163,6 +170,9 @@ func New(cfg *config.Config, userLookup func(ctx context.Context, email string) 
 			}
 			if h.Invoices != nil {
 				h.Invoices.AdminRoutes(r)
+			}
+			if h.Quotas != nil {
+				h.Quotas.AdminRoutes(r)
 			}
 			if h.ClusterMgmt != nil {
 				h.ClusterMgmt.AdminRoutes(r)

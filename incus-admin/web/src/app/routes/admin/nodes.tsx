@@ -44,14 +44,22 @@ function NodesPage() {
     <div>
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-bold">{t("admin.nodes.title", "集群节点")}</h1>
-        <button
-          onClick={() =>
-            queryClient.invalidateQueries({ queryKey: ["adminNodes"] })
-          }
-          className="px-3 py-1.5 text-sm border border-border rounded hover:bg-muted"
-        >
-          {t("common.refresh", "刷新")}
-        </button>
+        <div className="flex gap-2">
+          <a
+            href="/admin/node-join"
+            className="px-3 py-1.5 text-sm bg-primary text-primary-foreground rounded hover:opacity-90"
+          >
+            {t("admin.nodes.joinWizard", "+ 加入节点")}
+          </a>
+          <button
+            onClick={() =>
+              queryClient.invalidateQueries({ queryKey: ["adminNodes"] })
+            }
+            className="px-3 py-1.5 text-sm border border-border rounded hover:bg-muted"
+          >
+            {t("common.refresh", "刷新")}
+          </button>
+        </div>
       </div>
 
       {isLoading ? (
