@@ -307,6 +307,29 @@ func (s *VMService) GetInstanceState(ctx context.Context, clusterName, project, 
 	return client.GetInstanceState(ctx, project, vmName)
 }
 
+// ResetPassword 在 VM 内执行 chpasswd 重置密码
+func (s *VMService) ResetPassword(ctx context.Context, clusterName, project, vmName, username string) (string, error) {
+	client, ok := s.clusters.Get(clusterName)
+	if !ok {
+		return "", fmt.Errorf("cluster %q not found", clusterName)
+	}
+
+	newPassword := generatePassword()
+
+	// 使用非交互式 exec 执行 chpasswd
+	cmd := []string{"sh", "-c", fmt.Sprintf("echo '%s:%s' | chpasswd", username, newPassword)}
+	retCode, err := client.ExecNonInteractive(ctx, project, vmName, cmd)
+	if err != nil {
+		return "", fmt.Errorf("exec chpasswd: %w", err)
+	}
+	if retCode != 0 {
+		return "", fmt.Errorf("chpasswd exited with code %d", retCode)
+	}
+
+	slog.Info("vm password reset", "vm", vmName, "user", username)
+	return newPassword, nil
+}
+
 func generatePassword() string {
 	b := make([]byte, 16)
 	rand.Read(b)

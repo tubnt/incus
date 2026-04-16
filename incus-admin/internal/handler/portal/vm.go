@@ -39,6 +39,7 @@ func (h *VMHandler) Routes(r chi.Router) {
 	r.Get("/services/{id}", h.GetService)
 	r.Post("/services/{id}/actions/{action}", h.VMAction)
 	r.Post("/services/{id}/reinstall", h.Reinstall)
+	r.Post("/services/{id}/reset-password", h.ResetPassword)
 }
 
 func (h *VMHandler) Reinstall(w http.ResponseWriter, r *http.Request) {
@@ -77,6 +78,41 @@ func (h *VMHandler) Reinstall(w http.ResponseWriter, r *http.Request) {
 		"status":   "reinstalled",
 		"password": result.Password,
 		"username": result.Username,
+	})
+}
+
+func (h *VMHandler) ResetPassword(w http.ResponseWriter, r *http.Request) {
+	userID, _ := r.Context().Value(middleware.CtxUserID).(int64)
+	vmID, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+
+	vm, err := h.vmRepo.GetByID(r.Context(), vmID)
+	if err != nil || vm == nil || vm.UserID != userID {
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": "access denied"})
+		return
+	}
+
+	clusterName := findClusterName(h.clusters, vm.ClusterID)
+	cc, _ := h.clusters.ConfigByName(clusterName)
+	project := cc.DefaultProject
+	if project == "" {
+		project = "customers"
+	}
+
+	newPassword, err := h.vmSvc.ResetPassword(r.Context(), clusterName, project, vm.Name, "ubuntu")
+	if err != nil {
+		slog.Error("reset password failed", "vm", vm.Name, "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "password reset failed: " + err.Error()})
+		return
+	}
+
+	// 更新 DB 中的密码
+	h.vmRepo.UpdatePassword(r.Context(), vmID, newPassword)
+
+	audit(r.Context(), r, "vm.reset_password", "vm", vmID, map[string]any{"name": vm.Name})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":   "password_reset",
+		"password": newPassword,
+		"username": "ubuntu",
 	})
 }
 
@@ -279,6 +315,7 @@ func (h *AdminVMHandler) Routes(r chi.Router) {
 	r.Put("/vms/{name}/state", h.ChangeVMState)
 	r.Post("/vms/{name}/reinstall", h.ReinstallVM)
 	r.Post("/vms/{name}/migrate", h.MigrateVM)
+	r.Post("/vms/{name}/reset-password", h.ResetPasswordAdmin)
 	r.Delete("/vms/{name}", h.DeleteVM)
 }
 
@@ -693,6 +730,43 @@ func (h *AdminVMHandler) ReinstallVM(w http.ResponseWriter, r *http.Request) {
 }
 
 // MigrateVM 将单个 VM 迁移到指定目标节点
+func (h *AdminVMHandler) ResetPasswordAdmin(w http.ResponseWriter, r *http.Request) {
+	vmName := chi.URLParam(r, "name")
+	var req struct {
+		Cluster  string `json:"cluster"`
+		Project  string `json:"project"`
+		Username string `json:"username"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid body"})
+		return
+	}
+	if req.Cluster == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "cluster required"})
+		return
+	}
+	if req.Project == "" {
+		req.Project = "customers"
+	}
+	if req.Username == "" {
+		req.Username = "ubuntu"
+	}
+
+	newPassword, err := h.vmSvc.ResetPassword(r.Context(), req.Cluster, req.Project, vmName, req.Username)
+	if err != nil {
+		slog.Error("admin reset password failed", "vm", vmName, "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "password reset failed: " + err.Error()})
+		return
+	}
+
+	audit(r.Context(), r, "vm.reset_password", "vm", 0, map[string]any{"name": vmName, "username": req.Username})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":   "password_reset",
+		"password": newPassword,
+		"username": req.Username,
+	})
+}
+
 func (h *AdminVMHandler) MigrateVM(w http.ResponseWriter, r *http.Request) {
 	vmName := chi.URLParam(r, "name")
 	if !isValidName(vmName) {

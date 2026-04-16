@@ -184,3 +184,46 @@ func (c *Client) GetInstanceState(ctx context.Context, project, name string) (js
 	}
 	return resp.Metadata, nil
 }
+
+// ExecNonInteractive runs a command inside an instance without WebSocket.
+// Returns the operation's return code and any error.
+func (c *Client) ExecNonInteractive(ctx context.Context, project, instance string, command []string) (int, error) {
+	body := map[string]any{
+		"command":              command,
+		"interactive":          false,
+		"wait-for-websocket":   false,
+		"record-output":        true,
+	}
+	bodyBytes, _ := json.Marshal(body)
+
+	path := fmt.Sprintf("/1.0/instances/%s/exec?project=%s", instance, project)
+	resp, err := c.APIPost(ctx, path, strings.NewReader(string(bodyBytes)))
+	if err != nil {
+		return -1, fmt.Errorf("exec request: %w", err)
+	}
+
+	// 提取 operation ID
+	if resp.Type != "async" || resp.Operation == "" {
+		return -1, fmt.Errorf("expected async operation, got type=%s", resp.Type)
+	}
+
+	parts := strings.Split(resp.Operation, "/")
+	opID := parts[len(parts)-1]
+
+	// 等待操作完成
+	waitPath := fmt.Sprintf("/1.0/operations/%s/wait?timeout=30", opID)
+	waitResp, err := c.APIGet(ctx, waitPath)
+	if err != nil {
+		return -1, fmt.Errorf("wait for exec: %w", err)
+	}
+
+	// 从 metadata 中提取 return code
+	var meta struct {
+		Return int `json:"return"`
+	}
+	if waitResp.Metadata != nil {
+		json.Unmarshal(waitResp.Metadata, &meta)
+	}
+
+	return meta.Return, nil
+}

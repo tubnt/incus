@@ -83,6 +83,7 @@ type Handlers struct {
 		AdminRouteRegistrar
 		PortalRouteRegistrar
 	}
+	Events AdminRouteRegistrar
 }
 
 type UserBalanceLookup func(ctx context.Context, userID int64) (float64, error)
@@ -182,6 +183,9 @@ func New(cfg *config.Config, userLookup func(ctx context.Context, email string) 
 			}
 			if h.NodeOps != nil {
 				h.NodeOps.AdminRoutes(r)
+			}
+			if h.Events != nil {
+				h.Events.AdminRoutes(r)
 			}
 		})
 

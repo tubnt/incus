@@ -85,6 +85,13 @@ func (r *VMRepo) UpdateStatus(ctx context.Context, id int64, status string) erro
 	return err
 }
 
+func (r *VMRepo) UpdatePassword(ctx context.Context, id int64, password string) error {
+	_, err := r.db.ExecContext(ctx,
+		`UPDATE vms SET password = $1, updated_at = $2 WHERE id = $3`,
+		password, time.Now(), id)
+	return err
+}
+
 func (r *VMRepo) UpdateNode(ctx context.Context, id int64, node string) error {
 	_, err := r.db.ExecContext(ctx,
 		`UPDATE vms SET node = $1, updated_at = $2 WHERE id = $3`,

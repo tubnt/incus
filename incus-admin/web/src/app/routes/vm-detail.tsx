@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useState } from "react";
+import { toast } from "sonner";
 import { http } from "@/shared/lib/http";
 import { queryClient } from "@/shared/lib/query-client";
 import { VMMetricsPanel } from "@/features/monitoring/vm-metrics-panel";
@@ -44,6 +45,15 @@ function UserVMDetailPage() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["myService", id] }),
   });
 
+  const resetPwdMutation = useMutation({
+    mutationFn: () => http.post<{ password: string; username: string }>(`/portal/services/${id}/reset-password`, {}),
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["myService", id] });
+      toast.success(`密码已重置: ${data.password}`, { duration: 15000 });
+    },
+    onError: () => toast.error("密码重置失败"),
+  });
+
   if (!vm) {
     return <div className="text-muted-foreground p-8">Loading...</div>;
   }
@@ -69,6 +79,13 @@ function UserVMDetailPage() {
               </a>
               <ActionBtn label="Stop" onClick={() => actionMutation.mutate("stop")} disabled={actionMutation.isPending} />
               <ActionBtn label="Restart" onClick={() => actionMutation.mutate("restart")} disabled={actionMutation.isPending} />
+              <button
+                onClick={() => { if (confirm("确认重置密码？新密码将在通知中显示。")) resetPwdMutation.mutate(); }}
+                disabled={resetPwdMutation.isPending}
+                className="px-3 py-1.5 rounded text-xs font-medium bg-warning/20 text-warning hover:bg-warning/30 disabled:opacity-50"
+              >
+                {resetPwdMutation.isPending ? "重置中..." : "重置密码"}
+              </button>
             </>
           )}
           {vm.status === "stopped" && (

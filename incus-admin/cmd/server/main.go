@@ -133,6 +133,7 @@ func main() {
 		Ceph:        portal.NewCephHandler(cfg.Monitor.CephSSHHost, cfg.Monitor.CephSSHUser, cfg.Monitor.CephSSHKey),
 		NodeOps:     portal.NewNodeOpsHandler(cfg.Monitor.CephSSHUser, cfg.Monitor.CephSSHKey),
 		Quotas:      portal.NewQuotaHandler(quotaRepo, vmRepo),
+		Events:      portal.NewEventsHandler(clusterMgr),
 	})
 
 	if err := srv.Run(); err != nil {
