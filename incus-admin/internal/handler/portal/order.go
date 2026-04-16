@@ -146,13 +146,7 @@ func (h *OrderHandler) Pay(w http.ResponseWriter, r *http.Request) {
 	network := cc.Network
 	if network == "" { network = "br-pub" }
 
-	ip, gateway, cidr := "", "", ""
-	if len(cc.IPPools) > 0 {
-		p := cc.IPPools[0]
-		gateway = p.Gateway
-		cidr = extractCIDR(p.CIDR)
-		ip = pickNextIP(r.Context(), h.vmSvc, client.Name, defProject, p.Range)
-	}
+	ip, gateway, cidr, _ := allocateIP(r.Context(), cc, 0)
 
 	sshKeys, _ := h.sshKeys.GetByUser(r.Context(), userID)
 

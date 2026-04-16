@@ -100,7 +100,9 @@ func main() {
 	apiTokenRepo := repository.NewAPITokenRepo(db)
 	invoiceRepo := repository.NewInvoiceRepo(db)
 
+	ipAddrRepo := repository.NewIPAddrRepo(db)
 	portal.SetAuditRepo(auditRepo)
+	portal.SetIPAddrRepo(ipAddrRepo)
 	middleware.SetEmergencySecret(cfg.Auth.EmergencyToken)
 
 	middleware.SetTokenValidator(func(ctx context.Context, token string) (int64, error) {
