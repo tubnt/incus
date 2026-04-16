@@ -70,6 +70,17 @@ func (m *Manager) ConfigByName(name string) (config.ClusterConfig, bool) {
 	return config.ClusterConfig{}, false
 }
 
+func (m *Manager) UpdateConfig(name string, cc config.ClusterConfig) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i, c := range m.configs {
+		if c.Name == name {
+			m.configs[i] = cc
+			return
+		}
+	}
+}
+
 func (m *Manager) AddCluster(cc config.ClusterConfig) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

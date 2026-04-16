@@ -10,6 +10,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/incuscloud/incus-admin/internal/cluster"
+	"github.com/incuscloud/incus-admin/internal/config"
 )
 
 type IPPoolHandler struct {
@@ -22,6 +23,67 @@ func NewIPPoolHandler(clusters *cluster.Manager) *IPPoolHandler {
 
 func (h *IPPoolHandler) AdminRoutes(r chi.Router) {
 	r.Get("/ip-pools", h.ListPools)
+	r.Post("/ip-pools", h.AddPool)
+	r.Delete("/ip-pools/{cluster}", h.RemovePool)
+}
+
+func (h *IPPoolHandler) AddPool(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Cluster string `json:"cluster"`
+		CIDR    string `json:"cidr"`
+		Gateway string `json:"gateway"`
+		Range   string `json:"range"`
+		VLAN    int    `json:"vlan"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Cluster == "" || req.CIDR == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "cluster, cidr required"})
+		return
+	}
+
+	cc, ok := h.clusters.ConfigByName(req.Cluster)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "cluster not found"})
+		return
+	}
+
+	newPool := config.IPPoolConfig{
+		CIDR:    req.CIDR,
+		Gateway: req.Gateway,
+		Range:   req.Range,
+		VLAN:    req.VLAN,
+	}
+	cc.IPPools = append(cc.IPPools, newPool)
+	h.clusters.UpdateConfig(req.Cluster, cc)
+
+	audit(r.Context(), r, "ippool.add", "ippool", 0, map[string]any{"cluster": req.Cluster, "cidr": req.CIDR})
+	writeJSON(w, http.StatusCreated, map[string]any{"status": "added"})
+}
+
+func (h *IPPoolHandler) RemovePool(w http.ResponseWriter, r *http.Request) {
+	clusterName := chi.URLParam(r, "cluster")
+	cidr := r.URL.Query().Get("cidr")
+	if cidr == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "cidr required"})
+		return
+	}
+
+	cc, ok := h.clusters.ConfigByName(clusterName)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "cluster not found"})
+		return
+	}
+
+	var updated []config.IPPoolConfig
+	for _, p := range cc.IPPools {
+		if p.CIDR != cidr {
+			updated = append(updated, p)
+		}
+	}
+	cc.IPPools = updated
+	h.clusters.UpdateConfig(clusterName, cc)
+
+	audit(r.Context(), r, "ippool.remove", "ippool", 0, map[string]any{"cluster": clusterName, "cidr": cidr})
+	writeJSON(w, http.StatusOK, map[string]any{"status": "removed"})
 }
 
 func (h *IPPoolHandler) ListPools(w http.ResponseWriter, r *http.Request) {
