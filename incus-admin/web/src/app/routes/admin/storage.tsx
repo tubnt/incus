@@ -1,6 +1,8 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { toast } from "sonner";
 import { http } from "@/shared/lib/http";
+import { queryClient } from "@/shared/lib/query-client";
 import { fmtBytes } from "@/shared/lib/utils";
 
 export const Route = createFileRoute("/admin/storage")({
@@ -84,6 +86,19 @@ function StoragePage() {
             </div>
           )}
 
+          {pgmap && pgmap.bytes_total > 0 && (pgmap.bytes_used / pgmap.bytes_total) > 0.8 && (
+            <div className={`border rounded-lg p-4 mb-6 ${(pgmap.bytes_used / pgmap.bytes_total) > 0.9 ? "border-destructive/50 bg-destructive/10" : "border-warning/50 bg-warning/10"}`}>
+              <div className={`font-semibold text-sm ${(pgmap.bytes_used / pgmap.bytes_total) > 0.9 ? "text-destructive" : "text-warning"}`}>
+                {(pgmap.bytes_used / pgmap.bytes_total) > 0.9
+                  ? "⚠ 存储使用率超过 90%，请立即扩容或清理！"
+                  : "⚠ 存储使用率超过 80%，建议关注容量"}
+              </div>
+              <div className="text-xs text-muted-foreground mt-1">
+                当前使用率: {((pgmap.bytes_used / pgmap.bytes_total) * 100).toFixed(1)}% — {fmtBytes(pgmap.bytes_used)} / {fmtBytes(pgmap.bytes_total)}
+              </div>
+            </div>
+          )}
+
           {pgmap && (
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
               <StatCard label="Read IOPS" value={`${pgmap.read_op_per_sec ?? 0}/s`} />
@@ -104,19 +119,12 @@ function StoragePage() {
                     <th className="text-left px-4 py-2 font-medium">OSD</th>
                     <th className="text-left px-4 py-2 font-medium">Status</th>
                     <th className="text-right px-4 py-2 font-medium">Weight</th>
+                    <th className="text-right px-4 py-2 font-medium">操作</th>
                   </tr>
                 </thead>
                 <tbody>
                   {osds.map((osd) => (
-                    <tr key={osd.id} className="border-t border-border">
-                      <td className="px-4 py-1.5 font-mono text-xs">{osd.name}</td>
-                      <td className="px-4 py-1.5">
-                        <span className={`px-2 py-0.5 rounded text-xs font-medium ${osd.status === "up" ? "bg-success/20 text-success" : "bg-destructive/20 text-destructive"}`}>
-                          {osd.status ?? "unknown"}
-                        </span>
-                      </td>
-                      <td className="px-4 py-1.5 text-right font-mono text-xs">{osd.crush_weight?.toFixed(3) ?? "—"}</td>
-                    </tr>
+                    <OSDRow key={osd.id} osd={osd} />
                   ))}
                 </tbody>
               </table>
@@ -139,6 +147,66 @@ function StoragePage() {
         </>
       )}
     </div>
+  );
+}
+
+function OSDRow({ osd }: { osd: { id: number; name: string; status?: string; crush_weight?: number } }) {
+  const osdNum = String(osd.id);
+
+  const outMutation = useMutation({
+    mutationFn: () => http.post(`/admin/ceph/osd/${osdNum}/out`, {}),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["cephOsdTree"] });
+      queryClient.invalidateQueries({ queryKey: ["cephStatus"] });
+      toast.success(`OSD ${osdNum} 已标记为 out`);
+    },
+    onError: () => toast.error(`OSD ${osdNum} out 操作失败`),
+  });
+
+  const inMutation = useMutation({
+    mutationFn: () => http.post(`/admin/ceph/osd/${osdNum}/in`, {}),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["cephOsdTree"] });
+      queryClient.invalidateQueries({ queryKey: ["cephStatus"] });
+      toast.success(`OSD ${osdNum} 已标记为 in`);
+    },
+    onError: () => toast.error(`OSD ${osdNum} in 操作失败`),
+  });
+
+  const isPending = outMutation.isPending || inMutation.isPending;
+
+  return (
+    <tr className="border-t border-border">
+      <td className="px-4 py-1.5 font-mono text-xs">{osd.name}</td>
+      <td className="px-4 py-1.5">
+        <span className={`px-2 py-0.5 rounded text-xs font-medium ${osd.status === "up" ? "bg-success/20 text-success" : "bg-destructive/20 text-destructive"}`}>
+          {osd.status ?? "unknown"}
+        </span>
+      </td>
+      <td className="px-4 py-1.5 text-right font-mono text-xs">{osd.crush_weight?.toFixed(3) ?? "—"}</td>
+      <td className="px-4 py-1.5 text-right">
+        <div className="flex justify-end gap-1">
+          <button
+            onClick={() => {
+              if (window.confirm(`确认将 OSD ${osdNum} 标记为 out？`)) {
+                outMutation.mutate();
+              }
+            }}
+            disabled={isPending}
+            className="px-2 py-0.5 text-xs border border-warning/30 text-warning rounded hover:bg-warning/10 disabled:opacity-50"
+          >
+            Out
+          </button>
+          <button
+            onClick={() => inMutation.mutate()}
+            disabled={isPending}
+            className="px-2 py-0.5 text-xs border border-success/30 text-success rounded hover:bg-success/10 disabled:opacity-50"
+          >
+            In
+          </button>
+        </div>
+      </td>
+    </tr>
   );
 }
 

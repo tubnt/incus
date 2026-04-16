@@ -136,29 +136,29 @@ Graph + Grep verification confirmed all 30 original items. 8 new items discovere
 ## Priority Ranking (Updated)
 
 ### P0 — Fix immediately
-- BUG-1 + NEW-6: IP allocation → migrate to `ip_addresses` DB table with `SELECT FOR UPDATE`
+- ✅ BUG-1 + NEW-6: IP allocation → migrate to `ip_addresses` DB table with `SELECT FOR UPDATE`
 
 ### P1 — Core functionality gaps
-- BUG-2: VM metrics fallback (use `GetInstanceState` API)
-- U8: User VM reinstall (add portal endpoint + ownership check)
-- A4: Create VM for specific user (add `target_user_id` param)
-- A5: Product edit/delete UI (backend exists, frontend missing)
-- O2: Node detail page (Proxmox-style per-node dashboard)
-- O5: Node maintenance mode (evacuate + prevent placement)
+- ✅ BUG-2: VM metrics fallback (use `GetInstanceState` API)
+- ✅ U8: User VM reinstall (add portal endpoint + ownership check)
+- ✅ A4: Create VM for specific user (add `target_user_id` param)
+- ✅ A5: Product edit/delete UI (backend exists, frontend missing)
+- ✅ O2: Node detail page (Proxmox-style per-node dashboard)
+- ✅ O5: Node maintenance mode (evacuate + prevent placement)
 
 ### P2 — Important operations
-- BUG-3: VM state polling (optimistic UI + refetch)
-- NEW-1: Global Toast system
-- NEW-3: ErrorBoundary
+- ✅ BUG-3: VM state polling (optimistic UI + refetch)
+- ✅ NEW-1: Global Toast system (sonner)
+- ✅ NEW-3: ErrorBoundary
 - NEW-5: VM password reset
-- A6: Admin invoices page
+- ✅ A6: Admin invoices page
 - A9: Quota management (enforcement + edit UI)
 - O3: Automated node join wizard
-- O7: Ceph OSD actions (mark in/out via SSH)
+- ✅ O7: Ceph OSD actions (mark in/out via SSH)
 - O8: Ceph pool CRUD
-- O9: Storage alerts (threshold warnings)
+- ✅ O9: Storage alerts (threshold warnings)
 - O13: Event stream (Incus SSE → WebSocket)
-- O16: Single-VM live migration
+- ✅ O16: Single-VM live migration
 
 ### P3 — Nice to have
 - NEW-2: Skeleton loading components

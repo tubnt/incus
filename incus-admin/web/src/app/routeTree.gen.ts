@@ -26,8 +26,10 @@ import { Route as AdminStorageRouteImport } from './routes/admin/storage'
 import { Route as AdminProductsRouteImport } from './routes/admin/products'
 import { Route as AdminOrdersRouteImport } from './routes/admin/orders'
 import { Route as AdminObservabilityRouteImport } from './routes/admin/observability'
+import { Route as AdminNodesRouteImport } from './routes/admin/nodes'
 import { Route as AdminNodeOpsRouteImport } from './routes/admin/node-ops'
 import { Route as AdminMonitoringRouteImport } from './routes/admin/monitoring'
+import { Route as AdminInvoicesRouteImport } from './routes/admin/invoices'
 import { Route as AdminIpRegistryRouteImport } from './routes/admin/ip-registry'
 import { Route as AdminIpPoolsRouteImport } from './routes/admin/ip-pools'
 import { Route as AdminHaRouteImport } from './routes/admin/ha'
@@ -120,6 +122,11 @@ const AdminObservabilityRoute = AdminObservabilityRouteImport.update({
   path: '/observability',
   getParentRoute: () => AdminRoute,
 } as any)
+const AdminNodesRoute = AdminNodesRouteImport.update({
+  id: '/nodes',
+  path: '/nodes',
+  getParentRoute: () => AdminRoute,
+} as any)
 const AdminNodeOpsRoute = AdminNodeOpsRouteImport.update({
   id: '/node-ops',
   path: '/node-ops',
@@ -128,6 +135,11 @@ const AdminNodeOpsRoute = AdminNodeOpsRouteImport.update({
 const AdminMonitoringRoute = AdminMonitoringRouteImport.update({
   id: '/monitoring',
   path: '/monitoring',
+  getParentRoute: () => AdminRoute,
+} as any)
+const AdminInvoicesRoute = AdminInvoicesRouteImport.update({
+  id: '/invoices',
+  path: '/invoices',
   getParentRoute: () => AdminRoute,
 } as any)
 const AdminIpRegistryRoute = AdminIpRegistryRouteImport.update({
@@ -175,9 +187,11 @@ export interface FileRoutesByFullPath {
   '/admin/clusters': typeof AdminClustersRoute
   '/admin/create-vm': typeof AdminCreateVmRoute
   '/admin/ha': typeof AdminHaRoute
+  '/admin/invoices': typeof AdminInvoicesRoute
   '/admin/ip-pools': typeof AdminIpPoolsRoute
   '/admin/ip-registry': typeof AdminIpRegistryRoute
   '/admin/monitoring': typeof AdminMonitoringRoute
+  '/admin/nodes': typeof AdminNodesRoute
   '/admin/node-ops': typeof AdminNodeOpsRoute
   '/admin/observability': typeof AdminObservabilityRoute
   '/admin/orders': typeof AdminOrdersRoute
@@ -202,9 +216,11 @@ export interface FileRoutesByTo {
   '/admin/clusters': typeof AdminClustersRoute
   '/admin/create-vm': typeof AdminCreateVmRoute
   '/admin/ha': typeof AdminHaRoute
+  '/admin/invoices': typeof AdminInvoicesRoute
   '/admin/ip-pools': typeof AdminIpPoolsRoute
   '/admin/ip-registry': typeof AdminIpRegistryRoute
   '/admin/monitoring': typeof AdminMonitoringRoute
+  '/admin/nodes': typeof AdminNodesRoute
   '/admin/node-ops': typeof AdminNodeOpsRoute
   '/admin/observability': typeof AdminObservabilityRoute
   '/admin/orders': typeof AdminOrdersRoute
@@ -230,9 +246,11 @@ export interface FileRoutesById {
   '/admin/clusters': typeof AdminClustersRoute
   '/admin/create-vm': typeof AdminCreateVmRoute
   '/admin/ha': typeof AdminHaRoute
+  '/admin/invoices': typeof AdminInvoicesRoute
   '/admin/ip-pools': typeof AdminIpPoolsRoute
   '/admin/ip-registry': typeof AdminIpRegistryRoute
   '/admin/monitoring': typeof AdminMonitoringRoute
+  '/admin/nodes': typeof AdminNodesRoute
   '/admin/node-ops': typeof AdminNodeOpsRoute
   '/admin/observability': typeof AdminObservabilityRoute
   '/admin/orders': typeof AdminOrdersRoute
@@ -259,9 +277,11 @@ export interface FileRouteTypes {
     | '/admin/clusters'
     | '/admin/create-vm'
     | '/admin/ha'
+    | '/admin/invoices'
     | '/admin/ip-pools'
     | '/admin/ip-registry'
     | '/admin/monitoring'
+    | '/admin/nodes'
     | '/admin/node-ops'
     | '/admin/observability'
     | '/admin/orders'
@@ -286,9 +306,11 @@ export interface FileRouteTypes {
     | '/admin/clusters'
     | '/admin/create-vm'
     | '/admin/ha'
+    | '/admin/invoices'
     | '/admin/ip-pools'
     | '/admin/ip-registry'
     | '/admin/monitoring'
+    | '/admin/nodes'
     | '/admin/node-ops'
     | '/admin/observability'
     | '/admin/orders'
@@ -313,9 +335,11 @@ export interface FileRouteTypes {
     | '/admin/clusters'
     | '/admin/create-vm'
     | '/admin/ha'
+    | '/admin/invoices'
     | '/admin/ip-pools'
     | '/admin/ip-registry'
     | '/admin/monitoring'
+    | '/admin/nodes'
     | '/admin/node-ops'
     | '/admin/observability'
     | '/admin/orders'
@@ -460,6 +484,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AdminObservabilityRouteImport
       parentRoute: typeof AdminRoute
     }
+    '/admin/nodes': {
+      id: '/admin/nodes'
+      path: '/nodes'
+      fullPath: '/admin/nodes'
+      preLoaderRoute: typeof AdminNodesRouteImport
+      parentRoute: typeof AdminRoute
+    }
     '/admin/node-ops': {
       id: '/admin/node-ops'
       path: '/node-ops'
@@ -479,6 +510,13 @@ declare module '@tanstack/react-router' {
       path: '/ip-registry'
       fullPath: '/admin/ip-registry'
       preLoaderRoute: typeof AdminIpRegistryRouteImport
+      parentRoute: typeof AdminRoute
+    }
+    '/admin/invoices': {
+      id: '/admin/invoices'
+      path: '/invoices'
+      fullPath: '/admin/invoices'
+      preLoaderRoute: typeof AdminInvoicesRouteImport
       parentRoute: typeof AdminRoute
     }
     '/admin/ip-pools': {
@@ -524,9 +562,11 @@ interface AdminRouteChildren {
   AdminClustersRoute: typeof AdminClustersRoute
   AdminCreateVmRoute: typeof AdminCreateVmRoute
   AdminHaRoute: typeof AdminHaRoute
+  AdminInvoicesRoute: typeof AdminInvoicesRoute
   AdminIpPoolsRoute: typeof AdminIpPoolsRoute
   AdminIpRegistryRoute: typeof AdminIpRegistryRoute
   AdminMonitoringRoute: typeof AdminMonitoringRoute
+  AdminNodesRoute: typeof AdminNodesRoute
   AdminNodeOpsRoute: typeof AdminNodeOpsRoute
   AdminObservabilityRoute: typeof AdminObservabilityRoute
   AdminOrdersRoute: typeof AdminOrdersRoute
@@ -543,9 +583,11 @@ const AdminRouteChildren: AdminRouteChildren = {
   AdminClustersRoute: AdminClustersRoute,
   AdminCreateVmRoute: AdminCreateVmRoute,
   AdminHaRoute: AdminHaRoute,
+  AdminInvoicesRoute: AdminInvoicesRoute,
   AdminIpPoolsRoute: AdminIpPoolsRoute,
   AdminIpRegistryRoute: AdminIpRegistryRoute,
   AdminMonitoringRoute: AdminMonitoringRoute,
+  AdminNodesRoute: AdminNodesRoute,
   AdminNodeOpsRoute: AdminNodeOpsRoute,
   AdminObservabilityRoute: AdminObservabilityRoute,
   AdminOrdersRoute: AdminOrdersRoute,

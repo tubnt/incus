@@ -15,7 +15,9 @@
     "orders": "订单",
     "auditLogs": "审计",
     "adminTickets": "工单管理",
-    "createVm": "+ 云主机"
+    "createVm": "+ 云主机",
+    "nodes": "节点",
+    "invoices": "发票"
   },
   "common": {
     "loading": "加载中...",

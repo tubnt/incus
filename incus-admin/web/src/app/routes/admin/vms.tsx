@@ -1,6 +1,7 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useState } from "react";
+import { toast } from "sonner";
 import { http } from "@/shared/lib/http";
 import { queryClient } from "@/shared/lib/query-client";
 import { SnapshotPanel } from "@/features/snapshots/snapshot-panel";
@@ -107,8 +108,12 @@ function VMRow({ vm, clusterName }: { vm: IncusInstance; clusterName: string }) 
   const stateMutation = useMutation({
     mutationFn: (action: string) =>
       http.put(`/admin/vms/${vm.name}/state`, { action, cluster: clusterName, project }),
-    onSuccess: () => {
+    onSuccess: (_data, action) => {
       queryClient.invalidateQueries({ queryKey: ["adminClusterVMs"] });
+      toast.success(`${vm.name}: ${action} 操作已提交`);
+    },
+    onError: (_err, action) => {
+      toast.error(`${vm.name}: ${action} 操作失败`);
     },
   });
 
@@ -117,6 +122,10 @@ function VMRow({ vm, clusterName }: { vm: IncusInstance; clusterName: string }) 
       http.delete(`/admin/vms/${vm.name}`, { cluster: clusterName, project }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["adminClusterVMs"] });
+      toast.success(`${vm.name} 已删除`);
+    },
+    onError: () => {
+      toast.error(`${vm.name} 删除失败`);
     },
   });
 

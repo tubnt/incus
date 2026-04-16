@@ -15,7 +15,9 @@
     "orders": "Orders",
     "auditLogs": "Audit",
     "adminTickets": "Ticket Mgmt",
-    "createVm": "+ VM"
+    "createVm": "+ VM",
+    "nodes": "Nodes",
+    "invoices": "Invoices"
   },
   "common": {
     "loading": "Loading...",

@@ -6,6 +6,8 @@ import { useTranslation } from "react-i18next";
 import { AppSidebar } from "@/shared/components/layout/app-sidebar";
 import { AppHeader } from "@/shared/components/layout/app-header";
 import { cn } from "@/shared/lib/utils";
+import { Toaster } from "sonner";
+import { ErrorBoundary } from "@/shared/components/error-boundary";
 
 export const Route = createRootRoute({
   component: RootLayout,
@@ -58,6 +60,7 @@ function RootLayout() {
 
   return (
     <div className="min-h-screen bg-background">
+      <Toaster position="top-right" richColors closeButton />
       <AppSidebar
         isAdmin={isAdmin(user)}
         collapsed={collapsed}
@@ -73,7 +76,9 @@ function RootLayout() {
         collapsed ? "pl-16" : "pl-60",
       )}>
         <div className="max-w-7xl mx-auto px-6 py-6">
-          <Outlet />
+          <ErrorBoundary>
+            <Outlet />
+          </ErrorBoundary>
         </div>
       </main>
     </div>

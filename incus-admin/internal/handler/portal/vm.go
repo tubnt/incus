@@ -38,6 +38,46 @@ func (h *VMHandler) Routes(r chi.Router) {
 	r.Get("/services", h.ListServices)
 	r.Get("/services/{id}", h.GetService)
 	r.Post("/services/{id}/actions/{action}", h.VMAction)
+	r.Post("/services/{id}/reinstall", h.Reinstall)
+}
+
+func (h *VMHandler) Reinstall(w http.ResponseWriter, r *http.Request) {
+	userID, _ := r.Context().Value(middleware.CtxUserID).(int64)
+	vmID, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+
+	vm, err := h.vmRepo.GetByID(r.Context(), vmID)
+	if err != nil || vm == nil || vm.UserID != userID {
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": "access denied"})
+		return
+	}
+
+	var req struct {
+		OSImage string `json:"os_image"`
+	}
+	json.NewDecoder(r.Body).Decode(&req)
+	if req.OSImage == "" { req.OSImage = "images:ubuntu/24.04/cloud" }
+
+	cc, _ := h.clusters.ConfigByName(findClusterName(h.clusters, vm.ClusterID))
+	project := cc.DefaultProject
+	if project == "" { project = "customers" }
+
+	result, err := h.vmSvc.Reinstall(r.Context(), service.ReinstallParams{
+		ClusterName: findClusterName(h.clusters, vm.ClusterID),
+		Project:     project,
+		VMName:      vm.Name,
+		NewOSImage:  req.OSImage,
+	})
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+
+	audit(r.Context(), r, "vm.reinstall", "vm", vmID, map[string]any{"name": vm.Name, "os": req.OSImage})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":   "reinstalled",
+		"password": result.Password,
+		"username": result.Username,
+	})
 }
 
 func (h *VMHandler) ListServices(w http.ResponseWriter, r *http.Request) {
@@ -238,6 +278,7 @@ func (h *AdminVMHandler) Routes(r chi.Router) {
 	r.Get("/vms", h.ListAllVMs)
 	r.Put("/vms/{name}/state", h.ChangeVMState)
 	r.Post("/vms/{name}/reinstall", h.ReinstallVM)
+	r.Post("/vms/{name}/migrate", h.MigrateVM)
 	r.Delete("/vms/{name}", h.DeleteVM)
 }
 
@@ -417,12 +458,13 @@ func (h *AdminVMHandler) CreateVM(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		CPU      int      `json:"cpu"`
-		MemoryMB int      `json:"memory_mb"`
-		DiskGB   int      `json:"disk_gb"`
-		OSImage  string   `json:"os_image"`
-		Project  string   `json:"project"`
-		SSHKeys  []string `json:"ssh_keys"`
+		CPU          int      `json:"cpu"`
+		MemoryMB     int      `json:"memory_mb"`
+		DiskGB       int      `json:"disk_gb"`
+		OSImage      string   `json:"os_image"`
+		Project      string   `json:"project"`
+		SSHKeys      []string `json:"ssh_keys"`
+		TargetUserID int64    `json:"target_user_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid body"})
@@ -452,6 +494,9 @@ func (h *AdminVMHandler) CreateVM(w http.ResponseWriter, r *http.Request) {
 	}
 
 	userID, _ := r.Context().Value(middleware.CtxUserID).(int64)
+	if req.TargetUserID > 0 {
+		userID = req.TargetUserID
+	}
 
 	sshKeys, _ := h.sshKeys.GetByUser(r.Context(), userID)
 	if len(req.SSHKeys) == 0 && len(sshKeys) > 0 {
@@ -645,6 +690,63 @@ func (h *AdminVMHandler) ReinstallVM(w http.ResponseWriter, r *http.Request) {
 		"password": result.Password,
 		"username": result.Username,
 	})
+}
+
+// MigrateVM 将单个 VM 迁移到指定目标节点
+func (h *AdminVMHandler) MigrateVM(w http.ResponseWriter, r *http.Request) {
+	vmName := chi.URLParam(r, "name")
+	if !isValidName(vmName) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid vm name"})
+		return
+	}
+	var req struct {
+		Cluster    string `json:"cluster"`
+		Project    string `json:"project"`
+		TargetNode string `json:"target_node"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid body"})
+		return
+	}
+	if req.Cluster == "" || req.TargetNode == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "cluster and target_node required"})
+		return
+	}
+	if req.Project == "" {
+		req.Project = "customers"
+	}
+
+	client, ok := h.clusters.Get(req.Cluster)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "cluster not found"})
+		return
+	}
+
+	// Incus 迁移：POST /1.0/instances/{name}?project={project}&target={node}
+	// 请求体需包含实例当前配置（空 body 触发迁移）
+	migrateBody := fmt.Sprintf(`{"name":"%s","migration":true}`, vmName)
+	path := fmt.Sprintf("/1.0/instances/%s?project=%s&target=%s", vmName, req.Project, req.TargetNode)
+	resp, err := client.APIPost(r.Context(), path, strings.NewReader(migrateBody))
+	if err != nil {
+		slog.Error("migrate VM failed", "vm", vmName, "target", req.TargetNode, "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "migration failed: " + err.Error()})
+		return
+	}
+
+	// 等待异步操作完成
+	if resp != nil && resp.Type == "async" && resp.Operation != "" {
+		parts := strings.Split(resp.Operation, "/")
+		opID := parts[len(parts)-1]
+		if opID != "" {
+			_ = client.WaitForOperation(r.Context(), opID)
+		}
+	}
+
+	audit(r.Context(), r, "vm.migrate", "vm", 0, map[string]any{
+		"name": vmName, "target": req.TargetNode, "cluster": req.Cluster,
+	})
+	slog.Info("vm migrated", "vm", vmName, "target", req.TargetNode)
+	writeJSON(w, http.StatusOK, map[string]any{"status": "migrated", "target": req.TargetNode})
 }
 
 func extractCIDR(cidr string) string {

@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useState } from "react";
+import { toast } from "sonner";
 import { http } from "@/shared/lib/http";
 import { queryClient } from "@/shared/lib/query-client";
 import { VMMetricsPanel } from "@/features/monitoring/vm-metrics-panel";
@@ -69,7 +70,13 @@ function VMCard({ vm }: { vm: VMService }) {
   const actionMutation = useMutation({
     mutationFn: (action: string) =>
       http.post(`/portal/services/${vm.id}/actions/${action}`),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["myServices"] }),
+    onSuccess: (_data, action) => {
+      queryClient.invalidateQueries({ queryKey: ["myServices"] });
+      toast.success(`${vm.name}: ${action} 操作已提交`);
+    },
+    onError: (_err, action) => {
+      toast.error(`${vm.name}: ${action} 操作失败`);
+    },
   });
 
   return (
