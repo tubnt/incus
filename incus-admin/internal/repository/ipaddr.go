@@ -45,10 +45,17 @@ func (r *IPAddrRepo) AllocateNext(ctx context.Context, poolID int64, vmID int64,
 		return "", fmt.Errorf("select IP: %w", err)
 	}
 
-	_, err = tx.ExecContext(ctx,
-		`UPDATE ip_addresses SET vm_id = $1, status = 'assigned', updated_at = $2 WHERE pool_id = $3 AND ip = $4::inet`,
-		vmID, time.Now(), poolID, ip,
-	)
+	if vmID > 0 {
+		_, err = tx.ExecContext(ctx,
+			`UPDATE ip_addresses SET vm_id = $1, status = 'assigned', updated_at = $2 WHERE pool_id = $3 AND ip = $4::inet`,
+			vmID, time.Now(), poolID, ip,
+		)
+	} else {
+		_, err = tx.ExecContext(ctx,
+			`UPDATE ip_addresses SET vm_id = NULL, status = 'assigned', updated_at = $1 WHERE pool_id = $2 AND ip = $3::inet`,
+			time.Now(), poolID, ip,
+		)
+	}
 	if err != nil {
 		return "", fmt.Errorf("assign IP: %w", err)
 	}
