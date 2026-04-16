@@ -10,6 +10,7 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as VmsRouteImport } from './routes/vms'
+import { Route as VmDetailRouteImport } from './routes/vm-detail'
 import { Route as TicketsRouteImport } from './routes/tickets'
 import { Route as SshKeysRouteImport } from './routes/ssh-keys'
 import { Route as ConsoleRouteImport } from './routes/console'
@@ -18,6 +19,7 @@ import { Route as ApiTokensRouteImport } from './routes/api-tokens'
 import { Route as AdminRouteImport } from './routes/admin'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AdminVmsRouteImport } from './routes/admin/vms'
+import { Route as AdminVmDetailRouteImport } from './routes/admin/vm-detail'
 import { Route as AdminUsersRouteImport } from './routes/admin/users'
 import { Route as AdminTicketsRouteImport } from './routes/admin/tickets'
 import { Route as AdminStorageRouteImport } from './routes/admin/storage'
@@ -33,6 +35,11 @@ import { Route as AdminAuditLogsRouteImport } from './routes/admin/audit-logs'
 const VmsRoute = VmsRouteImport.update({
   id: '/vms',
   path: '/vms',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const VmDetailRoute = VmDetailRouteImport.update({
+  id: '/vm-detail',
+  path: '/vm-detail',
   getParentRoute: () => rootRouteImport,
 } as any)
 const TicketsRoute = TicketsRouteImport.update({
@@ -73,6 +80,11 @@ const IndexRoute = IndexRouteImport.update({
 const AdminVmsRoute = AdminVmsRouteImport.update({
   id: '/vms',
   path: '/vms',
+  getParentRoute: () => AdminRoute,
+} as any)
+const AdminVmDetailRoute = AdminVmDetailRouteImport.update({
+  id: '/vm-detail',
+  path: '/vm-detail',
   getParentRoute: () => AdminRoute,
 } as any)
 const AdminUsersRoute = AdminUsersRouteImport.update({
@@ -139,6 +151,7 @@ export interface FileRoutesByFullPath {
   '/console': typeof ConsoleRoute
   '/ssh-keys': typeof SshKeysRoute
   '/tickets': typeof TicketsRoute
+  '/vm-detail': typeof VmDetailRoute
   '/vms': typeof VmsRoute
   '/admin/audit-logs': typeof AdminAuditLogsRoute
   '/admin/clusters': typeof AdminClustersRoute
@@ -151,6 +164,7 @@ export interface FileRoutesByFullPath {
   '/admin/storage': typeof AdminStorageRoute
   '/admin/tickets': typeof AdminTicketsRoute
   '/admin/users': typeof AdminUsersRoute
+  '/admin/vm-detail': typeof AdminVmDetailRoute
   '/admin/vms': typeof AdminVmsRoute
 }
 export interface FileRoutesByTo {
@@ -161,6 +175,7 @@ export interface FileRoutesByTo {
   '/console': typeof ConsoleRoute
   '/ssh-keys': typeof SshKeysRoute
   '/tickets': typeof TicketsRoute
+  '/vm-detail': typeof VmDetailRoute
   '/vms': typeof VmsRoute
   '/admin/audit-logs': typeof AdminAuditLogsRoute
   '/admin/clusters': typeof AdminClustersRoute
@@ -173,6 +188,7 @@ export interface FileRoutesByTo {
   '/admin/storage': typeof AdminStorageRoute
   '/admin/tickets': typeof AdminTicketsRoute
   '/admin/users': typeof AdminUsersRoute
+  '/admin/vm-detail': typeof AdminVmDetailRoute
   '/admin/vms': typeof AdminVmsRoute
 }
 export interface FileRoutesById {
@@ -184,6 +200,7 @@ export interface FileRoutesById {
   '/console': typeof ConsoleRoute
   '/ssh-keys': typeof SshKeysRoute
   '/tickets': typeof TicketsRoute
+  '/vm-detail': typeof VmDetailRoute
   '/vms': typeof VmsRoute
   '/admin/audit-logs': typeof AdminAuditLogsRoute
   '/admin/clusters': typeof AdminClustersRoute
@@ -196,6 +213,7 @@ export interface FileRoutesById {
   '/admin/storage': typeof AdminStorageRoute
   '/admin/tickets': typeof AdminTicketsRoute
   '/admin/users': typeof AdminUsersRoute
+  '/admin/vm-detail': typeof AdminVmDetailRoute
   '/admin/vms': typeof AdminVmsRoute
 }
 export interface FileRouteTypes {
@@ -208,6 +226,7 @@ export interface FileRouteTypes {
     | '/console'
     | '/ssh-keys'
     | '/tickets'
+    | '/vm-detail'
     | '/vms'
     | '/admin/audit-logs'
     | '/admin/clusters'
@@ -220,6 +239,7 @@ export interface FileRouteTypes {
     | '/admin/storage'
     | '/admin/tickets'
     | '/admin/users'
+    | '/admin/vm-detail'
     | '/admin/vms'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -230,6 +250,7 @@ export interface FileRouteTypes {
     | '/console'
     | '/ssh-keys'
     | '/tickets'
+    | '/vm-detail'
     | '/vms'
     | '/admin/audit-logs'
     | '/admin/clusters'
@@ -242,6 +263,7 @@ export interface FileRouteTypes {
     | '/admin/storage'
     | '/admin/tickets'
     | '/admin/users'
+    | '/admin/vm-detail'
     | '/admin/vms'
   id:
     | '__root__'
@@ -252,6 +274,7 @@ export interface FileRouteTypes {
     | '/console'
     | '/ssh-keys'
     | '/tickets'
+    | '/vm-detail'
     | '/vms'
     | '/admin/audit-logs'
     | '/admin/clusters'
@@ -264,6 +287,7 @@ export interface FileRouteTypes {
     | '/admin/storage'
     | '/admin/tickets'
     | '/admin/users'
+    | '/admin/vm-detail'
     | '/admin/vms'
   fileRoutesById: FileRoutesById
 }
@@ -275,6 +299,7 @@ export interface RootRouteChildren {
   ConsoleRoute: typeof ConsoleRoute
   SshKeysRoute: typeof SshKeysRoute
   TicketsRoute: typeof TicketsRoute
+  VmDetailRoute: typeof VmDetailRoute
   VmsRoute: typeof VmsRoute
 }
 
@@ -285,6 +310,13 @@ declare module '@tanstack/react-router' {
       path: '/vms'
       fullPath: '/vms'
       preLoaderRoute: typeof VmsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/vm-detail': {
+      id: '/vm-detail'
+      path: '/vm-detail'
+      fullPath: '/vm-detail'
+      preLoaderRoute: typeof VmDetailRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/tickets': {
@@ -341,6 +373,13 @@ declare module '@tanstack/react-router' {
       path: '/vms'
       fullPath: '/admin/vms'
       preLoaderRoute: typeof AdminVmsRouteImport
+      parentRoute: typeof AdminRoute
+    }
+    '/admin/vm-detail': {
+      id: '/admin/vm-detail'
+      path: '/vm-detail'
+      fullPath: '/admin/vm-detail'
+      preLoaderRoute: typeof AdminVmDetailRouteImport
       parentRoute: typeof AdminRoute
     }
     '/admin/users': {
@@ -435,6 +474,7 @@ interface AdminRouteChildren {
   AdminStorageRoute: typeof AdminStorageRoute
   AdminTicketsRoute: typeof AdminTicketsRoute
   AdminUsersRoute: typeof AdminUsersRoute
+  AdminVmDetailRoute: typeof AdminVmDetailRoute
   AdminVmsRoute: typeof AdminVmsRoute
 }
 
@@ -450,6 +490,7 @@ const AdminRouteChildren: AdminRouteChildren = {
   AdminStorageRoute: AdminStorageRoute,
   AdminTicketsRoute: AdminTicketsRoute,
   AdminUsersRoute: AdminUsersRoute,
+  AdminVmDetailRoute: AdminVmDetailRoute,
   AdminVmsRoute: AdminVmsRoute,
 }
 
@@ -463,6 +504,7 @@ const rootRouteChildren: RootRouteChildren = {
   ConsoleRoute: ConsoleRoute,
   SshKeysRoute: SshKeysRoute,
   TicketsRoute: TicketsRoute,
+  VmDetailRoute: VmDetailRoute,
   VmsRoute: VmsRoute,
 }
 export const routeTree = rootRouteImport

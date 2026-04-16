@@ -77,7 +77,7 @@ function VMCard({ vm }: { vm: VMService }) {
       <div className="p-4 flex items-center justify-between">
         <div>
           <div className="flex items-center gap-3">
-            <span className="font-mono font-semibold">{vm.name}</span>
+            <a href={`/vm-detail?id=${vm.id}`} className="font-mono font-semibold text-primary hover:underline">{vm.name}</a>
             <StatusBadge status={vm.status} />
           </div>
           <div className="text-sm text-muted-foreground mt-1">

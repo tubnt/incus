@@ -125,7 +125,10 @@ function VMRow({ vm, clusterName }: { vm: IncusInstance; clusterName: string }) 
   return (
     <>
     <tr className="border-t border-border">
-      <td className="px-4 py-2 font-mono">{vm.name}</td>
+      <td className="px-4 py-2 font-mono">
+        <a href={`/admin/vm-detail?name=${vm.name}&cluster=${clusterName}&project=${project}`}
+          className="text-primary hover:underline">{vm.name}</a>
+      </td>
       <td className="px-4 py-2">
         <StatusBadge status={vm.status} />
       </td>
