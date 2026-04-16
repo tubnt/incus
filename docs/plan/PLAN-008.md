@@ -102,41 +102,68 @@ Full expected journey: Cluster health → Node management → Storage monitoring
 | O19 | Backup/restore cluster config | ❌ Not implemented | **Missing** |
 | O20 | SSH key management for node access | Manual key deployment | ⚠️ No UI to manage node SSH keys |
 
-## Summary
+## Part C: Additional gaps found during Graph audit (2026-04-16 02:00)
+
+Graph + Grep verification confirmed all 30 original items. 8 new items discovered:
+
+| # | Gap | Priority | Detail |
+|---|-----|----------|--------|
+| NEW-1 | No global Toast/notification system | P2 | Mutation errors only shown inline; no success feedback |
+| NEW-2 | No Skeleton/Loading components | P3 | All loading states use plain text "加载中..." |
+| NEW-3 | No ErrorBoundary | P2 | Route render errors cause white screen |
+| NEW-4 | No user settings/profile page | P3 | No `/settings` or `/profile` route |
+| NEW-5 | No VM password reset capability | P2 | User gets password once at creation, cannot reset later |
+| NEW-6 | `ip_addresses` DB table completely unused | P1 | Full schema exists (pool_id, status, cooldown) but repository has zero operations; `pickNextIP` bypasses DB entirely — this is BUG-1's root cause |
+| NEW-7 | A5 and A13 are duplicates | — | Merge into single item: "Product edit/deactivate UI" |
+| NEW-8 | No systematic mobile/responsive design | P3 | Partial responsive classes in 9 files, no mobile-first approach |
+
+### Root cause note for BUG-1
+`ip_addresses` table was designed in PLAN-004 DB schema to track individual IP allocations with status (available/assigned/reserved/cooldown). But the implementation completely bypassed this table — `pickNextIP` scans Incus instances directly and uses an in-memory cache. Fix should migrate IP allocation to use `ip_addresses` table with `SELECT FOR UPDATE`.
+
+## Summary (Updated)
 
 | Category | Total Items | Working | Gaps |
 |----------|------------|---------|------|
 | Confirmed bugs | 3 | — | 3 |
 | User journey | 20 | 13 | 7 |
-| Admin journey | 13 | 6 | 7 |
+| Admin journey | 12 | 6 | 6 |
 | Ops journey | 20 | 7 | 13 |
-| **Total** | **56** | **26** | **30** |
+| New findings | 7 | — | 7 |
+| **Total** | **62** | **26** | **36** |
 
-## Priority Ranking
+(A5/A13 merged = -1; +7 new = net +6; 30 → 36)
+
+## Priority Ranking (Updated)
 
 ### P0 — Fix immediately
-- BUG-1: IP allocation race condition
+- BUG-1 + NEW-6: IP allocation → migrate to `ip_addresses` DB table with `SELECT FOR UPDATE`
 
 ### P1 — Core functionality gaps
-- BUG-2: VM metrics fallback
-- U8: User VM reinstall
-- A4: Create VM for specific user
-- A5: Product edit/delete UI
-- A9: Quota management
-- O2: Node detail page
-- O5: Node maintenance mode
+- BUG-2: VM metrics fallback (use `GetInstanceState` API)
+- U8: User VM reinstall (add portal endpoint + ownership check)
+- A4: Create VM for specific user (add `target_user_id` param)
+- A5: Product edit/delete UI (backend exists, frontend missing)
+- O2: Node detail page (Proxmox-style per-node dashboard)
+- O5: Node maintenance mode (evacuate + prevent placement)
 
 ### P2 — Important operations
-- BUG-3: VM state polling
+- BUG-3: VM state polling (optimistic UI + refetch)
+- NEW-1: Global Toast system
+- NEW-3: ErrorBoundary
+- NEW-5: VM password reset
 - A6: Admin invoices page
+- A9: Quota management (enforcement + edit UI)
 - O3: Automated node join wizard
-- O7: Ceph OSD actions
+- O7: Ceph OSD actions (mark in/out via SSH)
 - O8: Ceph pool CRUD
-- O9: Storage alerts
-- O13: Event stream
+- O9: Storage alerts (threshold warnings)
+- O13: Event stream (Incus SSE → WebSocket)
 - O16: Single-VM live migration
 
 ### P3 — Nice to have
+- NEW-2: Skeleton loading components
+- NEW-4: User settings page
+- NEW-8: Mobile responsive design
 - U18: VM resize/upgrade
 - U19: rDNS
 - U20: Traffic stats
