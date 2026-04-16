@@ -7,95 +7,137 @@ export const Route = createFileRoute("/admin/storage")({
   component: StoragePage,
 });
 
-interface HAStatus {
-  cluster: string;
-  healing_threshold: number;
-  storage: string;
-  ha_enabled: boolean;
-  nodes: Array<{ server_name: string; status: string; message: string }>;
+interface CephStatus {
+  health?: { status: string };
+  osdmap?: { num_osds: number; num_up_osds: number; num_in_osds: number };
+  pgmap?: {
+    num_pgs: number;
+    num_pools: number;
+    data_bytes: number;
+    bytes_used: number;
+    bytes_avail: number;
+    bytes_total: number;
+    read_bytes_sec: number;
+    write_bytes_sec: number;
+    read_op_per_sec: number;
+    write_op_per_sec: number;
+  };
+  error?: string;
+}
+
+interface OSDTree {
+  nodes?: Array<{
+    id: number;
+    name: string;
+    type: string;
+    status?: string;
+    crush_weight?: number;
+    children?: number[];
+  }>;
+  error?: string;
 }
 
 function StoragePage() {
-  const { data: clustersData } = useQuery({
-    queryKey: ["adminClusters"],
-    queryFn: () => http.get<{ clusters: Array<{ name: string; display_name: string }> }>("/admin/clusters"),
-  });
-  const clusters = clustersData?.clusters ?? [];
-  const clusterName = clusters[0]?.name ?? "";
-
-  const { data: ha } = useQuery({
-    queryKey: ["haStatus", clusterName],
-    queryFn: () => http.get<HAStatus>(`/admin/clusters/${clusterName}/ha`),
-    enabled: !!clusterName,
-  });
-
-  const { data: metricsData } = useQuery({
-    queryKey: ["adminMetricsOverview"],
-    queryFn: () => http.get<{ clusters: Array<{ name: string; vms: Array<{ disk_total_bytes: number; disk_used_bytes: number; disk_used_pct: number }> }> }>("/admin/metrics/overview"),
+  const { data: cephStatus } = useQuery({
+    queryKey: ["cephStatus"],
+    queryFn: () => http.get<CephStatus>("/admin/ceph/status"),
     refetchInterval: 30_000,
   });
 
-  const vms = metricsData?.clusters?.[0]?.vms ?? [];
-  const totalDisk = vms.reduce((s, v) => s + v.disk_total_bytes, 0);
-  const usedDisk = vms.reduce((s, v) => s + v.disk_used_bytes, 0);
+  const { data: osdTree } = useQuery({
+    queryKey: ["cephOsdTree"],
+    queryFn: () => http.get<OSDTree>("/admin/ceph/osd-tree"),
+    refetchInterval: 60_000,
+  });
+
+  const health = cephStatus?.health?.status ?? "UNKNOWN";
+  const osdmap = cephStatus?.osdmap;
+  const pgmap = cephStatus?.pgmap;
+  const osds = osdTree?.nodes?.filter((n) => n.type === "osd") ?? [];
+  const hosts = osdTree?.nodes?.filter((n) => n.type === "host") ?? [];
+  const hasCeph = !cephStatus?.error;
 
   return (
     <div>
       <h1 className="text-2xl font-bold mb-6">Storage (Ceph)</h1>
 
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
-        <StatCard label="Health" value={ha ? "HEALTH_OK" : "—"} color="text-success" />
-        <StatCard label="Storage Pool" value={ha?.storage ?? "—"} />
-        <StatCard label="Nodes with OSD" value={String(ha?.nodes?.length ?? 0)} />
-        <StatCard label="VM Disk Usage" value={`${fmtBytes(usedDisk)} / ${fmtBytes(totalDisk)}`} />
-      </div>
+      {!hasCeph ? (
+        <div className="border border-border rounded-lg p-6 text-center text-muted-foreground">
+          Ceph SSH not configured. Set CEPH_SSH_HOST env variable to enable.
+        </div>
+      ) : (
+        <>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+            <StatCard label="Health" value={health}
+              color={health === "HEALTH_OK" ? "text-success" : health === "HEALTH_WARN" ? "text-yellow-500" : "text-destructive"} />
+            <StatCard label="OSDs" value={osdmap ? `${osdmap.num_up_osds}/${osdmap.num_osds} up` : "—"} />
+            <StatCard label="Pools" value={String(pgmap?.num_pools ?? "—")} />
+            <StatCard label="PGs" value={String(pgmap?.num_pgs ?? "—")} />
+          </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
-        <div className="border border-border rounded-lg bg-card p-4">
-          <h3 className="font-semibold mb-3">Cluster Nodes</h3>
-          {ha?.nodes?.map((n) => (
-            <div key={n.server_name} className="flex items-center justify-between py-2 border-b border-border last:border-0">
-              <span className="font-mono text-sm">{n.server_name}</span>
-              <span className={`px-2 py-0.5 rounded text-xs font-medium ${n.status === "Online" ? "bg-success/20 text-success" : "bg-destructive/20 text-destructive"}`}>
-                {n.status}
-              </span>
+          {pgmap && (
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+              <StatCard label="Total Capacity" value={fmtBytes(pgmap.bytes_total)} />
+              <StatCard label="Used" value={`${fmtBytes(pgmap.bytes_used)} (${((pgmap.bytes_used / pgmap.bytes_total) * 100).toFixed(1)}%)`} />
+              <StatCard label="Available" value={fmtBytes(pgmap.bytes_avail)} />
+              <StatCard label="Data Stored" value={fmtBytes(pgmap.data_bytes)} />
             </div>
-          ))}
-        </div>
+          )}
 
-        <div className="border border-border rounded-lg bg-card p-4">
-          <h3 className="font-semibold mb-3">VM Disk Usage</h3>
-          {vms.length === 0 ? (
-            <div className="text-muted-foreground text-sm">No VMs</div>
-          ) : vms.map((vm, i) => (
-            <div key={i} className="flex items-center justify-between py-2 border-b border-border last:border-0">
-              <span className="text-sm">{fmtBytes(vm.disk_used_bytes)} / {fmtBytes(vm.disk_total_bytes)}</span>
-              <span className="text-xs text-muted-foreground">{vm.disk_used_pct.toFixed(1)}%</span>
+          {pgmap && (
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+              <StatCard label="Read IOPS" value={`${pgmap.read_op_per_sec ?? 0}/s`} />
+              <StatCard label="Write IOPS" value={`${pgmap.write_op_per_sec ?? 0}/s`} />
+              <StatCard label="Read Throughput" value={`${fmtBytes(pgmap.read_bytes_sec ?? 0)}/s`} />
+              <StatCard label="Write Throughput" value={`${fmtBytes(pgmap.write_bytes_sec ?? 0)}/s`} />
             </div>
-          ))}
-        </div>
-      </div>
+          )}
 
-      <div className="border border-border rounded-lg bg-card p-4">
-        <h3 className="font-semibold mb-3">External Dashboards</h3>
-        <p className="text-sm text-muted-foreground mb-3">
-          Full Ceph management requires access via WireGuard VPN to the cluster network.
-        </p>
-        <div className="flex gap-3">
-          <a href="https://10.0.20.1:8443" target="_blank" rel="noopener noreferrer"
-            className="px-3 py-1.5 rounded text-xs bg-primary/20 text-primary hover:bg-primary/30">
-            Ceph Dashboard →
-          </a>
-          <a href="http://10.0.20.1:3000" target="_blank" rel="noopener noreferrer"
-            className="px-3 py-1.5 rounded text-xs bg-primary/20 text-primary hover:bg-primary/30">
-            Grafana →
-          </a>
-          <a href="http://10.0.20.1:9090" target="_blank" rel="noopener noreferrer"
-            className="px-3 py-1.5 rounded text-xs bg-primary/20 text-primary hover:bg-primary/30">
-            Prometheus →
-          </a>
-        </div>
-      </div>
+          {osds.length > 0 && (
+            <div className="border border-border rounded-lg overflow-hidden mb-6">
+              <div className="px-4 py-3 border-b border-border bg-muted/30">
+                <h3 className="font-semibold text-sm">OSD List ({osds.length})</h3>
+              </div>
+              <table className="w-full text-sm">
+                <thead className="bg-muted/20">
+                  <tr>
+                    <th className="text-left px-4 py-2 font-medium">OSD</th>
+                    <th className="text-left px-4 py-2 font-medium">Status</th>
+                    <th className="text-right px-4 py-2 font-medium">Weight</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {osds.map((osd) => (
+                    <tr key={osd.id} className="border-t border-border">
+                      <td className="px-4 py-1.5 font-mono text-xs">{osd.name}</td>
+                      <td className="px-4 py-1.5">
+                        <span className={`px-2 py-0.5 rounded text-xs font-medium ${osd.status === "up" ? "bg-success/20 text-success" : "bg-destructive/20 text-destructive"}`}>
+                          {osd.status ?? "unknown"}
+                        </span>
+                      </td>
+                      <td className="px-4 py-1.5 text-right font-mono text-xs">{osd.crush_weight?.toFixed(3) ?? "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {hosts.length > 0 && (
+            <div className="border border-border rounded-lg bg-card p-4">
+              <h3 className="font-semibold text-sm mb-3">Storage Hosts ({hosts.length})</h3>
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                {hosts.map((h) => (
+                  <div key={h.id} className="border border-border rounded p-3 text-center">
+                    <div className="font-mono text-sm">{h.name}</div>
+                    <div className="text-xs text-muted-foreground">{h.children?.length ?? 0} OSDs</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }
