@@ -49,6 +49,7 @@ function StatCard({ title, value }: { title: string; value: string }) {
 }
 
 function AdminSection() {
+  const { t } = useTranslation();
   const { data: healthData } = useQuery({
     queryKey: ["adminHealth"],
     queryFn: () => http.get<{ status: string }>("/health"),
@@ -66,12 +67,12 @@ function AdminSection() {
 
   return (
     <div className="mt-8">
-      <h2 className="text-lg font-semibold mb-4">Admin Overview</h2>
+      <h2 className="text-lg font-semibold mb-4">{t("adminOverview.title")}</h2>
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <StatCard title="Clusters" value={String(clusters.length)} />
-        <StatCard title="Nodes" value={String(totalNodes)} />
-        <StatCard title="Total VMs" value={String(vmsData?.count ?? 0)} />
-        <StatCard title="API Status" value={healthData?.status === "ok" ? "Healthy" : "—"} />
+        <StatCard title={t("adminOverview.clusters")} value={String(clusters.length)} />
+        <StatCard title={t("adminOverview.nodes")} value={String(totalNodes)} />
+        <StatCard title={t("adminOverview.totalVms")} value={String(vmsData?.count ?? 0)} />
+        <StatCard title={t("adminOverview.apiStatus")} value={healthData?.status === "ok" ? t("adminOverview.healthy") : "—"} />
       </div>
     </div>
   );

@@ -1,8 +1,10 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import { http } from "@/shared/lib/http";
 import { queryClient } from "@/shared/lib/query-client";
+import { useConfirm } from "@/shared/components/ui/confirm-dialog";
 
 export const Route = createFileRoute("/api-tokens")({
   component: APITokensPage,
@@ -99,6 +101,8 @@ function CreateTokenForm({ onCreated }: { onCreated: (token: string) => void }) 
 }
 
 function TokenCard({ token }: { token: APIToken }) {
+  const { t } = useTranslation();
+  const confirm = useConfirm();
   const deleteMutation = useMutation({
     mutationFn: () => http.delete(`/portal/api-tokens/${token.id}`),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["apiTokens"] }),
@@ -114,13 +118,18 @@ function TokenCard({ token }: { token: APIToken }) {
         </div>
       </div>
       <button
-        onClick={() => {
-          if (confirm(`删除 Token "${token.name}"？`)) deleteMutation.mutate();
+        onClick={async () => {
+          const ok = await confirm({
+            title: t("apiToken.deleteTitle"),
+            message: t("apiToken.deleteMessage", { name: token.name }),
+            destructive: true,
+          });
+          if (ok) deleteMutation.mutate();
         }}
         disabled={deleteMutation.isPending}
         className="px-3 py-1.5 text-xs bg-destructive/20 text-destructive rounded hover:bg-destructive/30 disabled:opacity-50"
       >
-        删除
+        {t("common.delete")}
       </button>
     </div>
   );

@@ -18,7 +18,12 @@
     "createVm": "+ VM",
     "nodes": "Nodes",
     "invoices": "Invoices",
-    "settings": "Settings"
+    "settings": "Settings",
+    "ha": "HA",
+    "storage": "Storage",
+    "ipRegistry": "IP Registry",
+    "nodeOps": "Node Ops",
+    "observability": "Observability"
   },
   "common": {
     "loading": "Loading...",
@@ -32,7 +37,20 @@
     "noData": "No data",
     "balance": "Balance",
     "signIn": "Sign in with SSO",
-    "signOut": "Sign out"
+    "signOut": "Sign out",
+    "back": "Back",
+    "clear": "Clear",
+    "output": "Output",
+    "actions": "Actions",
+    "empty": "Empty"
+  },
+  "adminOverview": {
+    "title": "Admin Overview",
+    "clusters": "Clusters",
+    "nodes": "Nodes",
+    "totalVms": "Total VMs",
+    "apiStatus": "API Status",
+    "healthy": "Healthy"
   },
   "vm": {
     "title": "My VMs",
@@ -50,7 +68,34 @@
     "node": "Node",
     "config": "Config",
     "ip": "IP",
-    "actions": "Actions"
+    "actions": "Actions",
+    "notFoundTitle": "VM not found",
+    "notFoundHint": "The VM does not exist or has been deleted.",
+    "backToList": "Back to VM list",
+    "cachedAt": "Cached · {{time}}",
+    "clusterConnectFailed": "Cluster connection failed",
+    "unknownError": "Unknown error",
+    "noneInCluster": "No VMs in this cluster.",
+    "actionSubmitted": "submitted",
+    "actionFailed": "failed",
+    "deleted": "deleted",
+    "deleteFailed": "delete failed",
+    "reinstallHeading": "Reinstall system — {{name}}",
+    "reinstallWarning": "WARNING: reinstall wipes all data and rebuilds the VM; IP and config are preserved.",
+    "reinstallConfirm": "Confirm reinstall",
+    "reinstalling": "Reinstalling...",
+    "reinstallDone": "Reinstall complete! Username: {{username}}  New password: {{password}}",
+    "passwordReset": "Reset Password",
+    "passwordResetting": "Resetting...",
+    "passwordResetToast": "Password reset: {{password}}",
+    "passwordResetFailed": "Password reset failed"
+  },
+  "snapshot": {
+    "restore": "Restore",
+    "restoreTitle": "Restore snapshot",
+    "restoreMessage": "Restore {{vm}} to snapshot \"{{name}}\"? Current state will be lost.",
+    "deleteTitle": "Delete snapshot",
+    "deleteMessage": "Delete snapshot \"{{name}}\"?"
   },
   "billing": {
     "title": "Billing",
@@ -61,7 +106,10 @@
     "pay": "Pay with Balance",
     "amount": "Amount",
     "status": "Status",
-    "expires": "Expires"
+    "expires": "Expires",
+    "cancel": "Cancel",
+    "orderCancelled": "Order cancelled",
+    "cancelFailed": "Cancel failed"
   },
   "ticket": {
     "title": "Tickets",
@@ -75,7 +123,13 @@
   "sshKey": {
     "title": "SSH Keys",
     "add": "Add Key",
-    "noKeys": "No SSH keys. Keys will be injected into new VMs."
+    "noKeys": "No SSH keys. Keys will be injected into new VMs.",
+    "deleteTitle": "Delete SSH key",
+    "deleteMessage": "Delete key \"{{name}}\"?"
+  },
+  "apiToken": {
+    "deleteTitle": "Delete API token",
+    "deleteMessage": "Delete token \"{{name}}\"?"
   },
   "monitoring": {
     "title": "Cluster Monitoring",
@@ -88,5 +142,131 @@
     "avgCpu": "Avg CPU",
     "totalMemory": "Total Memory",
     "totalDisk": "Total Disk"
+  },
+  "settings": {
+    "title": "Settings",
+    "language": "Language",
+    "theme": "Theme",
+    "system": "System",
+    "light": "Light",
+    "dark": "Dark"
+  },
+  "admin": {
+    "ordersTitle": "Orders",
+    "auditLogsTitle": "Audit Logs",
+    "nodeOpsTitle": "Node Operations",
+    "sshConnection": "SSH Connection",
+    "sshTest": "Test SSH",
+    "sshTesting": "Testing...",
+    "hostPlaceholder": "Node IP or hostname (e.g. 10.100.0.10)",
+    "hostInvalid": "Enter a valid IPv4, IPv6, or hostname",
+    "evacuate": "Evacuate",
+    "evacuating": "Evacuating...",
+    "enterMaintenance": "Enter maintenance",
+    "totalRows": "{{count}} total",
+    "prevPage": "Prev",
+    "nextPage": "Next",
+    "auditUser": "User",
+    "auditAction": "Action",
+    "auditTarget": "Target",
+    "auditDetails": "Details",
+    "auditTime": "Time",
+    "auditIp": "IP",
+    "orderUser": "User",
+    "orderProduct": "Product",
+    "orderAmount": "Amount",
+    "orderStatus": "Status",
+    "orderExpires": "Expires",
+    "orderCreatedAt": "Created",
+    "invoices": {
+      "title": "Invoices",
+      "empty": "No invoices yet",
+      "orderId": "Order",
+      "userId": "User",
+      "amount": "Amount",
+      "status": "Status",
+      "dueAt": "Due",
+      "paidAt": "Paid",
+      "createdAt": "Created"
+    }
+  },
+  "cluster": {
+    "addClusterTitle": "Add Cluster / Standalone Host",
+    "addCluster": "+ Add Cluster",
+    "connecting": "Connecting...",
+    "requiredName": "Name is required (lowercase letters, digits, hyphen)",
+    "requiredApiUrl": "API URL is required",
+    "invalidApiUrl": "API URL must be https://host:port",
+    "invalidName": "Name must match ^[a-z][a-z0-9-]{1,31}$",
+    "fieldName": "Name",
+    "fieldDisplayName": "Display Name",
+    "fieldApiUrl": "API URL",
+    "fieldCert": "Client Cert Path",
+    "fieldKey": "Client Key Path",
+    "namePlaceholder": "cn-sz-02",
+    "urlPlaceholder": "https://10.0.20.1:8443"
+  },
+  "confirmDialog": {
+    "defaultTitle": "Please confirm",
+    "confirm": "Confirm",
+    "cancel": "Cancel"
+  },
+  "deleteConfirm": {
+    "vmTitle": "Delete VM",
+    "vmMessage": "Delete {{name}}? This cannot be undone.",
+    "osdOutTitle": "Mark OSD out",
+    "osdOutMessage": "Mark OSD {{id}} as out?",
+    "poolTitle": "Delete Pool",
+    "poolMessage": "Delete pool \"{{name}}\"? This cannot be undone!",
+    "reinstallTitle": "Reinstall VM",
+    "reinstallMessage": "Confirm reinstall of {{name}}? All data will be lost!",
+    "migrateTitle": "Migrate VM",
+    "migrateMessage": "Migrate {{name}} to {{target}}?",
+    "evacuateTitle": "Evacuate Node",
+    "evacuateMessage": "Evacuate {{node}}? Running VMs will move.",
+    "resetPwdTitle": "Reset Password",
+    "resetPwdMessage": "Reset password? The new password will be shown in a notification."
+  },
+  "storage": {
+    "title": "Storage (Ceph)",
+    "notConfigured": "Ceph SSH not configured. Set CEPH_SSH_HOST env variable to enable.",
+    "health": "Health",
+    "osds": "OSDs",
+    "pools": "Pools",
+    "pgs": "PGs",
+    "osdListTitle": "OSD List",
+    "hostsTitle": "Storage Hosts",
+    "capacity": "Total Capacity",
+    "used": "Used",
+    "available": "Available",
+    "dataStored": "Data Stored",
+    "readIops": "Read IOPS",
+    "writeIops": "Write IOPS",
+    "readThroughput": "Read Throughput",
+    "writeThroughput": "Write Throughput",
+    "poolsTitle": "Pools",
+    "createPool": "+ Create Pool",
+    "createPoolSubmit": "Create",
+    "poolName": "Name",
+    "poolPgNum": "PGs",
+    "poolTypeLabel": "Type",
+    "poolCreatedToast": "Pool {{name}} created",
+    "poolCreateFailed": "Pool create failed",
+    "poolDeletedToast": "Pool deleted",
+    "poolDeleteFailed": "Pool delete failed",
+    "osdOutToast": "OSD {{id}} marked out",
+    "osdInToast": "OSD {{id}} marked in",
+    "osdOutFailed": "OSD {{id}} out failed",
+    "osdInFailed": "OSD {{id}} in failed",
+    "weight": "Weight",
+    "warnOver90": "Storage usage above 90% — scale or clean up immediately!",
+    "warnOver80": "Storage usage above 80% — watch capacity",
+    "currentUsage": "Current usage",
+    "osdCount": "{{count}} OSDs",
+    "status": "Status",
+    "poolType": {
+      "replicated": "replicated",
+      "erasure": "erasure"
+    }
   }
 }

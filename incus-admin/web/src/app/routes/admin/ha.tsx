@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { http } from "@/shared/lib/http";
 import { useClustersQuery } from "@/features/clusters/api";
 import { queryClient } from "@/shared/lib/query-client";
+import { useConfirm } from "@/shared/components/ui/confirm-dialog";
 
 export const Route = createFileRoute("/admin/ha")({
   component: HAPage,
@@ -98,6 +99,8 @@ function HAPage() {
 }
 
 function NodeRow({ node, clusterName }: { node: HAStatus["nodes"][0]; clusterName: string }) {
+  const { t } = useTranslation();
+  const confirm = useConfirm();
   const evacuateMutation = useMutation({
     mutationFn: () => http.post(`/admin/clusters/${clusterName}/nodes/${node.server_name}/evacuate`),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["haStatus"] }),
@@ -117,14 +120,18 @@ function NodeRow({ node, clusterName }: { node: HAStatus["nodes"][0]; clusterNam
       <td className="px-4 py-2 text-right">
         {isOnline && (
           <button
-            onClick={() => {
-              if (confirm(`Evacuate all VMs from ${node.server_name}? This will live-migrate all instances.`))
-                evacuateMutation.mutate();
+            onClick={async () => {
+              const ok = await confirm({
+                title: t("deleteConfirm.evacuateTitle"),
+                message: t("deleteConfirm.evacuateMessage", { node: node.server_name }),
+                destructive: true,
+              });
+              if (ok) evacuateMutation.mutate();
             }}
             disabled={evacuateMutation.isPending}
             className="px-3 py-1 text-xs bg-destructive/20 text-destructive rounded hover:bg-destructive/30 disabled:opacity-50"
           >
-            {evacuateMutation.isPending ? "Evacuating..." : "Evacuate"}
+            {evacuateMutation.isPending ? t("admin.evacuating") : t("admin.evacuate")}
           </button>
         )}
       </td>

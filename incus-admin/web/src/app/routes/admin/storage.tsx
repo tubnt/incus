@@ -2,9 +2,11 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { toast } from "sonner";
+import { useTranslation } from "react-i18next";
 import { http } from "@/shared/lib/http";
 import { queryClient } from "@/shared/lib/query-client";
 import { fmtBytes } from "@/shared/lib/utils";
+import { useConfirm } from "@/shared/components/ui/confirm-dialog";
 
 export const Route = createFileRoute("/admin/storage")({
   component: StoragePage,
@@ -40,7 +42,17 @@ interface OSDTree {
   error?: string;
 }
 
+// Ceph pool type values can arrive as number or string.
+// Reference: Ceph OSD pool types — 1 = replicated, 3 = erasure-coded.
+function poolTypeLabel(raw: unknown, t: (k: string) => string): string {
+  const s = String(raw ?? "").toLowerCase();
+  if (s === "1" || s === "replicated") return t("storage.poolType.replicated");
+  if (s === "3" || s === "erasure" || s === "erasurecoded" || s === "ec") return t("storage.poolType.erasure");
+  return s || "—";
+}
+
 function StoragePage() {
+  const { t } = useTranslation();
   const { data: cephStatus } = useQuery({
     queryKey: ["cephStatus"],
     queryFn: () => http.get<CephStatus>("/admin/ceph/status"),
@@ -62,28 +74,28 @@ function StoragePage() {
 
   return (
     <div>
-      <h1 className="text-2xl font-bold mb-6">Storage (Ceph)</h1>
+      <h1 className="text-2xl font-bold mb-6">{t("storage.title")}</h1>
 
       {!hasCeph ? (
         <div className="border border-border rounded-lg p-6 text-center text-muted-foreground">
-          Ceph SSH not configured. Set CEPH_SSH_HOST env variable to enable.
+          {t("storage.notConfigured")}
         </div>
       ) : (
         <>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-            <StatCard label="Health" value={health}
+            <StatCard label={t("storage.health")} value={health}
               color={health === "HEALTH_OK" ? "text-success" : health === "HEALTH_WARN" ? "text-yellow-500" : "text-destructive"} />
-            <StatCard label="OSDs" value={osdmap ? `${osdmap.num_up_osds}/${osdmap.num_osds} up` : "—"} />
-            <StatCard label="Pools" value={String(pgmap?.num_pools ?? "—")} />
-            <StatCard label="PGs" value={String(pgmap?.num_pgs ?? "—")} />
+            <StatCard label={t("storage.osds")} value={osdmap ? `${osdmap.num_up_osds}/${osdmap.num_osds} up` : "—"} />
+            <StatCard label={t("storage.pools")} value={String(pgmap?.num_pools ?? "—")} />
+            <StatCard label={t("storage.pgs")} value={String(pgmap?.num_pgs ?? "—")} />
           </div>
 
           {pgmap && (
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-              <StatCard label="Total Capacity" value={fmtBytes(pgmap.bytes_total)} />
-              <StatCard label="Used" value={`${fmtBytes(pgmap.bytes_used)} (${((pgmap.bytes_used / pgmap.bytes_total) * 100).toFixed(1)}%)`} />
-              <StatCard label="Available" value={fmtBytes(pgmap.bytes_avail)} />
-              <StatCard label="Data Stored" value={fmtBytes(pgmap.data_bytes)} />
+              <StatCard label={t("storage.capacity")} value={fmtBytes(pgmap.bytes_total)} />
+              <StatCard label={t("storage.used")} value={`${fmtBytes(pgmap.bytes_used)} (${((pgmap.bytes_used / pgmap.bytes_total) * 100).toFixed(1)}%)`} />
+              <StatCard label={t("storage.available")} value={fmtBytes(pgmap.bytes_avail)} />
+              <StatCard label={t("storage.dataStored")} value={fmtBytes(pgmap.data_bytes)} />
             </div>
           )}
 
@@ -91,36 +103,36 @@ function StoragePage() {
             <div className={`border rounded-lg p-4 mb-6 ${(pgmap.bytes_used / pgmap.bytes_total) > 0.9 ? "border-destructive/50 bg-destructive/10" : "border-warning/50 bg-warning/10"}`}>
               <div className={`font-semibold text-sm ${(pgmap.bytes_used / pgmap.bytes_total) > 0.9 ? "text-destructive" : "text-warning"}`}>
                 {(pgmap.bytes_used / pgmap.bytes_total) > 0.9
-                  ? "⚠ 存储使用率超过 90%，请立即扩容或清理！"
-                  : "⚠ 存储使用率超过 80%，建议关注容量"}
+                  ? `⚠ ${t("storage.warnOver90")}`
+                  : `⚠ ${t("storage.warnOver80")}`}
               </div>
               <div className="text-xs text-muted-foreground mt-1">
-                当前使用率: {((pgmap.bytes_used / pgmap.bytes_total) * 100).toFixed(1)}% — {fmtBytes(pgmap.bytes_used)} / {fmtBytes(pgmap.bytes_total)}
+                {t("storage.currentUsage")}: {((pgmap.bytes_used / pgmap.bytes_total) * 100).toFixed(1)}% — {fmtBytes(pgmap.bytes_used)} / {fmtBytes(pgmap.bytes_total)}
               </div>
             </div>
           )}
 
           {pgmap && (
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-              <StatCard label="Read IOPS" value={`${pgmap.read_op_per_sec ?? 0}/s`} />
-              <StatCard label="Write IOPS" value={`${pgmap.write_op_per_sec ?? 0}/s`} />
-              <StatCard label="Read Throughput" value={`${fmtBytes(pgmap.read_bytes_sec ?? 0)}/s`} />
-              <StatCard label="Write Throughput" value={`${fmtBytes(pgmap.write_bytes_sec ?? 0)}/s`} />
+              <StatCard label={t("storage.readIops")} value={`${pgmap.read_op_per_sec ?? 0}/s`} />
+              <StatCard label={t("storage.writeIops")} value={`${pgmap.write_op_per_sec ?? 0}/s`} />
+              <StatCard label={t("storage.readThroughput")} value={`${fmtBytes(pgmap.read_bytes_sec ?? 0)}/s`} />
+              <StatCard label={t("storage.writeThroughput")} value={`${fmtBytes(pgmap.write_bytes_sec ?? 0)}/s`} />
             </div>
           )}
 
           {osds.length > 0 && (
             <div className="border border-border rounded-lg overflow-hidden mb-6">
               <div className="px-4 py-3 border-b border-border bg-muted/30">
-                <h3 className="font-semibold text-sm">OSD List ({osds.length})</h3>
+                <h3 className="font-semibold text-sm">{t("storage.osdListTitle")} ({osds.length})</h3>
               </div>
               <table className="w-full text-sm">
                 <thead className="bg-muted/20">
                   <tr>
                     <th className="text-left px-4 py-2 font-medium">OSD</th>
-                    <th className="text-left px-4 py-2 font-medium">Status</th>
-                    <th className="text-right px-4 py-2 font-medium">Weight</th>
-                    <th className="text-right px-4 py-2 font-medium">操作</th>
+                    <th className="text-left px-4 py-2 font-medium">{t("storage.status")}</th>
+                    <th className="text-right px-4 py-2 font-medium">{t("storage.weight")}</th>
+                    <th className="text-right px-4 py-2 font-medium">{t("common.actions")}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -136,12 +148,12 @@ function StoragePage() {
 
           {hosts.length > 0 && (
             <div className="border border-border rounded-lg bg-card p-4">
-              <h3 className="font-semibold text-sm mb-3">Storage Hosts ({hosts.length})</h3>
+              <h3 className="font-semibold text-sm mb-3">{t("storage.hostsTitle")} ({hosts.length})</h3>
               <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
                 {hosts.map((h) => (
                   <div key={h.id} className="border border-border rounded p-3 text-center">
                     <div className="font-mono text-sm">{h.name}</div>
-                    <div className="text-xs text-muted-foreground">{h.children?.length ?? 0} OSDs</div>
+                    <div className="text-xs text-muted-foreground">{t("storage.osdCount", { count: h.children?.length ?? 0 })}</div>
                   </div>
                 ))}
               </div>
@@ -156,13 +168,15 @@ function StoragePage() {
 interface CephPool {
   pool_name: string;
   pool_id: number;
-  type: string;
+  type: string | number;
   size: number;
   pg_num: number;
   application_metadata?: Record<string, Record<string, unknown>>;
 }
 
 function PoolSection() {
+  const { t } = useTranslation();
+  const confirm = useConfirm();
   const [showCreate, setShowCreate] = useState(false);
   const [newPool, setNewPool] = useState({ name: "", pg_num: 128, type: "replicated" });
 
@@ -176,20 +190,20 @@ function PoolSection() {
     mutationFn: () => http.post("/admin/ceph/pools", newPool),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["cephPools"] });
-      toast.success(`Pool ${newPool.name} 已创建`);
+      toast.success(t("storage.poolCreatedToast", { name: newPool.name }));
       setShowCreate(false);
       setNewPool({ name: "", pg_num: 128, type: "replicated" });
     },
-    onError: () => toast.error("Pool 创建失败"),
+    onError: () => toast.error(t("storage.poolCreateFailed")),
   });
 
   const deleteMutation = useMutation({
     mutationFn: (name: string) => http.delete(`/admin/ceph/pools/${name}`),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["cephPools"] });
-      toast.success("Pool 已删除");
+      toast.success(t("storage.poolDeletedToast"));
     },
-    onError: () => toast.error("Pool 删除失败"),
+    onError: () => toast.error(t("storage.poolDeleteFailed")),
   });
 
   const poolList = Array.isArray(pools) ? pools : [];
@@ -197,12 +211,12 @@ function PoolSection() {
   return (
     <div className="border border-border rounded-lg overflow-hidden mb-6">
       <div className="px-4 py-3 border-b border-border bg-muted/30 flex items-center justify-between">
-        <h3 className="font-semibold text-sm">Pools ({poolList.length})</h3>
+        <h3 className="font-semibold text-sm">{t("storage.poolsTitle")} ({poolList.length})</h3>
         <button
           onClick={() => setShowCreate(!showCreate)}
           className="px-2 py-1 text-xs bg-primary/20 text-primary rounded hover:bg-primary/30"
         >
-          {showCreate ? "取消" : "+ 创建 Pool"}
+          {showCreate ? t("common.cancel") : t("storage.createPool")}
         </button>
       </div>
 
@@ -210,7 +224,7 @@ function PoolSection() {
         <div className="px-4 py-3 border-b border-border bg-card/50">
           <div className="flex gap-2 items-end">
             <div>
-              <div className="text-xs text-muted-foreground mb-0.5">名称</div>
+              <div className="text-xs text-muted-foreground mb-0.5">{t("storage.poolName")}</div>
               <input
                 value={newPool.name}
                 onChange={(e) => setNewPool({ ...newPool, name: e.target.value })}
@@ -219,7 +233,7 @@ function PoolSection() {
               />
             </div>
             <div>
-              <div className="text-xs text-muted-foreground mb-0.5">PG 数</div>
+              <div className="text-xs text-muted-foreground mb-0.5">{t("storage.poolPgNum")}</div>
               <input
                 type="number"
                 value={newPool.pg_num}
@@ -228,7 +242,7 @@ function PoolSection() {
               />
             </div>
             <div>
-              <div className="text-xs text-muted-foreground mb-0.5">类型</div>
+              <div className="text-xs text-muted-foreground mb-0.5">{t("storage.poolTypeLabel")}</div>
               <select
                 value={newPool.type}
                 onChange={(e) => setNewPool({ ...newPool, type: e.target.value })}
@@ -243,7 +257,7 @@ function PoolSection() {
               disabled={createMutation.isPending || !newPool.name}
               className="px-3 py-1 text-xs bg-primary text-primary-foreground rounded disabled:opacity-50"
             >
-              {createMutation.isPending ? "..." : "创建"}
+              {createMutation.isPending ? "..." : t("storage.createPoolSubmit")}
             </button>
           </div>
         </div>
@@ -254,18 +268,18 @@ function PoolSection() {
           <thead className="bg-muted/20">
             <tr>
               <th className="text-left px-4 py-2 font-medium">Pool</th>
-              <th className="text-left px-4 py-2 font-medium">Type</th>
+              <th className="text-left px-4 py-2 font-medium">{t("storage.poolTypeLabel")}</th>
               <th className="text-right px-4 py-2 font-medium">Size</th>
               <th className="text-right px-4 py-2 font-medium">PGs</th>
               <th className="text-left px-4 py-2 font-medium">Apps</th>
-              <th className="text-right px-4 py-2 font-medium">操作</th>
+              <th className="text-right px-4 py-2 font-medium">{t("common.actions")}</th>
             </tr>
           </thead>
           <tbody>
             {poolList.map((p) => (
               <tr key={p.pool_id} className="border-t border-border">
                 <td className="px-4 py-1.5 font-mono text-xs">{p.pool_name}</td>
-                <td className="px-4 py-1.5 text-xs text-muted-foreground">{p.type === "1" || p.type === "replicated" ? "replicated" : p.type}</td>
+                <td className="px-4 py-1.5 text-xs text-muted-foreground">{poolTypeLabel(p.type, t)}</td>
                 <td className="px-4 py-1.5 text-right text-xs">{p.size}</td>
                 <td className="px-4 py-1.5 text-right text-xs font-mono">{p.pg_num}</td>
                 <td className="px-4 py-1.5 text-xs text-muted-foreground">
@@ -273,15 +287,18 @@ function PoolSection() {
                 </td>
                 <td className="px-4 py-1.5 text-right">
                   <button
-                    onClick={() => {
-                      if (window.confirm(`确认删除 Pool "${p.pool_name}"？此操作不可逆！`)) {
-                        deleteMutation.mutate(p.pool_name);
-                      }
+                    onClick={async () => {
+                      const ok = await confirm({
+                        title: t("deleteConfirm.poolTitle"),
+                        message: t("deleteConfirm.poolMessage", { name: p.pool_name }),
+                        destructive: true,
+                      });
+                      if (ok) deleteMutation.mutate(p.pool_name);
                     }}
                     disabled={deleteMutation.isPending}
                     className="px-2 py-0.5 text-xs border border-destructive/30 text-destructive rounded hover:bg-destructive/10 disabled:opacity-50"
                   >
-                    删除
+                    {t("common.delete")}
                   </button>
                 </td>
               </tr>
@@ -294,6 +311,8 @@ function PoolSection() {
 }
 
 function OSDRow({ osd }: { osd: { id: number; name: string; status?: string; crush_weight?: number } }) {
+  const { t } = useTranslation();
+  const confirm = useConfirm();
   const osdNum = String(osd.id);
 
   const outMutation = useMutation({
@@ -301,9 +320,9 @@ function OSDRow({ osd }: { osd: { id: number; name: string; status?: string; cru
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["cephOsdTree"] });
       queryClient.invalidateQueries({ queryKey: ["cephStatus"] });
-      toast.success(`OSD ${osdNum} 已标记为 out`);
+      toast.success(t("storage.osdOutToast", { id: osdNum }));
     },
-    onError: () => toast.error(`OSD ${osdNum} out 操作失败`),
+    onError: () => toast.error(t("storage.osdOutFailed", { id: osdNum })),
   });
 
   const inMutation = useMutation({
@@ -311,9 +330,9 @@ function OSDRow({ osd }: { osd: { id: number; name: string; status?: string; cru
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["cephOsdTree"] });
       queryClient.invalidateQueries({ queryKey: ["cephStatus"] });
-      toast.success(`OSD ${osdNum} 已标记为 in`);
+      toast.success(t("storage.osdInToast", { id: osdNum }));
     },
-    onError: () => toast.error(`OSD ${osdNum} in 操作失败`),
+    onError: () => toast.error(t("storage.osdInFailed", { id: osdNum })),
   });
 
   const isPending = outMutation.isPending || inMutation.isPending;
@@ -330,10 +349,13 @@ function OSDRow({ osd }: { osd: { id: number; name: string; status?: string; cru
       <td className="px-4 py-1.5 text-right">
         <div className="flex justify-end gap-1">
           <button
-            onClick={() => {
-              if (window.confirm(`确认将 OSD ${osdNum} 标记为 out？`)) {
-                outMutation.mutate();
-              }
+            onClick={async () => {
+              const ok = await confirm({
+                title: t("deleteConfirm.osdOutTitle"),
+                message: t("deleteConfirm.osdOutMessage", { id: osdNum }),
+                destructive: true,
+              });
+              if (ok) outMutation.mutate();
             }}
             disabled={isPending}
             className="px-2 py-0.5 text-xs border border-warning/30 text-warning rounded hover:bg-warning/10 disabled:opacity-50"

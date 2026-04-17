@@ -1,5 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
+import { useTranslation } from "react-i18next";
 import { http } from "@/shared/lib/http";
 
 export const Route = createFileRoute("/admin/orders")({
@@ -18,6 +19,7 @@ interface Order {
 }
 
 function AdminOrdersPage() {
+  const { t } = useTranslation();
   const { data, isLoading } = useQuery({
     queryKey: ["adminOrders"],
     queryFn: () => http.get<{ orders: Order[] }>("/admin/orders"),
@@ -28,13 +30,13 @@ function AdminOrdersPage() {
 
   return (
     <div>
-      <h1 className="text-2xl font-bold mb-6">订单管理</h1>
+      <h1 className="text-2xl font-bold mb-6">{t("admin.ordersTitle")}</h1>
 
       {isLoading ? (
-        <div className="text-muted-foreground">加载中...</div>
+        <div className="text-muted-foreground">{t("common.loading")}</div>
       ) : orders.length === 0 ? (
         <div className="border border-border rounded-lg p-6 text-center text-muted-foreground">
-          暂无订单。
+          {t("common.noData")}
         </div>
       ) : (
         <div className="border border-border rounded-lg overflow-hidden">
@@ -42,12 +44,12 @@ function AdminOrdersPage() {
             <thead className="bg-muted/30">
               <tr>
                 <th className="text-left px-4 py-2 font-medium">#</th>
-                <th className="text-left px-4 py-2 font-medium">用户</th>
-                <th className="text-left px-4 py-2 font-medium">产品</th>
-                <th className="text-right px-4 py-2 font-medium">金额</th>
-                <th className="text-left px-4 py-2 font-medium">状态</th>
-                <th className="text-left px-4 py-2 font-medium">到期</th>
-                <th className="text-left px-4 py-2 font-medium">创建时间</th>
+                <th className="text-left px-4 py-2 font-medium">{t("admin.orderUser")}</th>
+                <th className="text-left px-4 py-2 font-medium">{t("admin.orderProduct")}</th>
+                <th className="text-right px-4 py-2 font-medium">{t("admin.orderAmount")}</th>
+                <th className="text-left px-4 py-2 font-medium">{t("admin.orderStatus")}</th>
+                <th className="text-left px-4 py-2 font-medium">{t("admin.orderExpires")}</th>
+                <th className="text-left px-4 py-2 font-medium">{t("admin.orderCreatedAt")}</th>
               </tr>
             </thead>
             <tbody>
@@ -56,7 +58,7 @@ function AdminOrdersPage() {
                   <td className="px-4 py-2">{o.id}</td>
                   <td className="px-4 py-2 text-xs">#{o.user_id}</td>
                   <td className="px-4 py-2 text-xs">#{o.product_id}</td>
-                  <td className="px-4 py-2 text-right font-mono">¥{o.amount.toFixed(2)}</td>
+                  <td className="px-4 py-2 text-right font-mono">${o.amount.toFixed(2)}</td>
                   <td className="px-4 py-2">
                     <OrderStatusBadge status={o.status} />
                   </td>

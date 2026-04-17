@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import { http } from "@/shared/lib/http";
 
 export const Route = createFileRoute("/admin/audit-logs")({
@@ -18,7 +19,21 @@ interface AuditLog {
   created_at: string;
 }
 
+// Falls back to details["name"] when target_id is 0 (e.g. admin ops where we didn't persist the id).
+function targetLabel(log: AuditLog): string {
+  if (log.target_id && log.target_id > 0) return `${log.target_type} #${log.target_id}`;
+  try {
+    const d = JSON.parse(log.details || "{}");
+    const name = d?.name || d?.target || d?.vm || d?.vm_name;
+    if (typeof name === "string" && name) return `${log.target_type} ${name}`;
+  } catch {
+    // details is not JSON — fall through
+  }
+  return log.target_type || "—";
+}
+
 function AuditLogsPage() {
+  const { t } = useTranslation();
   const [offset, setOffset] = useState(0);
   const limit = 50;
 
@@ -38,15 +53,15 @@ function AuditLogsPage() {
   return (
     <div>
       <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-bold">审计日志</h1>
-        <span className="text-xs text-muted-foreground">共 {total} 条</span>
+        <h1 className="text-2xl font-bold">{t("admin.auditLogsTitle")}</h1>
+        <span className="text-xs text-muted-foreground">{t("admin.totalRows", { count: total })}</span>
       </div>
 
       {isLoading ? (
-        <div className="text-muted-foreground">加载中...</div>
+        <div className="text-muted-foreground">{t("common.loading")}</div>
       ) : logs.length === 0 ? (
         <div className="border border-border rounded-lg p-6 text-center text-muted-foreground">
-          暂无审计日志。
+          {t("common.noData")}
         </div>
       ) : (
         <>
@@ -54,12 +69,12 @@ function AuditLogsPage() {
             <table className="w-full text-sm">
               <thead className="bg-muted/30">
                 <tr>
-                  <th className="text-left px-4 py-2 font-medium">时间</th>
-                  <th className="text-left px-4 py-2 font-medium">用户</th>
-                  <th className="text-left px-4 py-2 font-medium">操作</th>
-                  <th className="text-left px-4 py-2 font-medium">目标</th>
-                  <th className="text-left px-4 py-2 font-medium">IP</th>
-                  <th className="text-left px-4 py-2 font-medium">详情</th>
+                  <th className="text-left px-4 py-2 font-medium">{t("admin.auditTime")}</th>
+                  <th className="text-left px-4 py-2 font-medium">{t("admin.auditUser")}</th>
+                  <th className="text-left px-4 py-2 font-medium">{t("admin.auditAction")}</th>
+                  <th className="text-left px-4 py-2 font-medium">{t("admin.auditTarget")}</th>
+                  <th className="text-left px-4 py-2 font-medium">{t("admin.auditIp")}</th>
+                  <th className="text-left px-4 py-2 font-medium">{t("admin.auditDetails")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -75,7 +90,7 @@ function AuditLogsPage() {
                       </span>
                     </td>
                     <td className="px-4 py-2 text-xs">
-                      {log.target_type} #{log.target_id}
+                      {targetLabel(log)}
                     </td>
                     <td className="px-4 py-2 text-xs font-mono">{log.ip_address || "—"}</td>
                     <td className="px-4 py-2 text-xs text-muted-foreground max-w-xs truncate">
@@ -94,7 +109,7 @@ function AuditLogsPage() {
                 disabled={offset === 0}
                 className="px-3 py-1.5 text-xs bg-muted/50 rounded disabled:opacity-30"
               >
-                上一页
+                {t("admin.prevPage")}
               </button>
               <span className="px-3 py-1.5 text-xs text-muted-foreground">
                 {offset + 1}-{Math.min(offset + limit, total)} / {total}
@@ -104,7 +119,7 @@ function AuditLogsPage() {
                 disabled={offset + limit >= total}
                 className="px-3 py-1.5 text-xs bg-muted/50 rounded disabled:opacity-30"
               >
-                下一页
+                {t("admin.nextPage")}
               </button>
             </div>
           )}

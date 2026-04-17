@@ -2,10 +2,12 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { toast } from "sonner";
+import { useTranslation } from "react-i18next";
 import { http } from "@/shared/lib/http";
 import { queryClient } from "@/shared/lib/query-client";
 import { SnapshotPanel } from "@/features/snapshots/snapshot-panel";
 import { VMMetricsPanel } from "@/features/monitoring/vm-metrics-panel";
+import { useConfirm } from "@/shared/components/ui/confirm-dialog";
 
 export const Route = createFileRoute("/admin/vms")({
   component: AllVMsPage,
@@ -18,6 +20,7 @@ interface IncusInstance {
   location: string;
   project: string;
   config: Record<string, string>;
+  ip?: string;
   state?: {
     network?: Record<string, {
       addresses: Array<{ address: string; family: string; scope: string }>;
@@ -26,6 +29,7 @@ interface IncusInstance {
 }
 
 function AllVMsPage() {
+  const { t } = useTranslation();
   const { data: clustersData } = useQuery({
     queryKey: ["adminClusters"],
     queryFn: () => http.get<{ clusters: Array<{ name: string; display_name: string }> }>("/admin/clusters"),
@@ -36,9 +40,9 @@ function AllVMsPage() {
   return (
     <div>
       <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-bold">All VMs</h1>
+        <h1 className="text-2xl font-bold">{t("nav.allVms")}</h1>
         <Link to="/admin/create-vm" className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm font-medium hover:opacity-90">
-          + Create VM
+          {t("nav.createVm")}
         </Link>
       </div>
       {clusters.map((c) => (
@@ -58,6 +62,7 @@ interface ClusterVMsResponse {
 }
 
 function ClusterVMs({ clusterName, displayName }: { clusterName: string; displayName: string }) {
+  const { t } = useTranslation();
   const { data, isLoading, isError, error } = useQuery({
     queryKey: ["adminClusterVMs", clusterName],
     queryFn: () => http.get<ClusterVMsResponse>(`/admin/clusters/${clusterName}/vms`),
@@ -74,7 +79,7 @@ function ClusterVMs({ clusterName, displayName }: { clusterName: string; display
         <h2 className="text-lg font-semibold">{displayName} ({data?.count ?? 0} VMs)</h2>
         {isStale && (
           <span className="px-2 py-0.5 rounded text-xs bg-warning/20 text-warning">
-            缓存数据 · {data?.cached_at ? new Date(data.cached_at).toLocaleTimeString() : ""}
+            {t("vm.cachedAt", { time: data?.cached_at ? new Date(data.cached_at).toLocaleTimeString() : "" })}
           </span>
         )}
         {(data?.error || data?.warning) && !isStale && (
@@ -85,7 +90,7 @@ function ClusterVMs({ clusterName, displayName }: { clusterName: string; display
       </div>
       {isError && (
         <div className="border border-destructive/30 rounded-lg p-4 mb-3 text-sm text-destructive">
-          集群连接失败: {(error as Error)?.message ?? "未知错误"}
+          {t("vm.clusterConnectFailed")}: {(error as Error)?.message ?? t("vm.unknownError")}
         </div>
       )}
       {isLoading ? (
@@ -96,19 +101,19 @@ function ClusterVMs({ clusterName, displayName }: { clusterName: string; display
         </div>
       ) : vms.length === 0 ? (
         <div className="border border-border rounded-lg p-6 text-center text-muted-foreground">
-          No VMs in this cluster.
+          {t("vm.noneInCluster")}
         </div>
       ) : (
         <div className="border border-border rounded-lg overflow-hidden">
           <table className="w-full text-sm">
             <thead className="bg-muted/30">
               <tr>
-                <th className="text-left px-4 py-2 font-medium">Name</th>
-                <th className="text-left px-4 py-2 font-medium">Status</th>
-                <th className="text-left px-4 py-2 font-medium">Node</th>
-                <th className="text-left px-4 py-2 font-medium">Config</th>
-                <th className="text-left px-4 py-2 font-medium">IP</th>
-                <th className="text-right px-4 py-2 font-medium">Actions</th>
+                <th className="text-left px-4 py-2 font-medium">{t("vm.name")}</th>
+                <th className="text-left px-4 py-2 font-medium">{t("vm.status")}</th>
+                <th className="text-left px-4 py-2 font-medium">{t("vm.node")}</th>
+                <th className="text-left px-4 py-2 font-medium">{t("vm.config")}</th>
+                <th className="text-left px-4 py-2 font-medium">{t("vm.ip")}</th>
+                <th className="text-right px-4 py-2 font-medium">{t("common.actions")}</th>
               </tr>
             </thead>
             <tbody>
@@ -131,21 +136,23 @@ const OS_IMAGES = [
 ];
 
 function VMRow({ vm, clusterName }: { vm: IncusInstance; clusterName: string }) {
+  const { t } = useTranslation();
+  const confirm = useConfirm();
   const [showSnaps, setShowSnaps] = useState(false);
   const [showMetrics, setShowMetrics] = useState(false);
   const [showReinstall, setShowReinstall] = useState(false);
   const ip = extractIP(vm);
-  const project = vm.project || "default";
+  const project = vm.project || "customers";
 
   const stateMutation = useMutation({
     mutationFn: (action: string) =>
       http.put(`/admin/vms/${vm.name}/state`, { action, cluster: clusterName, project }),
     onSuccess: (_data, action) => {
       queryClient.invalidateQueries({ queryKey: ["adminClusterVMs"] });
-      toast.success(`${vm.name}: ${action} 操作已提交`);
+      toast.success(`${vm.name}: ${action} ${t("vm.actionSubmitted")}`);
     },
     onError: (_err, action) => {
-      toast.error(`${vm.name}: ${action} 操作失败`);
+      toast.error(`${vm.name}: ${action} ${t("vm.actionFailed")}`);
     },
   });
 
@@ -154,10 +161,10 @@ function VMRow({ vm, clusterName }: { vm: IncusInstance; clusterName: string }) 
       http.delete(`/admin/vms/${vm.name}`, { cluster: clusterName, project }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["adminClusterVMs"] });
-      toast.success(`${vm.name} 已删除`);
+      toast.success(`${vm.name} ${t("vm.deleted")}`);
     },
     onError: () => {
-      toast.error(`${vm.name} 删除失败`);
+      toast.error(`${vm.name} ${t("vm.deleteFailed")}`);
     },
   });
 
@@ -181,7 +188,7 @@ function VMRow({ vm, clusterName }: { vm: IncusInstance; clusterName: string }) 
       <td className="px-4 py-2 text-right">
         <div className="flex gap-1 justify-end">
           {vm.status === "Stopped" && (
-            <ActionBtn label="Start" color="success" disabled={isActing}
+            <ActionBtn label={t("vm.start")} color="success" disabled={isActing}
               onClick={() => stateMutation.mutate("start")} />
           )}
           {vm.status === "Running" && (
@@ -190,27 +197,30 @@ function VMRow({ vm, clusterName }: { vm: IncusInstance; clusterName: string }) 
                 href={`/console?vm=${vm.name}&cluster=${clusterName}&project=${project}`}
                 className="px-2 py-1 rounded text-xs font-medium bg-primary/20 text-primary hover:bg-primary/30"
               >
-                Console
+                {t("vm.console")}
               </a>
-              <ActionBtn label="Stop" color="muted" disabled={isActing}
+              <ActionBtn label={t("vm.stop")} color="muted" disabled={isActing}
                 onClick={() => stateMutation.mutate("stop")} />
-              <ActionBtn label="Restart" color="muted" disabled={isActing}
+              <ActionBtn label={t("vm.restart")} color="muted" disabled={isActing}
                 onClick={() => stateMutation.mutate("restart")} />
             </>
           )}
           {vm.status === "Running" && (
-            <ActionBtn label="Monitor" color="muted" disabled={false}
+            <ActionBtn label={t("vm.monitor")} color="muted" disabled={false}
               onClick={() => setShowMetrics(!showMetrics)} />
           )}
-          <ActionBtn label="Snaps" color="muted" disabled={false}
+          <ActionBtn label={t("vm.snapshots")} color="muted" disabled={false}
             onClick={() => setShowSnaps(!showSnaps)} />
-          <ActionBtn label="Reinstall" color="muted" disabled={isActing}
+          <ActionBtn label={t("vm.reinstall")} color="muted" disabled={isActing}
             onClick={() => setShowReinstall(!showReinstall)} />
-          <ActionBtn label="Delete" color="destructive" disabled={isActing}
-            onClick={() => {
-              if (confirm(`Delete ${vm.name}? This cannot be undone.`)) {
-                deleteMutation.mutate();
-              }
+          <ActionBtn label={t("vm.delete")} color="destructive" disabled={isActing}
+            onClick={async () => {
+              const ok = await confirm({
+                title: t("deleteConfirm.vmTitle"),
+                message: t("deleteConfirm.vmMessage", { name: vm.name }),
+                destructive: true,
+              });
+              if (ok) deleteMutation.mutate();
             }} />
         </div>
       </td>
@@ -244,6 +254,8 @@ function VMRow({ vm, clusterName }: { vm: IncusInstance; clusterName: string }) 
 function ReinstallPanel({ vmName, cluster, project, onDone }: {
   vmName: string; cluster: string; project: string; onDone: () => void;
 }) {
+  const { t } = useTranslation();
+  const confirm = useConfirm();
   const [os, setOs] = useState(OS_IMAGES[0]!.value);
 
   const mutation = useMutation({
@@ -254,16 +266,17 @@ function ReinstallPanel({ vmName, cluster, project, onDone }: {
       ),
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["adminClusterVMs"] });
-      alert(`重装完成！\n用户名: ${data.username}\n新密码: ${data.password}`);
+      toast.success(t("vm.reinstallDone", { username: data.username, password: data.password }), { duration: 20_000 });
       onDone();
     },
+    onError: (err) => toast.error((err as Error).message),
   });
 
   return (
     <div className="p-4 bg-card/50 border-t border-border">
-      <h4 className="font-medium text-sm mb-3">重装系统 — {vmName}</h4>
+      <h4 className="font-medium text-sm mb-3">{t("vm.reinstallHeading", { name: vmName })}</h4>
       <p className="text-xs text-destructive mb-3">
-        警告: 重装将删除所有数据并重建 VM，IP 和配置保持不变。
+        {t("vm.reinstallWarning")}
       </p>
       <div className="flex items-center gap-3">
         <select
@@ -276,25 +289,25 @@ function ReinstallPanel({ vmName, cluster, project, onDone }: {
           ))}
         </select>
         <button
-          onClick={() => {
-            if (confirm(`确认重装 ${vmName}？所有数据将丢失！`)) {
-              mutation.mutate();
-            }
+          onClick={async () => {
+            const ok = await confirm({
+              title: t("deleteConfirm.reinstallTitle"),
+              message: t("deleteConfirm.reinstallMessage", { name: vmName }),
+              destructive: true,
+            });
+            if (ok) mutation.mutate();
           }}
           disabled={mutation.isPending}
           className="px-3 py-1 text-xs bg-destructive text-destructive-foreground rounded disabled:opacity-50"
         >
-          {mutation.isPending ? "重装中..." : "确认重装"}
+          {mutation.isPending ? t("vm.reinstalling") : t("vm.reinstallConfirm")}
         </button>
         <button
           onClick={onDone}
           className="px-3 py-1 text-xs bg-muted/50 text-muted-foreground rounded"
         >
-          取消
+          {t("common.cancel")}
         </button>
-        {mutation.isError && (
-          <span className="text-xs text-destructive">{(mutation.error as Error).message}</span>
-        )}
       </div>
     </div>
   );
@@ -320,6 +333,7 @@ function ActionBtn({ label, color, disabled, onClick }: {
 }
 
 function extractIP(vm: IncusInstance): string {
+  if (vm.ip) return vm.ip;
   if (!vm.state?.network) return "";
   for (const [nic, data] of Object.entries(vm.state.network)) {
     if (nic === "lo") continue;

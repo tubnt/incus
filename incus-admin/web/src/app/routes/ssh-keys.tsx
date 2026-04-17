@@ -1,8 +1,10 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import { http } from "@/shared/lib/http";
 import { queryClient } from "@/shared/lib/query-client";
+import { useConfirm } from "@/shared/components/ui/confirm-dialog";
 
 export const Route = createFileRoute("/ssh-keys")({
   component: SSHKeysPage,
@@ -101,6 +103,8 @@ function AddKeyForm({ onDone }: { onDone: () => void }) {
 }
 
 function KeyCard({ sshKey }: { sshKey: SSHKey }) {
+  const { t } = useTranslation();
+  const confirm = useConfirm();
   const deleteMutation = useMutation({
     mutationFn: () => http.delete(`/portal/ssh-keys/${sshKey.id}`),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["sshKeys"] }),
@@ -118,15 +122,18 @@ function KeyCard({ sshKey }: { sshKey: SSHKey }) {
         </div>
       </div>
       <button
-        onClick={() => {
-          if (confirm(`删除密钥 "${sshKey.name}"？`)) {
-            deleteMutation.mutate();
-          }
+        onClick={async () => {
+          const ok = await confirm({
+            title: t("sshKey.deleteTitle"),
+            message: t("sshKey.deleteMessage", { name: sshKey.name }),
+            destructive: true,
+          });
+          if (ok) deleteMutation.mutate();
         }}
         disabled={deleteMutation.isPending}
         className="px-3 py-1.5 text-xs bg-destructive/20 text-destructive rounded hover:bg-destructive/30 disabled:opacity-50"
       >
-        删除
+        {t("common.delete")}
       </button>
     </div>
   );

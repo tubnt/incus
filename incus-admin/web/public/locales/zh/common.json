@@ -18,7 +18,12 @@
     "createVm": "+ 云主机",
     "nodes": "节点",
     "invoices": "发票",
-    "settings": "设置"
+    "settings": "设置",
+    "ha": "高可用",
+    "storage": "存储",
+    "ipRegistry": "IP 登记",
+    "nodeOps": "节点操作",
+    "observability": "可观测性"
   },
   "common": {
     "loading": "加载中...",
@@ -32,7 +37,20 @@
     "noData": "暂无数据",
     "balance": "余额",
     "signIn": "SSO 登录",
-    "signOut": "退出"
+    "signOut": "退出",
+    "back": "返回",
+    "clear": "清空",
+    "output": "输出",
+    "actions": "操作",
+    "empty": "空"
+  },
+  "adminOverview": {
+    "title": "管理员概览",
+    "clusters": "集群",
+    "nodes": "节点",
+    "totalVms": "云主机总数",
+    "apiStatus": "API 状态",
+    "healthy": "正常"
   },
   "vm": {
     "title": "我的云主机",
@@ -50,7 +68,34 @@
     "node": "节点",
     "config": "配置",
     "ip": "IP",
-    "actions": "操作"
+    "actions": "操作",
+    "notFoundTitle": "云主机不存在",
+    "notFoundHint": "该云主机不存在或已被删除。",
+    "backToList": "返回云主机列表",
+    "cachedAt": "缓存数据 · {{time}}",
+    "clusterConnectFailed": "集群连接失败",
+    "unknownError": "未知错误",
+    "noneInCluster": "该集群暂无云主机。",
+    "actionSubmitted": "操作已提交",
+    "actionFailed": "操作失败",
+    "deleted": "已删除",
+    "deleteFailed": "删除失败",
+    "reinstallHeading": "重装系统 — {{name}}",
+    "reinstallWarning": "警告: 重装将删除所有数据并重建 VM，IP 和配置保持不变。",
+    "reinstallConfirm": "确认重装",
+    "reinstalling": "重装中...",
+    "reinstallDone": "重装完成！用户名: {{username}}  新密码: {{password}}",
+    "passwordReset": "重置密码",
+    "passwordResetting": "重置中...",
+    "passwordResetToast": "密码已重置: {{password}}",
+    "passwordResetFailed": "密码重置失败"
+  },
+  "snapshot": {
+    "restore": "恢复",
+    "restoreTitle": "恢复快照",
+    "restoreMessage": "恢复 {{vm}} 到快照 \"{{name}}\"？当前状态将丢失。",
+    "deleteTitle": "删除快照",
+    "deleteMessage": "确认删除快照 \"{{name}}\"？"
   },
   "billing": {
     "title": "账单中心",
@@ -61,7 +106,10 @@
     "pay": "余额支付",
     "amount": "金额",
     "status": "状态",
-    "expires": "到期"
+    "expires": "到期",
+    "cancel": "取消",
+    "orderCancelled": "订单已取消",
+    "cancelFailed": "取消失败"
   },
   "ticket": {
     "title": "工单",
@@ -75,7 +123,13 @@
   "sshKey": {
     "title": "SSH 密钥",
     "add": "添加密钥",
-    "noKeys": "暂无 SSH 密钥。添加后将自动注入新建云主机。"
+    "noKeys": "暂无 SSH 密钥。添加后将自动注入新建云主机。",
+    "deleteTitle": "删除 SSH 密钥",
+    "deleteMessage": "确认删除密钥 \"{{name}}\"？"
+  },
+  "apiToken": {
+    "deleteTitle": "删除 API Token",
+    "deleteMessage": "确认删除 Token \"{{name}}\"？"
   },
   "monitoring": {
     "title": "集群监控",
@@ -88,5 +142,131 @@
     "avgCpu": "平均 CPU",
     "totalMemory": "总内存使用",
     "totalDisk": "总磁盘使用"
+  },
+  "settings": {
+    "title": "设置",
+    "language": "语言",
+    "theme": "主题",
+    "system": "跟随系统",
+    "light": "浅色",
+    "dark": "深色"
+  },
+  "admin": {
+    "ordersTitle": "订单管理",
+    "auditLogsTitle": "审计日志",
+    "nodeOpsTitle": "节点操作",
+    "sshConnection": "SSH 连接",
+    "sshTest": "测试 SSH",
+    "sshTesting": "测试中...",
+    "hostPlaceholder": "节点 IP 或主机名 (例如 10.100.0.10)",
+    "hostInvalid": "请输入合法的 IPv4 / IPv6 地址或主机名",
+    "evacuate": "疏散",
+    "evacuating": "疏散中...",
+    "enterMaintenance": "进入维护模式",
+    "totalRows": "共 {{count}} 条",
+    "prevPage": "上一页",
+    "nextPage": "下一页",
+    "auditUser": "用户",
+    "auditAction": "操作",
+    "auditTarget": "目标",
+    "auditDetails": "详情",
+    "auditTime": "时间",
+    "auditIp": "IP",
+    "orderUser": "用户",
+    "orderProduct": "产品",
+    "orderAmount": "金额",
+    "orderStatus": "状态",
+    "orderExpires": "到期",
+    "orderCreatedAt": "创建时间",
+    "invoices": {
+      "title": "发票管理",
+      "empty": "暂无发票记录",
+      "orderId": "订单",
+      "userId": "用户",
+      "amount": "金额",
+      "status": "状态",
+      "dueAt": "到期日",
+      "paidAt": "支付日",
+      "createdAt": "创建时间"
+    }
+  },
+  "cluster": {
+    "addClusterTitle": "添加集群 / 独立主机",
+    "addCluster": "+ 添加集群",
+    "connecting": "连接中...",
+    "requiredName": "名称必填（小写字母、数字、连字符）",
+    "requiredApiUrl": "API URL 必填",
+    "invalidApiUrl": "API URL 格式必须是 https://host:port",
+    "invalidName": "名称必须匹配 ^[a-z][a-z0-9-]{1,31}$",
+    "fieldName": "名称",
+    "fieldDisplayName": "显示名",
+    "fieldApiUrl": "API URL",
+    "fieldCert": "客户端证书路径",
+    "fieldKey": "客户端私钥路径",
+    "namePlaceholder": "cn-sz-02",
+    "urlPlaceholder": "https://10.0.20.1:8443"
+  },
+  "confirmDialog": {
+    "defaultTitle": "请确认",
+    "confirm": "确认",
+    "cancel": "取消"
+  },
+  "deleteConfirm": {
+    "vmTitle": "删除云主机",
+    "vmMessage": "确认删除 {{name}}？此操作不可撤销。",
+    "osdOutTitle": "标记 OSD out",
+    "osdOutMessage": "确认将 OSD {{id}} 标记为 out？",
+    "poolTitle": "删除 Pool",
+    "poolMessage": "确认删除 Pool \"{{name}}\"？此操作不可逆！",
+    "reinstallTitle": "重装云主机",
+    "reinstallMessage": "确认重装 {{name}}？所有数据将丢失！",
+    "migrateTitle": "迁移云主机",
+    "migrateMessage": "确认将 {{name}} 迁移到 {{target}}？",
+    "evacuateTitle": "疏散节点",
+    "evacuateMessage": "确认疏散 {{node}}？运行中的云主机会迁出。",
+    "resetPwdTitle": "重置密码",
+    "resetPwdMessage": "确认重置密码？新密码将在通知中显示。"
+  },
+  "storage": {
+    "title": "存储 (Ceph)",
+    "notConfigured": "Ceph SSH 未配置。设置 CEPH_SSH_HOST 环境变量以启用。",
+    "health": "健康",
+    "osds": "OSD",
+    "pools": "Pool",
+    "pgs": "PG",
+    "osdListTitle": "OSD 列表",
+    "hostsTitle": "存储主机",
+    "capacity": "总容量",
+    "used": "已用",
+    "available": "可用",
+    "dataStored": "数据量",
+    "readIops": "读 IOPS",
+    "writeIops": "写 IOPS",
+    "readThroughput": "读吞吐",
+    "writeThroughput": "写吞吐",
+    "poolsTitle": "Pool 列表",
+    "createPool": "+ 创建 Pool",
+    "createPoolSubmit": "创建",
+    "poolName": "名称",
+    "poolPgNum": "PG 数",
+    "poolTypeLabel": "类型",
+    "poolCreatedToast": "Pool {{name}} 已创建",
+    "poolCreateFailed": "Pool 创建失败",
+    "poolDeletedToast": "Pool 已删除",
+    "poolDeleteFailed": "Pool 删除失败",
+    "osdOutToast": "OSD {{id}} 已标记为 out",
+    "osdInToast": "OSD {{id}} 已标记为 in",
+    "osdOutFailed": "OSD {{id}} out 操作失败",
+    "osdInFailed": "OSD {{id}} in 操作失败",
+    "weight": "权重",
+    "warnOver90": "存储使用率超过 90%，请立即扩容或清理！",
+    "warnOver80": "存储使用率超过 80%，建议关注容量",
+    "currentUsage": "当前使用率",
+    "osdCount": "{{count}} 个 OSD",
+    "status": "状态",
+    "poolType": {
+      "replicated": "replicated",
+      "erasure": "erasure"
+    }
   }
 }

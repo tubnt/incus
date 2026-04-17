@@ -1,7 +1,9 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import { http } from "@/shared/lib/http";
 import { queryClient } from "@/shared/lib/query-client";
+import { useConfirm } from "@/shared/components/ui/confirm-dialog";
 
 interface SnapshotInfo {
   name: string;
@@ -17,6 +19,8 @@ interface SnapshotPanelProps {
 }
 
 export function SnapshotPanel({ vmName, cluster, project, apiBase = "/admin" }: SnapshotPanelProps) {
+  const { t } = useTranslation();
+  const confirm = useConfirm();
   const [newName, setNewName] = useState("");
 
   const { data, isLoading } = useQuery({
@@ -86,26 +90,32 @@ export function SnapshotPanel({ vmName, cluster, project, apiBase = "/admin" }: 
               </div>
               <div className="flex gap-1">
                 <button
-                  onClick={() => {
-                    if (confirm(`Restore ${vmName} to snapshot "${snap.name}"? Current state will be lost.`)) {
-                      restoreMutation.mutate(snap.name);
-                    }
+                  onClick={async () => {
+                    const ok = await confirm({
+                      title: t("snapshot.restoreTitle"),
+                      message: t("snapshot.restoreMessage", { vm: vmName, name: snap.name }),
+                      destructive: true,
+                    });
+                    if (ok) restoreMutation.mutate(snap.name);
                   }}
                   disabled={restoreMutation.isPending}
                   className="px-2 py-1 rounded bg-primary/20 text-primary hover:bg-primary/30 disabled:opacity-50"
                 >
-                  Restore
+                  {t("snapshot.restore")}
                 </button>
                 <button
-                  onClick={() => {
-                    if (confirm(`Delete snapshot "${snap.name}"?`)) {
-                      deleteMutation.mutate(snap.name);
-                    }
+                  onClick={async () => {
+                    const ok = await confirm({
+                      title: t("snapshot.deleteTitle"),
+                      message: t("snapshot.deleteMessage", { name: snap.name }),
+                      destructive: true,
+                    });
+                    if (ok) deleteMutation.mutate(snap.name);
                   }}
                   disabled={deleteMutation.isPending}
                   className="px-2 py-1 rounded bg-destructive/20 text-destructive hover:bg-destructive/30 disabled:opacity-50"
                 >
-                  Delete
+                  {t("common.delete")}
                 </button>
               </div>
             </div>

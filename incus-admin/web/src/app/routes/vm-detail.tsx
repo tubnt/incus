@@ -1,11 +1,13 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { toast } from "sonner";
+import { useTranslation } from "react-i18next";
 import { http } from "@/shared/lib/http";
 import { queryClient } from "@/shared/lib/query-client";
 import { VMMetricsPanel } from "@/features/monitoring/vm-metrics-panel";
 import { SnapshotPanel } from "@/features/snapshots/snapshot-panel";
+import { useConfirm } from "@/shared/components/ui/confirm-dialog";
 
 export const Route = createFileRoute("/vm-detail")({
   validateSearch: (search: Record<string, unknown>) => ({
@@ -29,10 +31,13 @@ interface VMService {
 }
 
 function UserVMDetailPage() {
+  const { t } = useTranslation();
+  const confirm = useConfirm();
+  const navigate = useNavigate();
   const { id } = Route.useSearch();
   const [tab, setTab] = useState<"overview" | "snapshots">("overview");
 
-  const { data } = useQuery({
+  const { data, isLoading } = useQuery({
     queryKey: ["myService", id],
     queryFn: () => http.get<{ vm: VMService }>(`/portal/services/${id}`),
     enabled: id > 0,
@@ -49,13 +54,28 @@ function UserVMDetailPage() {
     mutationFn: () => http.post<{ password: string; username: string }>(`/portal/services/${id}/reset-password`, {}),
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["myService", id] });
-      toast.success(`密码已重置: ${data.password}`, { duration: 15000 });
+      toast.success(t("vm.passwordResetToast", { password: data.password }), { duration: 15000 });
     },
-    onError: () => toast.error("密码重置失败"),
+    onError: () => toast.error(t("vm.passwordResetFailed")),
   });
 
+  if (id > 0 && isLoading) {
+    return <div className="text-muted-foreground p-8">{t("common.loading")}</div>;
+  }
+
   if (!vm) {
-    return <div className="text-muted-foreground p-8">Loading...</div>;
+    return (
+      <div className="flex flex-col items-center justify-center py-20 gap-4">
+        <div className="text-2xl font-semibold">{t("vm.notFoundTitle")}</div>
+        <div className="text-sm text-muted-foreground">{t("vm.notFoundHint")}</div>
+        <button
+          onClick={() => navigate({ to: "/vms" })}
+          className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm font-medium hover:opacity-90"
+        >
+          {t("vm.backToList")}
+        </button>
+      </div>
+    );
   }
 
   return (
@@ -80,11 +100,17 @@ function UserVMDetailPage() {
               <ActionBtn label="Stop" onClick={() => actionMutation.mutate("stop")} disabled={actionMutation.isPending} />
               <ActionBtn label="Restart" onClick={() => actionMutation.mutate("restart")} disabled={actionMutation.isPending} />
               <button
-                onClick={() => { if (confirm("确认重置密码？新密码将在通知中显示。")) resetPwdMutation.mutate(); }}
+                onClick={async () => {
+                  const ok = await confirm({
+                    title: t("deleteConfirm.resetPwdTitle"),
+                    message: t("deleteConfirm.resetPwdMessage"),
+                  });
+                  if (ok) resetPwdMutation.mutate();
+                }}
                 disabled={resetPwdMutation.isPending}
                 className="px-3 py-1.5 rounded text-xs font-medium bg-warning/20 text-warning hover:bg-warning/30 disabled:opacity-50"
               >
-                {resetPwdMutation.isPending ? "重置中..." : "重置密码"}
+                {resetPwdMutation.isPending ? t("vm.passwordResetting") : t("vm.passwordReset")}
               </button>
             </>
           )}

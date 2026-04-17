@@ -4,6 +4,7 @@ import { useState } from "react";
 import { http } from "@/shared/lib/http";
 import { queryClient } from "@/shared/lib/query-client";
 import { useTranslation } from "react-i18next";
+import { useConfirm } from "@/shared/components/ui/confirm-dialog";
 
 export const Route = createFileRoute("/admin/nodes")({
   component: NodesPage,
@@ -175,6 +176,7 @@ function NodeDetail({
   nodeStatus: string;
 }) {
   const { t } = useTranslation();
+  const confirm = useConfirm();
 
   const { data, isLoading } = useQuery({
     queryKey: ["adminNodeDetail", clusterName, nodeName],
@@ -247,24 +249,20 @@ function NodeDetail({
           <div className="flex items-center gap-3">
             {nodeStatus === "Online" ? (
               <button
-                onClick={() => {
-                  if (
-                    window.confirm(
-                      t(
-                        "admin.nodes.evacuateConfirm",
-                        `确认将节点 ${nodeName} 设为维护模式？所有实例将被迁移到其他节点。`,
-                      ),
-                    )
-                  ) {
-                    evacuateMutation.mutate();
-                  }
+                onClick={async () => {
+                  const ok = await confirm({
+                    title: t("deleteConfirm.evacuateTitle"),
+                    message: t("deleteConfirm.evacuateMessage", { node: nodeName }),
+                    destructive: true,
+                  });
+                  if (ok) evacuateMutation.mutate();
                 }}
                 disabled={evacuateMutation.isPending}
                 className="px-3 py-1.5 text-sm border border-warning/50 text-warning rounded hover:bg-warning/10 disabled:opacity-50"
               >
                 {evacuateMutation.isPending
-                  ? t("admin.nodes.evacuating", "迁移中...")
-                  : t("admin.nodes.evacuate", "进入维护模式")}
+                  ? t("admin.evacuating")
+                  : t("admin.enterMaintenance")}
               </button>
             ) : nodeStatus === "Evacuated" ? (
               <button

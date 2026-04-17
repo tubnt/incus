@@ -27,7 +27,9 @@ function NotFound() {
 }
 
 function useIsMobile() {
-  const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
+  const [isMobile, setIsMobile] = useState(() =>
+    typeof window === "undefined" ? false : window.innerWidth < 768,
+  );
   useEffect(() => {
     const handler = () => setIsMobile(window.innerWidth < 768);
     window.addEventListener("resize", handler);
@@ -39,7 +41,13 @@ function useIsMobile() {
 function RootLayout() {
   const { t } = useTranslation();
   const isMobile = useIsMobile();
-  const [collapsed, setCollapsed] = useState(isMobile);
+  // Desktop: collapsed controls narrow rail. Mobile: drawer is closed unless toggled.
+  const [desktopCollapsed, setDesktopCollapsed] = useState(false);
+  const [mobileOpen, setMobileOpen] = useState(false);
+  useEffect(() => {
+    if (!isMobile) setMobileOpen(false);
+  }, [isMobile]);
+
   const { data: user, isLoading, isError } = useQuery({
     queryKey: ["currentUser"],
     queryFn: fetchCurrentUser,
@@ -69,22 +77,38 @@ function RootLayout() {
     );
   }
 
+  const toggleSidebar = () => {
+    if (isMobile) setMobileOpen((v) => !v);
+    else setDesktopCollapsed((v) => !v);
+  };
+
   return (
     <div className="min-h-screen bg-background">
       <Toaster position="top-right" richColors closeButton />
       <AppSidebar
         isAdmin={isAdmin(user)}
-        collapsed={collapsed}
-        onToggle={() => setCollapsed(!collapsed)}
+        collapsed={desktopCollapsed}
+        mobileOpen={mobileOpen}
+        onToggle={toggleSidebar}
+        onNavigate={() => setMobileOpen(false)}
       />
+      {mobileOpen && (
+        <button
+          type="button"
+          aria-label="Close sidebar"
+          onClick={() => setMobileOpen(false)}
+          className="fixed inset-0 z-30 bg-black/40 md:hidden"
+        />
+      )}
       <AppHeader
         email={user.email}
         balance={user.balance}
-        sidebarCollapsed={collapsed}
+        sidebarCollapsed={desktopCollapsed}
+        onMenuClick={toggleSidebar}
       />
       <main className={cn(
         "pt-14 transition-all min-h-screen",
-        isMobile ? "pl-0" : collapsed ? "pl-16" : "pl-60",
+        isMobile ? "pl-0" : desktopCollapsed ? "pl-16" : "pl-60",
       )}>
         <div className="max-w-7xl mx-auto px-4 md:px-6 py-4 md:py-6">
           <ErrorBoundary>

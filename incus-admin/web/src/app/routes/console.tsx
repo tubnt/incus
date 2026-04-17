@@ -18,11 +18,18 @@ function ConsolePage() {
   const backUrl = user && isAdmin(user) ? "/admin/vms" : "/vms";
 
   if (!vm || !cluster) {
+    const missing: string[] = [];
+    if (!vm) missing.push("vm");
+    if (!cluster) missing.push("cluster");
     return (
-      <div className="flex items-center justify-center min-h-[60vh]">
-        <div className="text-muted-foreground">
-          Missing parameters. Use: /console?vm=NAME&cluster=CLUSTER&project=PROJECT
+      <div className="flex flex-col items-center justify-center min-h-[60vh] gap-3">
+        <div className="text-muted-foreground text-sm">
+          Missing parameter{missing.length > 1 ? "s" : ""}: <span className="font-mono">{missing.join(", ")}</span>
         </div>
+        <div className="text-xs text-muted-foreground font-mono">
+          /console?vm=NAME&amp;cluster=CLUSTER&amp;project=PROJECT
+        </div>
+        <a href={backUrl} className="text-sm text-primary hover:underline">← Back to VMs</a>
       </div>
     );
   }
