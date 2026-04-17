@@ -2,6 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { type AuditLog, useAuditLogsQuery } from "@/features/audit-logs/api";
+import { Pagination } from "@/shared/components/ui/pagination";
 
 export const Route = createFileRoute("/admin/audit-logs")({
   component: AuditLogsPage,
@@ -22,7 +23,7 @@ function targetLabel(log: AuditLog): string {
 function AuditLogsPage() {
   const { t } = useTranslation();
   const [offset, setOffset] = useState(0);
-  const limit = 50;
+  const [limit, setLimit] = useState(50);
 
   const { data, isLoading } = useAuditLogsQuery(offset, limit);
 
@@ -81,27 +82,16 @@ function AuditLogsPage() {
             </table>
           </div>
 
-          {total > limit && (
-            <div className="flex justify-center gap-2 mt-4">
-              <button
-                onClick={() => setOffset(Math.max(0, offset - limit))}
-                disabled={offset === 0}
-                className="px-3 py-1.5 text-xs bg-muted/50 rounded disabled:opacity-30"
-              >
-                {t("admin.prevPage")}
-              </button>
-              <span className="px-3 py-1.5 text-xs text-muted-foreground">
-                {offset + 1}-{Math.min(offset + limit, total)} / {total}
-              </span>
-              <button
-                onClick={() => setOffset(offset + limit)}
-                disabled={offset + limit >= total}
-                className="px-3 py-1.5 text-xs bg-muted/50 rounded disabled:opacity-30"
-              >
-                {t("admin.nextPage")}
-              </button>
-            </div>
-          )}
+          <Pagination
+            total={total}
+            limit={limit}
+            offset={offset}
+            onChange={(nextLimit, nextOffset) => {
+              setLimit(nextLimit);
+              setOffset(nextOffset);
+            }}
+            className="mt-3"
+          />
         </>
       )}
     </div>

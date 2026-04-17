@@ -1,6 +1,8 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useClustersQuery } from "@/features/clusters/api";
+import { ClusterPicker } from "@/features/clusters/cluster-picker";
 import {
   type HANodeInfo,
   useHAStatusQuery,
@@ -16,7 +18,13 @@ function HAPage() {
   const { t } = useTranslation();
   const { data: clustersData } = useClustersQuery();
   const clusters = clustersData?.clusters ?? [];
-  const clusterName = clusters[0]?.name ?? "";
+  const [clusterName, setClusterName] = useState<string>("");
+
+  useEffect(() => {
+    if (!clusterName && clusters.length > 0) {
+      setClusterName(clusters[0]!.name);
+    }
+  }, [clusterName, clusters]);
 
   const { data: ha, isLoading } = useHAStatusQuery(clusterName);
   const evacuateMutation = useHAEvacuateMutation(clusterName);
@@ -25,9 +33,14 @@ function HAPage() {
     <div>
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-bold">HA Failover</h1>
-        <span className="text-xs text-muted-foreground">
-          healing_threshold: {ha?.healing_threshold ?? "—"}s
-        </span>
+        <div className="flex items-center gap-3">
+          {clusters.length > 1 && (
+            <ClusterPicker value={clusterName} onChange={setClusterName} />
+          )}
+          <span className="text-xs text-muted-foreground">
+            healing_threshold: {ha?.healing_threshold ?? "—"}s
+          </span>
+        </div>
       </div>
 
       {isLoading ? (

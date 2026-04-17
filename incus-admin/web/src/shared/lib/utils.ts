@@ -12,3 +12,8 @@ export function fmtBytes(bytes: number): string {
   const val = bytes / Math.pow(1024, i);
   return `${val.toFixed(i > 1 ? 1 : 0)} ${units[i]}`;
 }
+
+export function formatCurrency(amount: number, currency: string = "USD", locale?: string): string {
+  const l = locale ?? (typeof navigator !== "undefined" ? navigator.language : "en-US");
+  return new Intl.NumberFormat(l, { style: "currency", currency }).format(amount);
+}

@@ -58,7 +58,10 @@ func main() {
 	var vmSvc *service.VMService
 
 	if len(cfg.Clusters) > 0 {
-		clusterMgr, err = cluster.NewManager(cfg.Clusters)
+		// SPKI pin store backed by clusters.tls_fingerprint (migration 006).
+		// TOFU on first connect, refuses peers that diverge from the learned pin.
+		pinStore := &clusterPinStore{repo: clusterRepo}
+		clusterMgr, err = cluster.NewManager(cfg.Clusters, pinStore)
 		if err != nil {
 			slog.Warn("cluster manager init failed, running without clusters", "error", err)
 		} else {
@@ -114,6 +117,7 @@ func main() {
 	ipAddrRepo := repository.NewIPAddrRepo(db)
 	portal.SetAuditRepo(auditRepo)
 	portal.SetIPAddrRepo(ipAddrRepo)
+	portal.SetUserRepo(userRepo)
 	middleware.SetEmergencySecret(cfg.Auth.EmergencyToken)
 
 	middleware.SetTokenValidator(func(ctx context.Context, token string) (int64, error) {
@@ -140,8 +144,8 @@ func main() {
 		APITokens: portal.NewAPITokenHandler(apiTokenRepo),
 		Invoices:    portal.NewInvoiceHandler(invoiceRepo),
 		ClusterMgmt: portal.NewClusterMgmtHandler(clusterMgr),
-		Ceph:        portal.NewCephHandler(cfg.Monitor.CephSSHHost, cfg.Monitor.CephSSHUser, cfg.Monitor.CephSSHKey),
-		NodeOps:     portal.NewNodeOpsHandler(cfg.Monitor.CephSSHUser, cfg.Monitor.CephSSHKey),
+		Ceph:        portal.NewCephHandler(cfg.Monitor.CephSSHHost, cfg.Monitor.CephSSHUser, cfg.Monitor.CephSSHKey, cfg.Monitor.SSHKnownHostsFile),
+		NodeOps:     portal.NewNodeOpsHandler(cfg.Monitor.CephSSHUser, cfg.Monitor.CephSSHKey, cfg.Monitor.SSHKnownHostsFile),
 		Quotas:      portal.NewQuotaHandler(quotaRepo, vmRepo),
 		Events:      portal.NewEventsHandler(clusterMgr),
 	})
@@ -150,4 +154,18 @@ func main() {
 		fmt.Fprintf(os.Stderr, "server error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// clusterPinStore 将 repository.ClusterRepo 适配成 cluster.FingerprintStore。
+// 仅做方法名转换，保持两边领域职责各自独立。
+type clusterPinStore struct {
+	repo *repository.ClusterRepo
+}
+
+func (s *clusterPinStore) Get(ctx context.Context, clusterName string) (string, error) {
+	return s.repo.GetTLSFingerprint(ctx, clusterName)
+}
+
+func (s *clusterPinStore) Set(ctx context.Context, clusterName, fingerprint string) error {
+	return s.repo.SetTLSFingerprint(ctx, clusterName, fingerprint)
 }

@@ -1,19 +1,15 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useClustersQuery } from "@/features/clusters/api";
+import { ClusterPicker } from "@/features/clusters/cluster-picker";
+import { ProjectPicker } from "@/features/projects/project-picker";
 import { type AdminCreateVMResult, useAdminCreateVMMutation } from "@/features/vms/api";
+import { DEFAULT_OS_IMAGE, OsImagePicker, getOsImageLabel } from "@/features/vms/os-image-picker";
 
 export const Route = createFileRoute("/admin/create-vm")({
   component: CreateVMPage,
 });
-
-const OS_IMAGES = [
-  { value: "images:ubuntu/24.04/cloud", label: "Ubuntu 24.04 LTS" },
-  { value: "images:ubuntu/22.04/cloud", label: "Ubuntu 22.04 LTS" },
-  { value: "images:debian/12/cloud", label: "Debian 12" },
-  { value: "images:rockylinux/9/cloud", label: "Rocky Linux 9" },
-];
 
 const PRESETS = [
   { label: "Small", cpu: 1, memory_mb: 1024, disk_gb: 25 },
@@ -26,11 +22,18 @@ function CreateVMPage() {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const [preset, setPreset] = useState(1);
-  const [osImage, setOsImage] = useState(OS_IMAGES[0]!.value);
-  const [project, setProject] = useState("customers");
+  const [osImage, setOsImage] = useState<string>(DEFAULT_OS_IMAGE);
+  const [project, setProject] = useState("");
 
   const { data: clustersData } = useClustersQuery();
-  const clusterName = clustersData?.clusters?.[0]?.name ?? "";
+  const clusters = clustersData?.clusters ?? [];
+  const [clusterName, setClusterName] = useState<string>("");
+
+  useEffect(() => {
+    if (!clusterName && clusters.length > 0) {
+      setClusterName(clusters[0]!.name);
+    }
+  }, [clusterName, clusters]);
 
   const [result, setResult] = useState<AdminCreateVMResult | null>(null);
   const createMutation = useAdminCreateVMMutation(clusterName);
@@ -59,6 +62,17 @@ function CreateVMPage() {
       )}
 
       <div className="space-y-6">
+        {clusters.length > 1 && (
+          <div>
+            <label className="block text-sm font-medium mb-2">{t("vm.cluster", { defaultValue: "Cluster" })}</label>
+            <ClusterPicker
+              value={clusterName}
+              onChange={setClusterName}
+              className="w-full px-3 py-2 rounded-md border border-border bg-card text-sm"
+            />
+          </div>
+        )}
+
         <div>
           <label className="block text-sm font-medium mb-2">{t("vm.size", { defaultValue: "Size" })}</label>
           <div className="grid grid-cols-4 gap-2">
@@ -83,35 +97,28 @@ function CreateVMPage() {
 
         <div>
           <label className="block text-sm font-medium mb-2">{t("vm.osImage", { defaultValue: "OS Image" })}</label>
-          <select
+          <OsImagePicker
             value={osImage}
-            onChange={(e) => setOsImage(e.target.value)}
+            onChange={setOsImage}
             className="w-full px-3 py-2 rounded-md border border-border bg-card text-sm"
-          >
-            {OS_IMAGES.map((img) => (
-              <option key={img.value} value={img.value}>{img.label}</option>
-            ))}
-          </select>
+          />
         </div>
 
         <div>
           <label className="block text-sm font-medium mb-2">{t("vm.project", { defaultValue: "Project" })}</label>
-          <select
+          <ProjectPicker
+            clusterName={clusterName}
             value={project}
-            onChange={(e) => setProject(e.target.value)}
-            className="w-full px-3 py-2 rounded-md border border-border bg-card text-sm"
-          >
-            <option value="customers">customers</option>
-            <option value="default">default</option>
-          </select>
+            onChange={setProject}
+          />
         </div>
 
         <div className="border border-border rounded-lg p-4 bg-card">
           <h3 className="font-medium mb-2">{t("common.summary", { defaultValue: "Summary" })}</h3>
           <div className="text-sm text-muted-foreground space-y-1">
-            <div>Cluster: {clustersData?.clusters?.[0]?.display_name ?? "—"}</div>
+            <div>Cluster: {clusters.find((c) => c.name === clusterName)?.display_name ?? "—"}</div>
             <div>Config: {selected.cpu} vCPU / {(selected.memory_mb / 1024).toFixed(0)} GB RAM / {selected.disk_gb} GB Disk</div>
-            <div>OS: {OS_IMAGES.find((i) => i.value === osImage)?.label}</div>
+            <div>OS: {getOsImageLabel(osImage)}</div>
             <div>Project: {project}</div>
             <div>IP: {t("admin.ipAuto", { defaultValue: "auto-assigned from pool" })}</div>
           </div>
@@ -134,7 +141,7 @@ function CreateVMPage() {
             },
             { onSuccess: (data) => setResult(data) },
           )}
-          disabled={createMutation.isPending || !clusterName}
+          disabled={createMutation.isPending || !clusterName || !project}
           className="w-full py-3 bg-primary text-primary-foreground rounded-md font-medium hover:opacity-90 disabled:opacity-50"
         >
           {createMutation.isPending ? t("admin.creatingVm", { defaultValue: "Creating VM..." }) : t("admin.createVmTitle", { defaultValue: "Create VM" })}

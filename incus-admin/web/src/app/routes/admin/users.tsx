@@ -3,14 +3,19 @@ import { useState } from "react";
 import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
 import type { User } from "@/shared/lib/auth";
+import { useConfirm } from "@/shared/components/ui/confirm-dialog";
 import {
+  type PageParams,
   type Quota,
   useAdminUsersQuery,
   useTopUpBalanceMutation,
+  useTopUpQuotaQuery,
   useUpdateUserQuotaMutation,
   useUpdateUserRoleMutation,
   useUserQuotaQuery,
 } from "@/features/users/api";
+import { Pagination } from "@/shared/components/ui/pagination";
+import { formatCurrency } from "@/shared/lib/utils";
 
 export const Route = createFileRoute("/admin/users")({
   component: UsersPage,
@@ -18,33 +23,44 @@ export const Route = createFileRoute("/admin/users")({
 
 function UsersPage() {
   const { t } = useTranslation();
-  const { data, isLoading } = useAdminUsersQuery();
+  const [page, setPage] = useState<PageParams>({ limit: 50, offset: 0 });
+  const { data, isLoading } = useAdminUsersQuery(page);
   const users = data?.users ?? [];
+  const total = data?.total ?? users.length;
 
   return (
     <div>
-      <h1 className="text-2xl font-bold mb-6">{t("admin.users", { defaultValue: "Users" })} ({users.length})</h1>
+      <h1 className="text-2xl font-bold mb-6">{t("admin.users", { defaultValue: "Users" })} ({total})</h1>
       {isLoading ? (
         <div className="text-muted-foreground">{t("common.loading")}</div>
       ) : (
-        <div className="border border-border rounded-lg overflow-hidden">
-          <table className="w-full text-sm">
-            <thead className="bg-muted/30">
-              <tr>
-                <th className="text-left px-4 py-3 font-medium">ID</th>
-                <th className="text-left px-4 py-3 font-medium">{t("admin.email", { defaultValue: "Email" })}</th>
-                <th className="text-left px-4 py-3 font-medium">{t("admin.role", { defaultValue: "Role" })}</th>
-                <th className="text-right px-4 py-3 font-medium">{t("common.balance", { defaultValue: "Balance" })}</th>
-                <th className="text-right px-4 py-3 font-medium">{t("vm.actions", { defaultValue: "Actions" })}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {users.map((u) => (
-                <UserRow key={u.id} user={u} />
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <>
+          <div className="border border-border rounded-lg overflow-hidden">
+            <table className="w-full text-sm">
+              <thead className="bg-muted/30">
+                <tr>
+                  <th className="text-left px-4 py-3 font-medium">ID</th>
+                  <th className="text-left px-4 py-3 font-medium">{t("admin.email", { defaultValue: "Email" })}</th>
+                  <th className="text-left px-4 py-3 font-medium">{t("admin.role", { defaultValue: "Role" })}</th>
+                  <th className="text-right px-4 py-3 font-medium">{t("common.balance", { defaultValue: "Balance" })}</th>
+                  <th className="text-right px-4 py-3 font-medium">{t("vm.actions", { defaultValue: "Actions" })}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {users.map((u) => (
+                  <UserRow key={u.id} user={u} />
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <Pagination
+            total={total}
+            limit={page.limit}
+            offset={page.offset}
+            onChange={(limit, offset) => setPage({ limit, offset })}
+            className="mt-3"
+          />
+        </>
       )}
     </div>
   );
@@ -52,16 +68,48 @@ function UsersPage() {
 
 function UserRow({ user }: { user: User }) {
   const { t } = useTranslation();
+  const confirm = useConfirm();
   const [showTopUp, setShowTopUp] = useState(false);
   const [showQuota, setShowQuota] = useState(false);
   const [amount, setAmount] = useState("");
 
   const roleMutation = useUpdateUserRoleMutation(user.id);
   const topUpMutation = useTopUpBalanceMutation(user.id);
+  const { data: quota } = useTopUpQuotaQuery(user.id, showTopUp);
+  const amountNum = parseFloat(amount);
+  const quotaExceeded =
+    !!quota && amountNum > 0 && amountNum > quota.remaining;
 
-  const confirmTopUp = () => {
+  const changeRole = async (newRole: string) => {
+    if (newRole === user.role) return;
+    const isDowngrade = user.role === "admin" && newRole === "customer";
+    if (isDowngrade) {
+      const ok = await confirm({
+        title: t("admin.roleDowngradeTitle", { defaultValue: "降级管理员？" }),
+        message: t("admin.roleDowngradeMessage", {
+          defaultValue: "确认将 {{email}} 从 admin 降级为 customer？该用户将失去所有管理权限。",
+          email: user.email,
+        }),
+        destructive: true,
+      });
+      if (!ok) return;
+    }
+    roleMutation.mutate(newRole);
+  };
+
+  const confirmTopUp = async () => {
     const amt = parseFloat(amount);
-    if (amt > 0) topUpMutation.mutate(amt, {
+    if (!(amt > 0)) return;
+    const ok = await confirm({
+      title: t("admin.topUpConfirmTitle", { defaultValue: "确认充值" }),
+      message: t("admin.topUpConfirmMessage", {
+        defaultValue: "确认给 {{email}} 充值 {{amount}}？",
+        email: user.email,
+        amount: formatCurrency(amt),
+      }),
+    });
+    if (!ok) return;
+    topUpMutation.mutate(amt, {
       onSuccess: () => { setShowTopUp(false); setAmount(""); },
     });
   };
@@ -74,7 +122,7 @@ function UserRow({ user }: { user: User }) {
         <td className="px-4 py-3">
           <select
             value={user.role}
-            onChange={(e) => roleMutation.mutate(e.target.value)}
+            onChange={(e) => changeRole(e.target.value)}
             disabled={roleMutation.isPending}
             className="px-2 py-1 rounded text-xs border border-border bg-card"
           >
@@ -82,7 +130,7 @@ function UserRow({ user }: { user: User }) {
             <option value="admin">admin</option>
           </select>
         </td>
-        <td className="px-4 py-3 text-right font-mono">${user.balance.toFixed(2)}</td>
+        <td className="px-4 py-3 text-right font-mono">{formatCurrency(user.balance)}</td>
         <td className="px-4 py-3 text-right">
           <div className="flex justify-end gap-1">
             <button
@@ -103,28 +151,49 @@ function UserRow({ user }: { user: User }) {
       {showTopUp && (
         <tr className="border-t border-border bg-card/50">
           <td colSpan={5} className="px-4 py-3">
-            <div className="flex items-center gap-2 max-w-md">
-              <span className="text-sm">$</span>
-              <input
-                type="number"
-                value={amount}
-                onChange={(e) => setAmount(e.target.value)}
-                placeholder={t("admin.amount", { defaultValue: "Amount" })}
-                className="flex-1 px-3 py-1.5 rounded border border-border bg-card text-sm"
-              />
-              <button
-                onClick={confirmTopUp}
-                disabled={topUpMutation.isPending || !amount}
-                className="px-3 py-1.5 rounded text-xs bg-primary text-primary-foreground disabled:opacity-50"
-              >
-                {topUpMutation.isPending ? "..." : t("common.confirm", { defaultValue: "Confirm" })}
-              </button>
-              <button
-                onClick={() => setShowTopUp(false)}
-                className="px-3 py-1.5 rounded text-xs bg-muted text-muted-foreground"
-              >
-                {t("common.cancel", { defaultValue: "Cancel" })}
-              </button>
+            <div className="flex flex-col gap-2 max-w-md">
+              <div className="flex items-center gap-2">
+                <span className="text-sm">$</span>
+                <input
+                  type="number"
+                  value={amount}
+                  onChange={(e) => setAmount(e.target.value)}
+                  placeholder={t("admin.amount", { defaultValue: "Amount" })}
+                  className="flex-1 px-3 py-1.5 rounded border border-border bg-card text-sm"
+                />
+                <button
+                  onClick={confirmTopUp}
+                  disabled={topUpMutation.isPending || !amount || quotaExceeded}
+                  className="px-3 py-1.5 rounded text-xs bg-primary text-primary-foreground disabled:opacity-50"
+                >
+                  {topUpMutation.isPending ? "..." : t("common.confirm", { defaultValue: "Confirm" })}
+                </button>
+                <button
+                  onClick={() => setShowTopUp(false)}
+                  className="px-3 py-1.5 rounded text-xs bg-muted text-muted-foreground"
+                >
+                  {t("common.cancel", { defaultValue: "Cancel" })}
+                </button>
+              </div>
+              {quota && (
+                <div className="text-xs text-muted-foreground flex items-center gap-2">
+                  <span>
+                    {t("user.topup.usedToday", {
+                      defaultValue: "今日已用 {{used}} / 上限 {{limit}}",
+                      used: formatCurrency(quota.used),
+                      limit: formatCurrency(quota.limit),
+                    })}
+                  </span>
+                  {quotaExceeded && (
+                    <span className="px-2 py-0.5 rounded bg-destructive/20 text-destructive">
+                      {t("user.topup.quotaExceeded", {
+                        defaultValue: "超出日额度（剩余 {{remaining}}）",
+                        remaining: formatCurrency(quota.remaining),
+                      })}
+                    </span>
+                  )}
+                </div>
+              )}
             </div>
           </td>
         </tr>

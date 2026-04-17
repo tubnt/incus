@@ -134,20 +134,117 @@ func (r *UserRepo) AdjustBalance(ctx context.Context, userID int64, amount float
 }
 
 func (r *UserRepo) ListAll(ctx context.Context) ([]model.User, error) {
-	rows, err := r.db.QueryContext(ctx,
-		`SELECT id, email, name, role, COALESCE(logto_sub, ''), balance, created_at, updated_at FROM users ORDER BY id`)
+	users, _, err := r.ListPaged(ctx, 0, 0)
+	return users, err
+}
+
+// TopUpWithDailyCap 在同一事务内对用户行加写锁，累加滚动窗口内的 deposit，
+// 若不超过 cap 则同时写入 users.balance 与 transactions，从根本上避免
+// "读 + 写"竞态导致轻微越限。ok=false 表示额度不足（err=nil），
+// 此时事务已回滚、used 为当次查询到的窗口累计额。
+func (r *UserRepo) TopUpWithDailyCap(
+	ctx context.Context,
+	userID int64,
+	amount float64,
+	description string,
+	createdBy *int64,
+	window time.Duration,
+	cap float64,
+) (used float64, newBalance float64, ok bool, err error) {
+	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, err
+		return 0, 0, false, err
+	}
+	defer tx.Rollback()
+
+	// Row-level lock serialises concurrent TopUps for the same user within Postgres.
+	var locked int64
+	if err = tx.QueryRowContext(ctx, `SELECT id FROM users WHERE id = $1 FOR UPDATE`, userID).Scan(&locked); err != nil {
+		if err == sql.ErrNoRows {
+			return 0, 0, false, fmt.Errorf("user %d not found", userID)
+		}
+		return 0, 0, false, fmt.Errorf("lock user: %w", err)
+	}
+
+	var sum sql.NullFloat64
+	err = tx.QueryRowContext(ctx,
+		`SELECT COALESCE(SUM(amount), 0) FROM transactions
+		 WHERE user_id = $1 AND type = 'deposit' AND created_at >= $2`,
+		userID, time.Now().Add(-window),
+	).Scan(&sum)
+	if err != nil {
+		return 0, 0, false, fmt.Errorf("sum deposits: %w", err)
+	}
+	used = sum.Float64
+	if used+amount > cap {
+		return used, 0, false, nil
+	}
+
+	err = tx.QueryRowContext(ctx,
+		`UPDATE users SET balance = balance + $1, updated_at = NOW() WHERE id = $2 RETURNING balance`,
+		amount, userID,
+	).Scan(&newBalance)
+	if err != nil {
+		return used, 0, false, fmt.Errorf("update balance: %w", err)
+	}
+
+	if _, err = tx.ExecContext(ctx,
+		`INSERT INTO transactions (user_id, amount, type, description, created_by)
+		 VALUES ($1, $2, 'deposit', $3, $4)`,
+		userID, amount, description, createdBy,
+	); err != nil {
+		return used, 0, false, fmt.Errorf("record transaction: %w", err)
+	}
+
+	if err = tx.Commit(); err != nil {
+		return used, 0, false, fmt.Errorf("commit: %w", err)
+	}
+	return used, newBalance, true, nil
+}
+
+// SumDepositsSince 汇总指定用户自 since 起的 deposit 流水金额，
+// 用于 TopUp 日额度校验。无记录时返回 0。
+func (r *UserRepo) SumDepositsSince(ctx context.Context, userID int64, since time.Time) (float64, error) {
+	var sum sql.NullFloat64
+	err := r.db.QueryRowContext(ctx,
+		`SELECT COALESCE(SUM(amount), 0) FROM transactions
+		 WHERE user_id = $1 AND type = 'deposit' AND created_at >= $2`,
+		userID, since,
+	).Scan(&sum)
+	if err != nil {
+		return 0, err
+	}
+	return sum.Float64, nil
+}
+
+// ListPaged 返回分页后的用户列表以及过滤后的总数。
+// limit<=0 表示不限制（保持与 ListAll 等价）。
+func (r *UserRepo) ListPaged(ctx context.Context, limit, offset int) ([]model.User, int64, error) {
+	var total int64
+	if err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users`).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count users: %w", err)
+	}
+
+	query := `SELECT id, email, name, role, COALESCE(logto_sub, ''), balance, created_at, updated_at FROM users ORDER BY id`
+	args := []any{}
+	if limit > 0 {
+		query += ` LIMIT $1 OFFSET $2`
+		args = append(args, limit, offset)
+	}
+
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, 0, err
 	}
 	defer rows.Close()
 
-	var users []model.User
+	users := make([]model.User, 0)
 	for rows.Next() {
 		var u model.User
 		if err := rows.Scan(&u.ID, &u.Email, &u.Name, &u.Role, &u.LogtoSub, &u.Balance, &u.CreatedAt, &u.UpdatedAt); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		users = append(users, u)
 	}
-	return users, rows.Err()
+	return users, total, rows.Err()
 }

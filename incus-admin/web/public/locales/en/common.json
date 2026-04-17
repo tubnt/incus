@@ -88,7 +88,11 @@
     "passwordReset": "Reset Password",
     "passwordResetting": "Resetting...",
     "passwordResetToast": "Password reset: {{password}}",
-    "passwordResetFailed": "Password reset failed"
+    "passwordResetFailed": "Password reset failed",
+    "cluster": "Cluster",
+    "size": "Size",
+    "osImage": "OS Image",
+    "project": "Project"
   },
   "snapshot": {
     "restore": "Restore",
@@ -141,7 +145,22 @@
     "vmCount": "VM Count",
     "avgCpu": "Avg CPU",
     "totalMemory": "Total Memory",
-    "totalDisk": "Total Disk"
+    "totalDisk": "Total Disk",
+    "vmMetricsTitle": "VM resource details",
+    "networkColumn": "Network (RX/TX)",
+    "fetchFailed": "Failed to fetch metrics: {{error}}",
+    "noData": "No VM metrics. Verify Incus metrics is enabled.",
+    "noNetworkData": "No network data",
+    "sortCpu": "CPU",
+    "sortMem": "Memory",
+    "sortDisk": "Disk",
+    "netReceive": "RX",
+    "netSend": "TX",
+    "memTotal": "Total",
+    "memUsed": "Used",
+    "legendUser": "User",
+    "legendSystem": "System",
+    "usageLegend": "Usage"
   },
   "settings": {
     "title": "Settings",
@@ -152,6 +171,79 @@
     "dark": "Dark"
   },
   "admin": {
+    "nodeOpsQuick": {
+      "systemInfo": "System Info",
+      "memory": "Memory",
+      "disk": "Disk",
+      "blockDevices": "Block Devices",
+      "network": "Network",
+      "incusStatus": "Incus Status",
+      "cephStatus": "Ceph Status"
+    },
+    "nodeJoin": {
+      "title": "Node Join Wizard",
+      "desc": "Join a new node into the Incus cluster step by step",
+      "step1": "1. Prepare",
+      "step2": "2. SSH Test",
+      "step3": "3. Generate Token",
+      "step4": "4. Verify",
+      "prepareTitle": "Preparation",
+      "prepareIntro": "Complete the following on the new node:",
+      "prepareOS": "Ensure the node runs Ubuntu 22.04/24.04 or Debian 12",
+      "prepareInstall": "Install Incus:",
+      "prepareNetwork": "Make sure the new node can reach the existing cluster network",
+      "prepareSSH": "Configure SSH key-based login",
+      "newNodeIp": "New node IP",
+      "newNodeIpPlaceholder": "10.100.0.20",
+      "nodeName": "Node name",
+      "nodeNamePlaceholder": "node-05",
+      "nextTestSsh": "Next: Test SSH",
+      "sshTestTitle": "SSH connection test",
+      "sshTestDescPrefix": "Testing SSH connection to",
+      "sshTestDescSuffix": "",
+      "sshTestBtn": "Test SSH connection",
+      "sshTesting": "Testing...",
+      "sshSuccess": "SSH connection OK",
+      "sshFailed": "SSH connection failed",
+      "joinTitle": "Generate Join Token",
+      "joinHintPrefix": "On an existing cluster node, run",
+      "joinHintSuffix": "to generate a join token.",
+      "joinBtn": "Generate token via SSH",
+      "joinPending": "Generating...",
+      "tokenGenerated": "Join token generated",
+      "tokenFailed": "Failed to generate token",
+      "joinOrPaste": "Or paste the token manually:",
+      "joinPlaceholder": "Paste join token...",
+      "nextVerify": "Next: Verify",
+      "verifyTitle": "Run the join command on the new node",
+      "verifyIntroPrefix": "On the new node",
+      "verifyIntroSuffix": "run the following command:",
+      "copy": "Copy",
+      "copied": "Command copied to clipboard",
+      "verifyCheck": "After joining, verify from any cluster node:",
+      "backToList": "View node list"
+    },
+    "observability": {
+      "title": "Observability",
+      "embed": "Embed",
+      "close": "Close",
+      "open": "Open →",
+      "closeCross": "Close ×",
+      "accessNoteTitle": "Access Note",
+      "accessNoteBody": "These dashboards are on the cluster internal network (10.0.20.0/24). Access requires WireGuard VPN or SSH tunnel. The embedded view only works if your browser can reach the cluster network.",
+      "descGrafana": "Metrics dashboards (CPU / RAM / Disk / Network)",
+      "descPrometheus": "Metrics query and exploration",
+      "descAlertmanager": "Alert routing and silencing",
+      "descCeph": "Ceph storage management (requires VPN)",
+      "eventStream": "Live event stream",
+      "connected": "Connected",
+      "disconnected": "Disconnected",
+      "pause": "⏸ Pause",
+      "resume": "▶ Resume",
+      "clear": "Clear",
+      "waitingEvents": "Waiting for events...",
+      "connecting": "Connecting..."
+    },
     "ordersTitle": "Orders",
     "auditLogsTitle": "Audit Logs",
     "nodeOpsTitle": "Node Operations",
@@ -204,7 +296,17 @@
     "fieldCert": "Client Cert Path",
     "fieldKey": "Client Key Path",
     "namePlaceholder": "cn-sz-02",
-    "urlPlaceholder": "https://10.0.20.1:8443"
+    "urlPlaceholder": "https://10.0.20.1:8443",
+    "nodesCount": "{{count}} nodes",
+    "cpuCores": "{{count}} cores",
+    "colNode": "Node",
+    "colStatus": "Status",
+    "colCpu": "CPU",
+    "colMemory": "Memory",
+    "colFreePct": "Free %",
+    "colActions": "Actions",
+    "evacuate": "Evacuate",
+    "restore": "Restore"
   },
   "confirmDialog": {
     "defaultTitle": "Please confirm",
@@ -248,6 +350,7 @@
     "createPool": "+ Create Pool",
     "createPoolSubmit": "Create",
     "poolName": "Name",
+    "poolNamePlaceholder": "pool-name",
     "poolPgNum": "PGs",
     "poolTypeLabel": "Type",
     "poolCreatedToast": "Pool {{name}} created",
@@ -267,6 +370,20 @@
     "poolType": {
       "replicated": "replicated",
       "erasure": "erasure"
+    }
+  },
+  "pagination": {
+    "range": "{{from}}-{{to}} / {{total}}",
+    "pageSize": "Per page",
+    "prev": "Prev",
+    "next": "Next",
+    "pageOf": "{{page}}/{{total}}"
+  },
+  "user": {
+    "topup": {
+      "usedToday": "Used today {{used}} / cap {{limit}}",
+      "dailyLimit": "Daily cap {{limit}}",
+      "quotaExceeded": "Daily quota exceeded (remaining {{remaining}})"
     }
   }
 }

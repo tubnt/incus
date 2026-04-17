@@ -2,7 +2,6 @@ package portal
 
 import (
 	"bytes"
-	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -63,8 +62,6 @@ func (h *ConsoleHandler) HandleConsole(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cc, _ := h.clusters.ConfigByName(clusterName)
-
 	execBody, _ := json.Marshal(map[string]any{
 		"command":             []string{"/bin/bash", "-l"},
 		"wait-for-websocket": true,
@@ -104,12 +101,11 @@ func (h *ConsoleHandler) HandleConsole(w http.ResponseWriter, r *http.Request) {
 	incusWSURL := buildIncusWSURL(client.APIURL, opMeta.ID, fd0Secret)
 	controlWSURL := buildIncusWSURL(client.APIURL, opMeta.ID, controlSecret)
 
-	tlsConfig := &tls.Config{InsecureSkipVerify: true}
-	if cc.CertFile != "" && cc.KeyFile != "" {
-		cert, err := tls.LoadX509KeyPair(cc.CertFile, cc.KeyFile)
-		if err == nil {
-			tlsConfig.Certificates = []tls.Certificate{cert}
-		}
+	tlsConfig, err := h.clusters.TLSConfigForCluster(clusterName)
+	if err != nil {
+		slog.Error("console tls config failed", "cluster", clusterName, "error", err)
+		http.Error(w, "tls config failed", http.StatusInternalServerError)
+		return
 	}
 
 	dialer := websocket.Dialer{
@@ -143,7 +139,11 @@ func (h *ConsoleHandler) HandleConsole(w http.ResponseWriter, r *http.Request) {
 	}
 	defer clientConn.Close()
 
+	sessionStart := time.Now()
 	slog.Info("console session started", "vm", vmName, "project", project, "cluster", clusterName)
+	audit(r.Context(), r, "console.session_open", "vm", 0, map[string]any{
+		"vm": vmName, "project": project, "cluster": clusterName,
+	})
 
 	done := make(chan struct{}, 2)
 
@@ -180,7 +180,12 @@ func (h *ConsoleHandler) HandleConsole(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	<-done
-	slog.Info("console session ended", "vm", vmName)
+	duration := time.Since(sessionStart)
+	slog.Info("console session ended", "vm", vmName, "duration_ms", duration.Milliseconds())
+	audit(r.Context(), r, "console.session_close", "vm", 0, map[string]any{
+		"vm": vmName, "project": project, "cluster": clusterName,
+		"duration_ms": duration.Milliseconds(),
+	})
 }
 
 func buildIncusWSURL(apiURL, operationID, secret string) string {

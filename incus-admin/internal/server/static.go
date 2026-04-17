@@ -1,14 +1,38 @@
 package server
 
 import (
+	"crypto/sha256"
 	"embed"
+	"encoding/hex"
 	"io/fs"
 	"net/http"
 	"strings"
+	"sync"
 )
 
 //go:embed all:dist
 var distFS embed.FS
+
+var (
+	distHashOnce sync.Once
+	distHashHex  string
+)
+
+// DistHash returns the hex sha256 of the embedded dist/index.html. It is cached
+// after first call. Returns "" if the file is missing (development / broken build).
+// Ops can compare this value to the one produced by `task web-build` to catch
+// the "forgot to rebuild frontend before go build" footgun.
+func DistHash() string {
+	distHashOnce.Do(func() {
+		data, err := distFS.ReadFile("dist/index.html")
+		if err != nil {
+			return
+		}
+		sum := sha256.Sum256(data)
+		distHashHex = hex.EncodeToString(sum[:])
+	})
+	return distHashHex
+}
 
 func staticHandler() http.Handler {
 	subFS, err := fs.Sub(distFS, "dist")

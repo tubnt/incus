@@ -1,5 +1,6 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { http } from "@/shared/lib/http";
+import { pageKeyPart, pageQueryString, type PageParams } from "@/shared/lib/pagination";
 import { queryClient } from "@/shared/lib/query-client";
 
 export interface Ticket {
@@ -24,7 +25,8 @@ export interface TicketMessage {
 export const ticketKeys = {
   all: ["ticket"] as const,
   myList: () => [...ticketKeys.all, "list", "my"] as const,
-  adminList: () => [...ticketKeys.all, "list", "admin"] as const,
+  adminList: (params?: PageParams) =>
+    [...ticketKeys.all, "list", "admin", pageKeyPart(params)] as const,
   detail: (id: number) => [...ticketKeys.all, "detail", id] as const,
 };
 
@@ -35,10 +37,13 @@ export function useMyTicketsQuery() {
   });
 }
 
-export function useAdminTicketsQuery() {
+export function useAdminTicketsQuery(params?: PageParams) {
   return useQuery({
-    queryKey: ticketKeys.adminList(),
-    queryFn: () => http.get<{ tickets: Ticket[] }>("/admin/tickets"),
+    queryKey: ticketKeys.adminList(params),
+    queryFn: () =>
+      http.get<{ tickets: Ticket[]; total?: number; limit?: number; offset?: number }>(
+        `/admin/tickets${pageQueryString(params)}`,
+      ),
     refetchInterval: 15_000,
   });
 }

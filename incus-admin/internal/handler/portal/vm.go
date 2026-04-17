@@ -331,7 +331,9 @@ func NewAdminVMHandler(vmSvc *service.VMService, vmRepo *repository.VMRepo, sshK
 func (h *AdminVMHandler) Routes(r chi.Router) {
 	r.Get("/clusters", h.ListClusters)
 	r.Get("/clusters/{name}/nodes", h.ListNodes)
+	r.Get("/clusters/{name}/projects", h.ListProjects)
 	r.Get("/clusters/{name}/vms", h.ListClusterVMs)
+	r.Get("/clusters/{name}/vms/{vmName}", h.GetClusterVMDetail)
 	r.Post("/clusters/{name}/vms", h.CreateVM)
 	r.Get("/clusters/{name}/ha", h.GetHAStatus)
 	r.Post("/clusters/{name}/nodes/{node}/evacuate", h.EvacuateNode)
@@ -948,6 +950,119 @@ func (h *AdminVMHandler) MigrateVM(w http.ResponseWriter, r *http.Request) {
 	})
 	slog.Info("vm migrated", "vm", vmName, "target", req.TargetNode)
 	writeJSON(w, http.StatusOK, map[string]any{"status": "migrated", "target": req.TargetNode})
+}
+
+// ListProjects 返回集群实际存在的 project 列表（来自 Incus `/1.0/projects?recursion=1`）。
+// 批次 8 B-1：前端 ProjectPicker 依赖此端点，不再硬编码 `customers/default`。
+func (h *AdminVMHandler) ListProjects(w http.ResponseWriter, r *http.Request) {
+	clusterName := chi.URLParam(r, "name")
+	client, ok := h.clusters.Get(clusterName)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "cluster not found"})
+		return
+	}
+	resp, err := client.APIGet(r.Context(), "/1.0/projects?recursion=1")
+	if err != nil {
+		slog.Error("list projects failed", "cluster", clusterName, "error", err)
+		writeJSON(w, http.StatusBadGateway, map[string]any{"error": "list projects failed: " + err.Error()})
+		return
+	}
+	var raw []struct {
+		Name        string            `json:"name"`
+		Description string            `json:"description"`
+		Config      map[string]string `json:"config"`
+	}
+	if err := json.Unmarshal(resp.Metadata, &raw); err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]any{"error": "parse projects: " + err.Error()})
+		return
+	}
+	projects := make([]map[string]any, 0, len(raw))
+	for _, p := range raw {
+		projects = append(projects, map[string]any{
+			"name":        p.Name,
+			"description": p.Description,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"projects": projects})
+}
+
+// GetClusterVMDetail 返回单台 VM 的合并详情：incus instance + state + snapshots + DB 行。
+// 批次 8 B-2：前端 AdminVMDetail 从 O(N) 列表扫描改为单端点。
+// 查询参数 `?project=<name>` 可选；若省略则在该集群的已配置 projects 中逐一查找。
+func (h *AdminVMHandler) GetClusterVMDetail(w http.ResponseWriter, r *http.Request) {
+	clusterName := chi.URLParam(r, "name")
+	vmName := chi.URLParam(r, "vmName")
+	if !isValidName(vmName) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid vm name"})
+		return
+	}
+	client, ok := h.clusters.Get(clusterName)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "cluster not found"})
+		return
+	}
+	cc, _ := h.clusters.ConfigByName(clusterName)
+
+	candidates := make([]string, 0, len(cc.Projects)+2)
+	if p := r.URL.Query().Get("project"); p != "" {
+		candidates = append(candidates, p)
+	} else {
+		for _, pc := range cc.Projects {
+			candidates = append(candidates, pc.Name)
+		}
+		if len(candidates) == 0 {
+			candidates = []string{"customers", "default"}
+		}
+	}
+
+	var (
+		instance json.RawMessage
+		state    json.RawMessage
+		project  string
+		lastErr  error
+	)
+	for _, p := range candidates {
+		raw, err := client.GetInstance(r.Context(), p, vmName)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		instance = raw
+		project = p
+		if s, serr := client.GetInstanceState(r.Context(), p, vmName); serr == nil {
+			state = s
+		}
+		break
+	}
+	if instance == nil {
+		status := http.StatusNotFound
+		msg := "vm not found"
+		if lastErr != nil {
+			msg = lastErr.Error()
+		}
+		writeJSON(w, status, map[string]any{"error": msg})
+		return
+	}
+
+	snapshotsPath := fmt.Sprintf("/1.0/instances/%s/snapshots?project=%s&recursion=1", vmName, project)
+	snapResp, snapErr := client.APIGet(r.Context(), snapshotsPath)
+	var snapshots json.RawMessage
+	if snapErr == nil {
+		snapshots = snapResp.Metadata
+	}
+
+	var dbRow *model.VM
+	if h.vmRepo != nil {
+		dbRow, _ = h.vmRepo.GetByName(r.Context(), vmName)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"vm":        instance,
+		"state":     state,
+		"snapshots": snapshots,
+		"project":   project,
+		"db":        dbRow,
+	})
 }
 
 func extractCIDR(cidr string) string {

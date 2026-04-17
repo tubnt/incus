@@ -69,11 +69,12 @@ type BillingConfig struct {
 }
 
 type MonitorConfig struct {
-	PrometheusURL string `json:"prometheus_url"`
-	GrafanaURL    string `json:"grafana_url"`
-	CephSSHHost   string `json:"ceph_ssh_host"`
-	CephSSHUser   string `json:"ceph_ssh_user"`
-	CephSSHKey    string `json:"ceph_ssh_key"`
+	PrometheusURL     string `json:"prometheus_url"`
+	GrafanaURL        string `json:"grafana_url"`
+	CephSSHHost       string `json:"ceph_ssh_host"`
+	CephSSHUser       string `json:"ceph_ssh_user"`
+	CephSSHKey        string `json:"ceph_ssh_key"`
+	SSHKnownHostsFile string `json:"ssh_known_hosts_file"`
 }
 
 func Load() (*Config, error) {
@@ -99,11 +100,12 @@ func Load() (*Config, error) {
 			Currency: envOr("BILLING_CURRENCY", "USD"),
 		},
 		Monitor: MonitorConfig{
-			PrometheusURL: envOr("PROMETHEUS_URL", ""),
-			GrafanaURL:    envOr("GRAFANA_URL", ""),
-			CephSSHHost:   envOr("CEPH_SSH_HOST", ""),
-			CephSSHUser:   envOr("CEPH_SSH_USER", "root"),
-			CephSSHKey:    envOr("CEPH_SSH_KEY", "/etc/incus-admin/certs/ssh_key"),
+			PrometheusURL:     envOr("PROMETHEUS_URL", ""),
+			GrafanaURL:        envOr("GRAFANA_URL", ""),
+			CephSSHHost:       envOr("CEPH_SSH_HOST", ""),
+			CephSSHUser:       envOr("CEPH_SSH_USER", "root"),
+			CephSSHKey:        envOr("CEPH_SSH_KEY", "/etc/incus-admin/certs/ssh_key"),
+			SSHKnownHostsFile: envOr("SSH_KNOWN_HOSTS_FILE", ""),
 		},
 	}
 

@@ -19,18 +19,24 @@ type Manager struct {
 	configs  []config.ClusterConfig
 	idByName map[string]int64
 	nameByID map[int64]string
+	store    FingerprintStore
 }
 
-func NewManager(clusters []config.ClusterConfig) (*Manager, error) {
+// NewManager builds the cluster manager. When store is non-nil it enforces
+// SPKI-pinning for every HTTP/WebSocket client; first-connect learns the pin
+// (TOFU). A nil store falls back to InsecureSkipVerify — only acceptable in
+// tests or when no CA is configured.
+func NewManager(clusters []config.ClusterConfig, store FingerprintStore) (*Manager, error) {
 	m := &Manager{
 		clients:  make(map[string]*Client),
 		configs:  clusters,
 		idByName: make(map[string]int64),
 		nameByID: make(map[int64]string),
+		store:    store,
 	}
 
 	for _, cc := range clusters {
-		client, err := newClient(cc)
+		client, err := newClient(cc, store)
 		if err != nil {
 			slog.Error("failed to connect cluster", "name", cc.Name, "error", err)
 			continue
@@ -140,7 +146,7 @@ func (m *Manager) AddCluster(cc config.ClusterConfig) error {
 	if _, exists := m.clients[cc.Name]; exists {
 		return fmt.Errorf("cluster %q already exists", cc.Name)
 	}
-	client, err := newClient(cc)
+	client, err := newClient(cc, m.store)
 	if err != nil {
 		return fmt.Errorf("connect cluster: %w", err)
 	}
@@ -167,7 +173,11 @@ func (m *Manager) RemoveCluster(name string) error {
 	return nil
 }
 
-func buildTLSConfig(cc config.ClusterConfig) (*tls.Config, error) {
+// BuildTLSConfig assembles the mTLS client config. When no CA is configured,
+// it sets InsecureSkipVerify=true so the SPKI pin callback (layered on later
+// via BuildPinnedTLSConfig) is the sole trust anchor. Callers that can supply
+// a store should prefer BuildTLSConfigWithPin.
+func BuildTLSConfig(cc config.ClusterConfig) (*tls.Config, error) {
 	cert, err := tls.LoadX509KeyPair(cc.CertFile, cc.KeyFile)
 	if err != nil {
 		return nil, fmt.Errorf("load client cert: %w", err)
@@ -193,8 +203,34 @@ func buildTLSConfig(cc config.ClusterConfig) (*tls.Config, error) {
 	return tlsConfig, nil
 }
 
-func buildHTTPClient(cc config.ClusterConfig) (*http.Client, error) {
-	tlsConfig, err := buildTLSConfig(cc)
+// BuildTLSConfigWithPin returns a TLS config layered with SPKI pinning when a
+// store is supplied. Without a store the base config is returned unchanged —
+// only acceptable in tests or explicit opt-out paths.
+func BuildTLSConfigWithPin(cc config.ClusterConfig, store FingerprintStore) (*tls.Config, error) {
+	base, err := BuildTLSConfig(cc)
+	if err != nil {
+		return nil, err
+	}
+	if store == nil {
+		slog.Warn("TLS pin store not configured — peer verification relies on CA only", "cluster", cc.Name)
+		return base, nil
+	}
+	return BuildPinnedTLSConfig(base, cc.Name, store), nil
+}
+
+// TLSConfigForCluster is the go-to helper for WebSocket dialers. It reuses the
+// manager's fingerprint store so console/events connections share the same pin
+// with the REST client.
+func (m *Manager) TLSConfigForCluster(name string) (*tls.Config, error) {
+	cc, ok := m.ConfigByName(name)
+	if !ok {
+		return nil, fmt.Errorf("cluster %q not found", name)
+	}
+	return BuildTLSConfigWithPin(cc, m.store)
+}
+
+func buildHTTPClient(cc config.ClusterConfig, store FingerprintStore) (*http.Client, error) {
+	tlsConfig, err := BuildTLSConfigWithPin(cc, store)
 	if err != nil {
 		return nil, err
 	}

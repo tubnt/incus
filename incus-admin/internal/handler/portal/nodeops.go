@@ -5,19 +5,46 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 
 	"github.com/incuscloud/incus-admin/internal/sshexec"
 )
 
-type NodeOpsHandler struct {
-	defaultUser   string
-	defaultKeyFile string
+// shellMetaChars 任一出现即拒绝命令（防止命令链 / 管道 / 重定向 / 反引号等注入）。
+const shellMetaChars = ";&|`$<>\n\r\\\"'"
+
+// programAllowlist 节点远程执行的程序白名单（程序名必须精确匹配第一个 token）。
+var programAllowlist = map[string]bool{
+	"hostname":   true,
+	"uname":      true,
+	"uptime":     true,
+	"free":       true,
+	"df":         true,
+	"lsblk":      true,
+	"incus":      true,
+	"ceph":       true,
+	"ip":         true,
+	"cat":        true,
+	"journalctl": true,
+	"systemctl":  true,
 }
 
-func NewNodeOpsHandler(defaultUser, defaultKeyFile string) *NodeOpsHandler {
-	return &NodeOpsHandler{defaultUser: defaultUser, defaultKeyFile: defaultKeyFile}
+// systemctlActions 限制 systemctl 仅可执行只读查询动作。
+var systemctlActions = map[string]bool{
+	"status": true, "is-active": true, "is-enabled": true,
+	"list-units": true, "list-unit-files": true,
+}
+
+type NodeOpsHandler struct {
+	defaultUser    string
+	defaultKeyFile string
+	knownHostsFile string
+}
+
+func NewNodeOpsHandler(defaultUser, defaultKeyFile, knownHostsFile string) *NodeOpsHandler {
+	return &NodeOpsHandler{defaultUser: defaultUser, defaultKeyFile: defaultKeyFile, knownHostsFile: knownHostsFile}
 }
 
 func (h *NodeOpsHandler) AdminRoutes(r chi.Router) {
@@ -42,7 +69,7 @@ func (h *NodeOpsHandler) TestSSH(w http.ResponseWriter, r *http.Request) {
 	if req.User == "" { req.User = h.defaultUser }
 	if req.KeyFile == "" { req.KeyFile = h.defaultKeyFile }
 
-	runner := sshexec.New(req.Host, req.User, req.KeyFile)
+	runner := sshexec.New(req.Host, req.User, req.KeyFile).WithKnownHosts(h.knownHostsFile)
 	out, err := runner.Run(r.Context(), "hostname && uname -r && uptime")
 	if err != nil {
 		slog.Error("SSH test failed", "host", req.Host, "error", err)
@@ -79,13 +106,14 @@ func (h *NodeOpsHandler) ExecCommand(w http.ResponseWriter, r *http.Request) {
 	if req.User == "" { req.User = h.defaultUser }
 	if req.KeyFile == "" { req.KeyFile = h.defaultKeyFile }
 
-	if !isValidCommand(req.Command) {
+	program, args, ok := validateCommand(req.Command)
+	if !ok {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "command not allowed"})
 		return
 	}
 
-	runner := sshexec.New(req.Host, req.User, req.KeyFile)
-	out, err := runner.Run(r.Context(), req.Command)
+	runner := sshexec.New(req.Host, req.User, req.KeyFile).WithKnownHosts(h.knownHostsFile)
+	out, err := runner.RunArgs(r.Context(), program, args...)
 
 	audit(r.Context(), r, "node.exec", "node", 0, map[string]any{
 		"host": req.Host, "command": req.Command, "error": fmt.Sprint(err),
@@ -98,15 +126,37 @@ func (h *NodeOpsHandler) ExecCommand(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "output": out})
 }
 
-func isValidCommand(cmd string) bool {
-	allowed := []string{
-		"hostname", "uname", "uptime", "free", "df", "lsblk",
-		"incus", "ceph", "systemctl status", "ip addr", "cat /etc/os-release",
+// validateCommand 拆分并校验远程执行命令；返回 program + args。
+// 规则：
+//  1. 拒绝任何包含 shell 元字符的字符串（阻止命令链 / 管道 / 重定向）。
+//  2. 第一个 token 必须精确匹配 programAllowlist。
+//  3. systemctl / cat 进一步收紧子动作与参数路径。
+func validateCommand(cmd string) (string, []string, bool) {
+	if strings.ContainsAny(cmd, shellMetaChars) {
+		return "", nil, false
 	}
-	for _, a := range allowed {
-		if len(cmd) >= len(a) && cmd[:len(a)] == a {
-			return true
+	tokens := strings.Fields(cmd)
+	if len(tokens) == 0 {
+		return "", nil, false
+	}
+	program, args := tokens[0], tokens[1:]
+	if !programAllowlist[program] {
+		return "", nil, false
+	}
+	switch program {
+	case "systemctl":
+		if len(args) < 1 || !systemctlActions[args[0]] {
+			return "", nil, false
+		}
+	case "cat":
+		if len(args) == 0 {
+			return "", nil, false
+		}
+		for _, a := range args {
+			if !strings.HasPrefix(a, "/etc/") && !strings.HasPrefix(a, "/proc/") {
+				return "", nil, false
+			}
 		}
 	}
-	return false
+	return program, args, true
 }

@@ -52,6 +52,7 @@ type Product struct {
 	DiskGB       int     `json:"disk_gb" db:"disk_gb"`
 	BandwidthTB  int     `json:"bandwidth_tb" db:"bandwidth_tb"`
 	PriceMonthly float64 `json:"price_monthly" db:"price_monthly"`
+	Currency     string  `json:"currency" db:"currency"`
 	Access       string  `json:"access" db:"access"`
 	Active       bool    `json:"active" db:"active"`
 	SortOrder    int     `json:"sort_order" db:"sort_order"`
@@ -92,6 +93,7 @@ type Order struct {
 	ClusterID int64      `json:"cluster_id" db:"cluster_id"`
 	Status    string     `json:"status" db:"status"`
 	Amount    float64    `json:"amount" db:"amount"`
+	Currency  string     `json:"currency" db:"currency"`
 	ExpiresAt *time.Time `json:"expires_at,omitempty" db:"expires_at"`
 	CreatedAt time.Time  `json:"created_at" db:"created_at"`
 }
@@ -123,6 +125,7 @@ type Invoice struct {
 	OrderID   int64      `json:"order_id" db:"order_id"`
 	UserID    int64      `json:"user_id" db:"user_id"`
 	Amount    float64    `json:"amount" db:"amount"`
+	Currency  string     `json:"currency" db:"currency"`
 	Status    string     `json:"status" db:"status"`
 	DueAt     *time.Time `json:"due_at,omitempty" db:"due_at"`
 	PaidAt    *time.Time `json:"paid_at,omitempty" db:"paid_at"`

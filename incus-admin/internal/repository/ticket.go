@@ -39,22 +39,39 @@ func (r *TicketRepo) ListByUser(ctx context.Context, userID int64) ([]model.Tick
 }
 
 func (r *TicketRepo) ListAll(ctx context.Context) ([]model.Ticket, error) {
-	rows, err := r.db.QueryContext(ctx,
-		`SELECT t.id, t.user_id, t.subject, t.status, t.priority, t.created_at, t.updated_at FROM tickets t ORDER BY t.updated_at DESC`)
+	tickets, _, err := r.ListPaged(ctx, 0, 0)
+	return tickets, err
+}
+
+// ListPaged 返回全部工单的分页结果与过滤后总数。limit<=0 表示不限制。
+func (r *TicketRepo) ListPaged(ctx context.Context, limit, offset int) ([]model.Ticket, int64, error) {
+	var total int64
+	if err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM tickets`).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count tickets: %w", err)
+	}
+
+	query := `SELECT t.id, t.user_id, t.subject, t.status, t.priority, t.created_at, t.updated_at FROM tickets t ORDER BY t.updated_at DESC`
+	args := []any{}
+	if limit > 0 {
+		query += ` LIMIT $1 OFFSET $2`
+		args = append(args, limit, offset)
+	}
+
+	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer rows.Close()
 
-	var tickets []model.Ticket
+	tickets := make([]model.Ticket, 0)
 	for rows.Next() {
 		var t model.Ticket
 		if err := rows.Scan(&t.ID, &t.UserID, &t.Subject, &t.Status, &t.Priority, &t.CreatedAt, &t.UpdatedAt); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		tickets = append(tickets, t)
 	}
-	return tickets, rows.Err()
+	return tickets, total, rows.Err()
 }
 
 func (r *TicketRepo) GetByID(ctx context.Context, id int64) (*model.Ticket, error) {

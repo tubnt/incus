@@ -11,9 +11,15 @@ import (
 )
 
 var auditRepo *repository.AuditRepo
+var userRepo *repository.UserRepo
 
 func SetAuditRepo(repo *repository.AuditRepo) {
 	auditRepo = repo
+}
+
+// SetUserRepo 注入 UserRepo 给 handler 内部辅助函数使用（订单失败回滚退款等）。
+func SetUserRepo(repo *repository.UserRepo) {
+	userRepo = repo
 }
 
 func audit(ctx context.Context, r *http.Request, action, targetType string, targetID int64, details any) {

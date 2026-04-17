@@ -22,8 +22,8 @@ type Client struct {
 	httpClient  *http.Client
 }
 
-func newClient(cc config.ClusterConfig) (*Client, error) {
-	hc, err := buildHTTPClient(cc)
+func newClient(cc config.ClusterConfig, store FingerprintStore) (*Client, error) {
+	hc, err := buildHTTPClient(cc, store)
 	if err != nil {
 		return nil, err
 	}

@@ -46,15 +46,41 @@ export interface ClusterVMsResponse {
   warning?: string;
 }
 
+export interface IncusInstanceState {
+  status: string;
+  cpu?: { usage: number };
+  memory?: { usage: number; usage_peak: number; total: number };
+  network?: Record<string, {
+    addresses: Array<{ address: string; family: string; scope: string }>;
+  }>;
+}
+
+export interface IncusSnapshot {
+  name: string;
+  created_at: string;
+  stateful?: boolean;
+}
+
+export interface AdminVMDetail {
+  vm: IncusInstance;
+  state: IncusInstanceState;
+  snapshots: IncusSnapshot[];
+  project: string;
+  db: VMService | null;
+}
+
 // Cache key prefix so list + detail invalidate together:
 //   ["vm", "list", "my"]      portal list
 //   ["vm", "detail", id]      portal detail
 //   ["vm", "list", "cluster", name]  admin cluster list
+//   ["vm", "detail", "cluster", name, vmName, project]  admin single-vm detail
 export const vmKeys = {
   all: ["vm"] as const,
   myList: () => [...vmKeys.all, "list", "my"] as const,
   myDetail: (id: number) => [...vmKeys.all, "detail", id] as const,
   clusterList: (clusterName: string) => [...vmKeys.all, "list", "cluster", clusterName] as const,
+  clusterDetail: (clusterName: string, vmName: string, project?: string) =>
+    [...vmKeys.all, "detail", "cluster", clusterName, vmName, project ?? ""] as const,
 };
 
 export function useMyVMsQuery() {
@@ -93,6 +119,26 @@ export function useClusterVMsQuery(clusterName: string, refetchIntervalMs = 10_0
     queryKey: vmKeys.clusterList(clusterName),
     queryFn: () => http.get<ClusterVMsResponse>(`/admin/clusters/${clusterName}/vms`),
     enabled: !!clusterName,
+    refetchInterval: refetchIntervalMs,
+    retry: 1,
+  });
+}
+
+export function useAdminVMDetailQuery(
+  clusterName: string,
+  vmName: string,
+  project?: string,
+  refetchIntervalMs = 10_000,
+) {
+  return useQuery({
+    queryKey: vmKeys.clusterDetail(clusterName, vmName, project),
+    queryFn: () => {
+      const qs = project ? `?project=${encodeURIComponent(project)}` : "";
+      return http.get<AdminVMDetail>(
+        `/admin/clusters/${clusterName}/vms/${vmName}${qs}`,
+      );
+    },
+    enabled: !!clusterName && !!vmName,
     refetchInterval: refetchIntervalMs,
     retry: 1,
   });

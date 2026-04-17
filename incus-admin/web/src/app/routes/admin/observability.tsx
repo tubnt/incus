@@ -5,11 +5,21 @@ export const Route = createFileRoute("/admin/observability")({
   component: ObservabilityPage,
 });
 
-const DASHBOARDS = [
-  { id: "grafana", label: "Grafana", url: "http://10.0.20.1:3000", desc: "Metrics dashboards (CPU, RAM, Disk, Network)" },
-  { id: "prometheus", label: "Prometheus", url: "http://10.0.20.1:9090", desc: "Metrics query and exploration" },
-  { id: "alertmanager", label: "Alertmanager", url: "http://10.0.20.1:9093", desc: "Alert routing and silencing" },
-  { id: "ceph", label: "Ceph Dashboard", url: "https://10.0.20.1:8443", desc: "Ceph storage management (requires VPN)" },
+type Dashboard = {
+  id: string;
+  label: string;
+  url: string;
+  desc: string;
+  // embeddable=false 表示浏览器 Mixed-Content 会拦截 iframe（HTTP over HTTPS 页面）
+  // 或目标服务拒绝被 iframe（X-Frame-Options）。此时只允许"新窗口打开"。
+  embeddable: boolean;
+};
+
+const DASHBOARDS: Dashboard[] = [
+  { id: "grafana", label: "Grafana", url: "http://10.0.20.1:3000", desc: "Metrics dashboards (CPU, RAM, Disk, Network) — HTTP only, new tab", embeddable: false },
+  { id: "prometheus", label: "Prometheus", url: "http://10.0.20.1:9090", desc: "Metrics query and exploration — HTTP only, new tab", embeddable: false },
+  { id: "alertmanager", label: "Alertmanager", url: "http://10.0.20.1:9093", desc: "Alert routing and silencing — HTTP only, new tab", embeddable: false },
+  { id: "ceph", label: "Ceph Dashboard", url: "https://10.0.20.1:8443", desc: "Ceph storage management (requires VPN)", embeddable: true },
 ];
 
 function ObservabilityPage() {
@@ -25,10 +35,12 @@ function ObservabilityPage() {
             <div className="flex items-center justify-between mb-2">
               <h3 className="font-semibold">{d.label}</h3>
               <div className="flex gap-2">
-                <button onClick={() => setActive(active === d.id ? null : d.id)}
-                  className="px-3 py-1 text-xs bg-primary/20 text-primary rounded hover:bg-primary/30">
-                  {active === d.id ? "Close" : "Embed"}
-                </button>
+                {d.embeddable && (
+                  <button onClick={() => setActive(active === d.id ? null : d.id)}
+                    className="px-3 py-1 text-xs bg-primary/20 text-primary rounded hover:bg-primary/30">
+                    {active === d.id ? "Close" : "Embed"}
+                  </button>
+                )}
                 <a href={d.url} target="_blank" rel="noopener noreferrer"
                   className="px-3 py-1 text-xs bg-muted/50 text-muted-foreground rounded hover:bg-muted">
                   Open →
@@ -40,30 +52,35 @@ function ObservabilityPage() {
         ))}
       </div>
 
-      {active && (
-        <div className="border border-border rounded-lg overflow-hidden">
-          <div className="px-4 py-2 bg-muted/30 flex items-center justify-between">
-            <span className="text-sm font-medium">{DASHBOARDS.find((d) => d.id === active)?.label}</span>
-            <button onClick={() => setActive(null)} className="text-xs text-muted-foreground hover:text-foreground">
-              Close ×
-            </button>
+      {active && (() => {
+        const current = DASHBOARDS.find((d) => d.id === active);
+        if (!current || !current.embeddable) return null;
+        return (
+          <div className="border border-border rounded-lg overflow-hidden">
+            <div className="px-4 py-2 bg-muted/30 flex items-center justify-between">
+              <span className="text-sm font-medium">{current.label}</span>
+              <button onClick={() => setActive(null)} className="text-xs text-muted-foreground hover:text-foreground">
+                Close ×
+              </button>
+            </div>
+            <iframe
+              src={current.url}
+              className="w-full h-[700px]"
+              title={active}
+            />
           </div>
-          <iframe
-            src={DASHBOARDS.find((d) => d.id === active)?.url}
-            className="w-full h-[700px]"
-            title={active}
-          />
-        </div>
-      )}
+        );
+      })()}
 
       <EventStream />
 
       <div className="mt-6 border border-border rounded-lg bg-card p-4">
         <h3 className="font-semibold mb-2">Access Note</h3>
         <p className="text-sm text-muted-foreground">
-          These dashboards are on the cluster internal network (10.0.20.0/24).
-          Access requires WireGuard VPN connection or SSH tunnel to the cluster.
-          The embedded view will only work if your browser can reach the cluster network.
+          仪表盘运行在集群内网 (10.0.20.0/24)，访问需 WireGuard VPN 或 SSH 隧道。
+          Grafana / Prometheus / Alertmanager 目前以 HTTP 暴露，浏览器同源与 Mixed-Content 策略会阻断 HTTPS 页面内 iframe 嵌入，因此仅开放"新窗口打开"。
+          Ceph Dashboard 已是 HTTPS，可内嵌（自签证书首次需手动信任）。
+          后续若在反代层上 HTTPS（Caddy subpath + grafana sub_path / prometheus web.external-url），可恢复三者的嵌入体验。
         </p>
       </div>
     </div>

@@ -88,7 +88,11 @@
     "passwordReset": "重置密码",
     "passwordResetting": "重置中...",
     "passwordResetToast": "密码已重置: {{password}}",
-    "passwordResetFailed": "密码重置失败"
+    "passwordResetFailed": "密码重置失败",
+    "cluster": "集群",
+    "size": "规格",
+    "osImage": "操作系统镜像",
+    "project": "项目"
   },
   "snapshot": {
     "restore": "恢复",
@@ -141,7 +145,22 @@
     "vmCount": "云主机数量",
     "avgCpu": "平均 CPU",
     "totalMemory": "总内存使用",
-    "totalDisk": "总磁盘使用"
+    "totalDisk": "总磁盘使用",
+    "vmMetricsTitle": "云主机资源明细",
+    "networkColumn": "网络 (RX/TX)",
+    "fetchFailed": "获取监控数据失败: {{error}}",
+    "noData": "暂无云主机监控数据。请确认 Incus metrics 已启用。",
+    "noNetworkData": "暂无网络数据",
+    "sortCpu": "CPU",
+    "sortMem": "内存",
+    "sortDisk": "磁盘",
+    "netReceive": "接收",
+    "netSend": "发送",
+    "memTotal": "总量",
+    "memUsed": "已用",
+    "legendUser": "用户",
+    "legendSystem": "系统",
+    "usageLegend": "使用率"
   },
   "settings": {
     "title": "设置",
@@ -152,6 +171,79 @@
     "dark": "深色"
   },
   "admin": {
+    "nodeOpsQuick": {
+      "systemInfo": "系统信息",
+      "memory": "内存",
+      "disk": "磁盘",
+      "blockDevices": "块设备",
+      "network": "网络",
+      "incusStatus": "Incus 状态",
+      "cephStatus": "Ceph 状态"
+    },
+    "nodeJoin": {
+      "title": "节点加入向导",
+      "desc": "按步骤将新节点加入 Incus 集群",
+      "step1": "1. 准备",
+      "step2": "2. SSH 测试",
+      "step3": "3. 生成 Token",
+      "step4": "4. 验证",
+      "prepareTitle": "准备工作",
+      "prepareIntro": "在新节点上完成以下准备：",
+      "prepareOS": "确保新节点已安装 Ubuntu 22.04/24.04 或 Debian 12",
+      "prepareInstall": "安装 Incus：",
+      "prepareNetwork": "确保新节点与现有集群网络互通",
+      "prepareSSH": "配置 SSH key 免密登录",
+      "newNodeIp": "新节点 IP",
+      "newNodeIpPlaceholder": "10.100.0.20",
+      "nodeName": "节点名称",
+      "nodeNamePlaceholder": "node-05",
+      "nextTestSsh": "下一步：测试 SSH",
+      "sshTestTitle": "SSH 连接测试",
+      "sshTestDescPrefix": "测试到",
+      "sshTestDescSuffix": "的 SSH 连接",
+      "sshTestBtn": "测试 SSH 连接",
+      "sshTesting": "测试中...",
+      "sshSuccess": "SSH 连接成功",
+      "sshFailed": "SSH 连接失败",
+      "joinTitle": "生成 Join Token",
+      "joinHintPrefix": "在现有集群节点上执行",
+      "joinHintSuffix": "生成 join token。",
+      "joinBtn": "通过 SSH 生成 Token",
+      "joinPending": "生成中...",
+      "tokenGenerated": "Join token 已生成",
+      "tokenFailed": "生成 token 失败",
+      "joinOrPaste": "或手动粘贴 token:",
+      "joinPlaceholder": "粘贴 join token...",
+      "nextVerify": "下一步：验证",
+      "verifyTitle": "在新节点上执行加入命令",
+      "verifyIntroPrefix": "在新节点",
+      "verifyIntroSuffix": "上执行以下命令：",
+      "copy": "复制",
+      "copied": "命令已复制到剪贴板",
+      "verifyCheck": "加入完成后，在集群节点上确认：",
+      "backToList": "查看节点列表"
+    },
+    "observability": {
+      "title": "可观测性",
+      "embed": "嵌入",
+      "close": "关闭",
+      "open": "打开 →",
+      "closeCross": "关闭 ×",
+      "accessNoteTitle": "访问说明",
+      "accessNoteBody": "这些面板位于集群内网 (10.0.20.0/24)，需要 WireGuard VPN 或 SSH 隧道才能访问。嵌入视图仅在浏览器可达集群网络时有效。",
+      "descGrafana": "Metrics 仪表盘（CPU / 内存 / 磁盘 / 网络）",
+      "descPrometheus": "指标查询与探索",
+      "descAlertmanager": "告警路由与静默",
+      "descCeph": "Ceph 存储管理（需要 VPN）",
+      "eventStream": "实时事件流",
+      "connected": "已连接",
+      "disconnected": "断开",
+      "pause": "⏸ 暂停",
+      "resume": "▶ 继续",
+      "clear": "清空",
+      "waitingEvents": "等待事件...",
+      "connecting": "正在连接..."
+    },
     "ordersTitle": "订单管理",
     "auditLogsTitle": "审计日志",
     "nodeOpsTitle": "节点操作",
@@ -204,7 +296,17 @@
     "fieldCert": "客户端证书路径",
     "fieldKey": "客户端私钥路径",
     "namePlaceholder": "cn-sz-02",
-    "urlPlaceholder": "https://10.0.20.1:8443"
+    "urlPlaceholder": "https://10.0.20.1:8443",
+    "nodesCount": "{{count}} 节点",
+    "cpuCores": "{{count}} 核",
+    "colNode": "节点",
+    "colStatus": "状态",
+    "colCpu": "CPU",
+    "colMemory": "内存",
+    "colFreePct": "空闲率",
+    "colActions": "操作",
+    "evacuate": "疏散",
+    "restore": "恢复"
   },
   "confirmDialog": {
     "defaultTitle": "请确认",
@@ -248,6 +350,7 @@
     "createPool": "+ 创建 Pool",
     "createPoolSubmit": "创建",
     "poolName": "名称",
+    "poolNamePlaceholder": "pool-name",
     "poolPgNum": "PG 数",
     "poolTypeLabel": "类型",
     "poolCreatedToast": "Pool {{name}} 已创建",
@@ -267,6 +370,20 @@
     "poolType": {
       "replicated": "replicated",
       "erasure": "erasure"
+    }
+  },
+  "pagination": {
+    "range": "{{from}}-{{to}} / {{total}}",
+    "pageSize": "每页",
+    "prev": "上一页",
+    "next": "下一页",
+    "pageOf": "{{page}}/{{total}}"
+  },
+  "user": {
+    "topup": {
+      "usedToday": "今日已用 {{used}} / 上限 {{limit}}",
+      "dailyLimit": "日额度 {{limit}}",
+      "quotaExceeded": "超出日额度（剩余 {{remaining}}）"
     }
   }
 }

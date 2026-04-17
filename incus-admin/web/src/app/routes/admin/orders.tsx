@@ -1,6 +1,10 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useAdminOrdersQuery } from "@/features/billing/api";
+import { Pagination } from "@/shared/components/ui/pagination";
+import type { PageParams } from "@/shared/lib/pagination";
+import { formatCurrency } from "@/shared/lib/utils";
 
 export const Route = createFileRoute("/admin/orders")({
   component: AdminOrdersPage,
@@ -8,8 +12,10 @@ export const Route = createFileRoute("/admin/orders")({
 
 function AdminOrdersPage() {
   const { t } = useTranslation();
-  const { data, isLoading } = useAdminOrdersQuery();
+  const [page, setPage] = useState<PageParams>({ limit: 50, offset: 0 });
+  const { data, isLoading } = useAdminOrdersQuery(page);
   const orders = data?.orders ?? [];
+  const total = data?.total ?? orders.length;
 
   return (
     <div>
@@ -22,6 +28,7 @@ function AdminOrdersPage() {
           {t("common.noData")}
         </div>
       ) : (
+        <>
         <div className="border border-border rounded-lg overflow-hidden">
           <table className="w-full text-sm">
             <thead className="bg-muted/30">
@@ -41,7 +48,7 @@ function AdminOrdersPage() {
                   <td className="px-4 py-2">{o.id}</td>
                   <td className="px-4 py-2 text-xs">#{o.user_id}</td>
                   <td className="px-4 py-2 text-xs">#{o.product_id}</td>
-                  <td className="px-4 py-2 text-right font-mono">${o.amount.toFixed(2)}</td>
+                  <td className="px-4 py-2 text-right font-mono">{formatCurrency(o.amount, o.currency)}</td>
                   <td className="px-4 py-2">
                     <OrderStatusBadge status={o.status} />
                   </td>
@@ -56,6 +63,14 @@ function AdminOrdersPage() {
             </tbody>
           </table>
         </div>
+        <Pagination
+          total={total}
+          limit={page.limit}
+          offset={page.offset}
+          onChange={(limit, offset) => setPage({ limit, offset })}
+          className="mt-3"
+        />
+        </>
       )}
     </div>
   );

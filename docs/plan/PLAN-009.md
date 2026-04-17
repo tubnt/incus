@@ -1,8 +1,9 @@
 # PLAN-009 Code review follow-up — PLAN-008 findings
 
-- **status**: implementing
+- **status**: completed
 - **createdAt**: 2026-04-16 22:00
 - **approvedAt**: 2026-04-16 22:00
+- **completedAt**: 2026-04-16 23:30
 - **relatedTask**: QA-002
 
 ## Context

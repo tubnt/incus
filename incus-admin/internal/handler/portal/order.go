@@ -1,7 +1,9 @@
 package portal
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -54,7 +56,8 @@ func (h *OrderHandler) ListMine(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *OrderHandler) ListAll(w http.ResponseWriter, r *http.Request) {
-	orders, err := h.orders.ListAll(r.Context())
+	p := ParsePageParams(r)
+	orders, total, err := h.orders.ListPaged(r.Context(), p.Limit, p.Offset)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to list orders"})
 		return
@@ -62,16 +65,23 @@ func (h *OrderHandler) ListAll(w http.ResponseWriter, r *http.Request) {
 	if orders == nil {
 		orders = []model.Order{}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"orders": orders})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"orders": orders,
+		"total":  total,
+		"limit":  p.Limit,
+		"offset": p.Offset,
+	})
 }
 
 func (h *OrderHandler) Create(w http.ResponseWriter, r *http.Request) {
 	userID, _ := r.Context().Value(middleware.CtxUserID).(int64)
 
 	var req struct {
-		ProductID int64  `json:"product_id"`
-		VMName    string `json:"vm_name"`
-		OSImage   string `json:"os_image"`
+		ProductID   int64  `json:"product_id"`
+		VMName      string `json:"vm_name"`
+		OSImage     string `json:"os_image"`
+		ClusterID   int64  `json:"cluster_id"`
+		ClusterName string `json:"cluster_name"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid body"})
@@ -92,9 +102,20 @@ func (h *OrderHandler) Create(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "no clusters"})
 		return
 	}
-	clusterID := int64(1)
+	clusterID := req.ClusterID
+	if clusterID == 0 && req.ClusterName != "" {
+		clusterID = h.clusters.IDByName(req.ClusterName)
+	}
+	if clusterID == 0 {
+		// Fallback: first registered cluster. Keeps single-cluster deployments unchanged.
+		clusterID = h.clusters.IDByName(clients[0].Name)
+	}
+	if clusterID == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid cluster"})
+		return
+	}
 
-	order, err := h.orders.Create(r.Context(), userID, req.ProductID, clusterID, product.PriceMonthly)
+	order, err := h.orders.Create(r.Context(), userID, req.ProductID, clusterID, product.PriceMonthly, product.Currency)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
@@ -136,7 +157,16 @@ func (h *OrderHandler) Pay(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Resolve the order's cluster; fall back to first cluster for legacy orders
+	// whose cluster_id may not be registered any more.
 	client := clients[0]
+	if order.ClusterID > 0 {
+		if name := h.clusters.NameByID(order.ClusterID); name != "" {
+			if c, ok := h.clusters.Get(name); ok {
+				client = c
+			}
+		}
+	}
 	cc, _ := h.clusters.ConfigByName(client.Name)
 
 	defProject := cc.DefaultProject
@@ -149,8 +179,8 @@ func (h *OrderHandler) Pay(w http.ResponseWriter, r *http.Request) {
 	ip, gateway, cidr, ipErr := allocateIP(r.Context(), cc, 0)
 	if ipErr != nil {
 		slog.Error("allocate IP failed", "order", orderID, "error", ipErr)
-		h.orders.UpdateStatus(r.Context(), orderID, model.OrderPaid)
-		writeJSON(w, http.StatusOK, map[string]any{"status": "paid", "error": "IP allocation failed: " + ipErr.Error()})
+		h.rollbackPayment(r.Context(), order, "", "ip allocation failed: "+ipErr.Error())
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "IP allocation failed, payment refunded"})
 		return
 	}
 
@@ -179,8 +209,8 @@ func (h *OrderHandler) Pay(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		slog.Error("auto-provision VM failed after payment", "order", orderID, "error", err)
-		h.orders.UpdateStatus(r.Context(), orderID, model.OrderPaid)
-		writeJSON(w, http.StatusOK, map[string]any{"status": "paid", "error": "VM provisioning failed: " + err.Error()})
+		h.rollbackPayment(r.Context(), order, ip, "vm provisioning failed: "+err.Error())
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "VM provisioning failed, payment refunded"})
 		return
 	}
 
@@ -255,4 +285,24 @@ func (h *OrderHandler) UpdateStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": req.Status})
+}
+
+// rollbackPayment 在扣款成功但后续 VM 创建失败时调用：退款 + 释放 IP + 订单置 cancelled。
+// 失败的每一步都只记日志，不 panic，以免破坏 HTTP 响应。
+func (h *OrderHandler) rollbackPayment(ctx context.Context, order *model.Order, ip, reason string) {
+	if userRepo != nil {
+		desc := fmt.Sprintf("订单 #%d 失败退款: %s", order.ID, reason)
+		if err := userRepo.AdjustBalance(ctx, order.UserID, order.Amount, "refund", desc, &order.ID); err != nil {
+			slog.Error("payment refund failed", "order", order.ID, "error", err)
+		}
+	}
+	if ip != "" && ipAddrRepo != nil {
+		if err := ipAddrRepo.Release(ctx, ip); err != nil {
+			slog.Error("release IP on rollback failed", "order", order.ID, "ip", ip, "error", err)
+		}
+	}
+	if err := h.orders.UpdateStatus(ctx, order.ID, model.OrderCancelled); err != nil {
+		slog.Error("mark order cancelled failed", "order", order.ID, "error", err)
+	}
+	slog.Warn("order payment rolled back", "order", order.ID, "reason", reason)
 }

@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { useClustersQuery } from "@/features/clusters/api";
+import { ClusterPicker } from "@/features/clusters/cluster-picker";
 import { useAddIPPoolMutation, useIPPoolsQuery } from "@/features/ip-pools/api";
 
 export const Route = createFileRoute("/admin/ip-pools")({
@@ -70,9 +70,6 @@ function AddPoolForm({ onDone }: { onDone: () => void }) {
   const { t } = useTranslation();
   const [form, setForm] = useState({ cluster: "", cidr: "", gateway: "", range: "", vlan: 0 });
 
-  const { data: clustersData } = useClustersQuery();
-  const clusters = clustersData?.clusters ?? [];
-
   const mutation = useAddIPPoolMutation();
 
   const set = (k: string, v: string | number) => setForm({ ...form, [k]: v });
@@ -81,11 +78,12 @@ function AddPoolForm({ onDone }: { onDone: () => void }) {
     <div className="border border-border rounded-lg bg-card p-4 mb-6">
       <h3 className="font-semibold mb-3">{t("admin.ipPools.addTitle", { defaultValue: "Add IP Pool" })}</h3>
       <div className="grid grid-cols-2 gap-3 mb-4">
-        <select value={form.cluster} onChange={(e) => set("cluster", e.target.value)}
-          className="px-3 py-2 rounded border border-border bg-card text-sm">
-          <option value="">{t("admin.ipPools.selectCluster", { defaultValue: "Select cluster" })}</option>
-          {clusters.map((c) => <option key={c.name} value={c.name}>{c.display_name || c.name}</option>)}
-        </select>
+        <ClusterPicker
+          value={form.cluster}
+          onChange={(v) => set("cluster", v)}
+          allowEmpty
+          placeholder={t("admin.ipPools.selectCluster", { defaultValue: "Select cluster" })}
+        />
         <input type="number" placeholder={t("admin.ipPools.vlanPlaceholder", { defaultValue: "VLAN ID" })} value={form.vlan || ""} onChange={(e) => set("vlan", +e.target.value)}
           className="px-3 py-2 rounded border border-border bg-card text-sm" />
         <input placeholder={t("admin.ipPools.cidrPlaceholder", { defaultValue: "CIDR (e.g. 202.151.179.224/27)" })} value={form.cidr} onChange={(e) => set("cidr", e.target.value)}

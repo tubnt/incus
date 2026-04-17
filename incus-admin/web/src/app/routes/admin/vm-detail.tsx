@@ -3,10 +3,11 @@ import { useState } from "react";
 import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
 import { VMMetricsPanel } from "@/features/monitoring/vm-metrics-panel";
+import { NodePicker } from "@/features/nodes/node-picker";
 import { SnapshotPanel } from "@/features/snapshots/snapshot-panel";
 import { useConfirm } from "@/shared/components/ui/confirm-dialog";
 import {
-  useClusterVMsQuery,
+  useAdminVMDetailQuery,
   useDeleteVMMutation,
   useMigrateVMMutation,
   useVMStateMutation,
@@ -30,8 +31,14 @@ function VMDetailPage() {
   const [migrateTarget, setMigrateTarget] = useState("");
   const [showMigrate, setShowMigrate] = useState(false);
 
-  const { data: vmsData, isLoading: vmsLoading } = useClusterVMsQuery(cluster, 15_000);
-  const exists = !vmsLoading && !!vmsData?.vms?.some((v) => v.name === name);
+  const { data: detailData, isLoading: detailLoading, isError: detailError } = useAdminVMDetailQuery(
+    cluster,
+    name,
+    project || undefined,
+    15_000,
+  );
+  const resolvedProject = detailData?.project || project;
+  const currentNode = detailData?.vm?.location ?? "";
 
   const stateMutation = useVMStateMutation();
   const migrateMutation = useMigrateVMMutation();
@@ -69,11 +76,11 @@ function VMDetailPage() {
     return <div className="text-muted-foreground p-8">Missing vm name or cluster.</div>;
   }
 
-  if (vmsLoading) {
+  if (detailLoading) {
     return <div className="text-muted-foreground p-8">{t("common.loading")}</div>;
   }
 
-  if (!exists) {
+  if (detailError || !detailData?.vm) {
     return (
       <div className="flex flex-col items-center justify-center py-20 gap-4">
         <div className="text-2xl font-semibold">{t("vm.notFoundTitle")}</div>
@@ -93,7 +100,10 @@ function VMDetailPage() {
       <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-2xl font-bold font-mono">{name}</h1>
-          <p className="text-sm text-muted-foreground">{cluster} / {project}</p>
+          <p className="text-sm text-muted-foreground">
+            {cluster} / {resolvedProject}
+            {currentNode ? ` · ${currentNode}` : ""}
+          </p>
         </div>
         <div className="flex gap-2">
           <a href={`/console?vm=${name}&cluster=${cluster}&project=${project}`}
@@ -130,12 +140,13 @@ function VMDetailPage() {
         <div className="border border-border rounded-lg bg-card p-4 mb-4">
           <h3 className="font-semibold text-sm mb-2">{t("admin.migrateTitle", { defaultValue: "Migrate to target node" })}</h3>
           <div className="flex gap-2">
-            <input
-              type="text"
-              placeholder={t("admin.targetNode", { defaultValue: "Target node name" })}
+            <NodePicker
+              clusterName={cluster}
               value={migrateTarget}
-              onChange={(e) => setMigrateTarget(e.target.value)}
-              className="flex-1 px-3 py-2 rounded border border-border bg-card text-sm font-mono"
+              onChange={setMigrateTarget}
+              excludeNodes={currentNode ? [currentNode] : []}
+              placeholder={t("admin.targetNode", { defaultValue: "Target node name" })}
+              className="flex-1 font-mono"
             />
             <button
               onClick={async () => {

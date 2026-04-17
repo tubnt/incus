@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+defaults:
+  run:
+    shell: bash
+    working-directory: incus-admin
+
+jobs:
+  backend-unit:
+    name: Backend unit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache-dependency-path: incus-admin/go.sum
+
+      - name: Build
+        run: CGO_ENABLED=0 go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Unit tests
+        run: go test ./...
+
+  backend-integration:
+    name: Backend integration (testcontainers)
+    runs-on: ubuntu-latest
+    needs: backend-unit
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache-dependency-path: incus-admin/go.sum
+
+      # GitHub-hosted ubuntu-latest already has Docker; testcontainers-go 会自动连上。
+      # 关 Ryuk 避免清理 sidecar 在 CI 下卡住。
+      - name: Integration tests
+        env:
+          TESTCONTAINERS_RYUK_DISABLED: 'true'
+        run: go test -tags=integration -timeout 15m ./...
+
+  frontend:
+    name: Frontend typecheck + build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+        working-directory: incus-admin/web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install deps
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: bunx tsc --noEmit
+
+      - name: Build
+        run: bun run build

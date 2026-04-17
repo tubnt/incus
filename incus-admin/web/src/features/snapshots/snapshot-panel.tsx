@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { http } from "@/shared/lib/http";
 import { queryClient } from "@/shared/lib/query-client";
 import { useConfirm } from "@/shared/components/ui/confirm-dialog";
+import { snapshotPath } from "./snapshot-utils";
 
 interface SnapshotInfo {
   name: string;
@@ -24,30 +25,33 @@ export function SnapshotPanel({ vmName, cluster, project, apiBase = "/admin" }: 
   const [newName, setNewName] = useState("");
 
   const { data, isLoading } = useQuery({
-    queryKey: ["snapshots", vmName, cluster, project],
+    queryKey: ["snapshots", apiBase, vmName, cluster, project],
     queryFn: () =>
-      http.get<{ snapshots: SnapshotInfo[] }>(`${apiBase}/vms/${vmName}/snapshots`, { cluster, project }),
+      http.get<{ snapshots: SnapshotInfo[] }>(snapshotPath(apiBase, vmName), {
+        cluster,
+        project,
+      }),
   });
 
   const createMutation = useMutation({
     mutationFn: (name: string) =>
-      http.post(`${apiBase}/vms/${vmName}/snapshots`, { cluster, project, name: name || undefined }),
+      http.post(snapshotPath(apiBase, vmName), { cluster, project, name: name || undefined }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["snapshots", vmName] });
+      queryClient.invalidateQueries({ queryKey: ["snapshots", apiBase, vmName] });
       setNewName("");
     },
   });
 
   const deleteMutation = useMutation({
     mutationFn: (snap: string) =>
-      http.delete(`/admin/vms/${vmName}/snapshots/${snap}`, { cluster, project }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["snapshots", vmName] }),
+      http.delete(snapshotPath(apiBase, vmName, snap), { cluster, project }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["snapshots", apiBase, vmName] }),
   });
 
   const restoreMutation = useMutation({
     mutationFn: (snap: string) =>
-      http.post(`/admin/vms/${vmName}/snapshots/${snap}/restore`, { cluster, project }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["snapshots", vmName] }),
+      http.post(`${snapshotPath(apiBase, vmName, snap)}/restore`, { cluster, project }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["snapshots", apiBase, vmName] }),
   });
 
   const snapshots = data?.snapshots ?? [];

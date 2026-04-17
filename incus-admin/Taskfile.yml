@@ -26,6 +26,13 @@ tasks:
     cmds:
       - go test -cover ./...
 
+  test-integration:
+    desc: Run integration tests (requires Docker; testcontainers spins up Postgres)
+    env:
+      TESTCONTAINERS_RYUK_DISABLED: true
+    cmds:
+      - go test -tags=integration -timeout 10m ./...
+
   vet:
     desc: Run go vet
     cmds:

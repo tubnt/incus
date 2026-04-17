@@ -1,6 +1,10 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useAdminInvoicesQuery } from "@/features/billing/api";
+import { Pagination } from "@/shared/components/ui/pagination";
+import type { PageParams } from "@/shared/lib/pagination";
+import { formatCurrency } from "@/shared/lib/utils";
 
 export const Route = createFileRoute("/admin/invoices")({
   component: AdminInvoicesPage,
@@ -8,8 +12,10 @@ export const Route = createFileRoute("/admin/invoices")({
 
 function AdminInvoicesPage() {
   const { t } = useTranslation();
-  const { data, isLoading } = useAdminInvoicesQuery();
+  const [page, setPage] = useState<PageParams>({ limit: 50, offset: 0 });
+  const { data, isLoading } = useAdminInvoicesQuery(page);
   const invoices = data?.invoices ?? [];
+  const total = data?.total ?? invoices.length;
 
   return (
     <div>
@@ -26,6 +32,7 @@ function AdminInvoicesPage() {
           {t("admin.invoices.empty", { defaultValue: "暂无发票记录" })}
         </div>
       ) : (
+        <>
         <div className="border border-border rounded-lg overflow-hidden">
           <table className="w-full text-sm">
             <thead className="bg-muted/30">
@@ -63,7 +70,7 @@ function AdminInvoicesPage() {
                   </td>
                   <td className="px-4 py-2 text-xs">{inv.user_id}</td>
                   <td className="px-4 py-2 text-right font-mono">
-                    ${inv.amount.toFixed(2)}
+                    {formatCurrency(inv.amount, inv.currency)}
                   </td>
                   <td className="px-4 py-2">
                     <InvoiceStatusBadge status={inv.status} />
@@ -84,6 +91,14 @@ function AdminInvoicesPage() {
             </tbody>
           </table>
         </div>
+        <Pagination
+          total={total}
+          limit={page.limit}
+          offset={page.offset}
+          onChange={(limit, offset) => setPage({ limit, offset })}
+          className="mt-3"
+        />
+        </>
       )}
     </div>
   );

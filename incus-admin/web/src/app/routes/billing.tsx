@@ -12,17 +12,12 @@ import {
   usePayOrderMutation,
 } from "@/features/billing/api";
 import { type Product, useProductsQuery } from "@/features/products/api";
+import { DEFAULT_OS_IMAGE, OsImagePicker } from "@/features/vms/os-image-picker";
+import { formatCurrency } from "@/shared/lib/utils";
 
 export const Route = createFileRoute("/billing")({
   component: BillingPage,
 });
-
-const OS_IMAGES = [
-  { value: "images:ubuntu/24.04/cloud", label: "Ubuntu 24.04 LTS" },
-  { value: "images:ubuntu/22.04/cloud", label: "Ubuntu 22.04 LTS" },
-  { value: "images:debian/12/cloud", label: "Debian 12" },
-  { value: "images:rockylinux/9/cloud", label: "Rocky Linux 9" },
-];
 
 function BillingPage() {
   const { t } = useTranslation();
@@ -117,7 +112,7 @@ function BillingPage() {
                   <tr key={inv.id} className="border-t border-border">
                     <td className="px-4 py-2">{inv.id}</td>
                     <td className="px-4 py-2">#{inv.order_id}</td>
-                    <td className="px-4 py-2 text-right font-mono">${inv.amount.toFixed(2)}</td>
+                    <td className="px-4 py-2 text-right font-mono">{formatCurrency(inv.amount, inv.currency)}</td>
                     <td className="px-4 py-2">
                       <span className="px-2 py-0.5 rounded text-xs font-medium bg-success/20 text-success">{inv.status}</span>
                     </td>
@@ -137,7 +132,7 @@ function BillingPage() {
 
 function ProductCard({ product: p, onCreated }: { product: Product; onCreated: (c: VMCredentials) => void }) {
   const { t } = useTranslation();
-  const [osImage, setOsImage] = useState(OS_IMAGES[0]!.value);
+  const [osImage, setOsImage] = useState<string>(DEFAULT_OS_IMAGE);
   const [vmName, setVmName] = useState("");
   const [expanded, setExpanded] = useState(false);
 
@@ -167,14 +162,11 @@ function ProductCard({ product: p, onCreated }: { product: Product; onCreated: (
       <div className="text-xs text-muted-foreground mb-2">
         {p.cpu}C / {(p.memory_mb / 1024).toFixed(0)}G RAM / {p.disk_gb}G SSD
       </div>
-      <div className="text-lg font-bold mb-3">${p.price_monthly.toFixed(2)}<span className="text-xs font-normal text-muted-foreground">/mo</span></div>
+      <div className="text-lg font-bold mb-3">{formatCurrency(p.price_monthly, p.currency)}<span className="text-xs font-normal text-muted-foreground">/mo</span></div>
 
       {expanded ? (
         <div className="space-y-2 mb-3">
-          <select value={osImage} onChange={(e) => setOsImage(e.target.value)}
-            className="w-full px-2 py-1.5 text-xs rounded border border-border bg-card">
-            {OS_IMAGES.map((img) => <option key={img.value} value={img.value}>{img.label}</option>)}
-          </select>
+          <OsImagePicker value={osImage} onChange={setOsImage} />
           <input type="text" value={vmName} onChange={(e) => setVmName(e.target.value)}
             placeholder={t("billing.vmNamePlaceholder", { defaultValue: "VM name (optional)" })}
             className="w-full px-2 py-1.5 text-xs rounded border border-border bg-card" />
@@ -212,7 +204,7 @@ function OrderRow({ order: o, onProvisioned }: { order: Order; onProvisioned: (c
   return (
     <tr className="border-t border-border">
       <td className="px-4 py-2">{o.id}</td>
-      <td className="px-4 py-2 text-right font-mono">${o.amount.toFixed(2)}</td>
+      <td className="px-4 py-2 text-right font-mono">{formatCurrency(o.amount, o.currency)}</td>
       <td className="px-4 py-2">
         <span className={`px-2 py-0.5 rounded text-xs font-medium ${colors[o.status] ?? "bg-muted text-muted-foreground"}`}>{o.status}</span>
       </td>

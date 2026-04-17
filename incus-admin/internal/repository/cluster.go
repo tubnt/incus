@@ -59,6 +59,36 @@ func (r *ClusterRepo) GetByID(ctx context.Context, id int64) (*model.Cluster, er
 	return &c, err
 }
 
+// GetTLSFingerprint reads the stored SPKI sha256 pin (hex) for a cluster.
+// Returns "" if the row is absent or the column is NULL.
+func (r *ClusterRepo) GetTLSFingerprint(ctx context.Context, name string) (string, error) {
+	var fp sql.NullString
+	err := r.db.QueryRowContext(ctx,
+		`SELECT tls_fingerprint FROM clusters WHERE name = $1`, name,
+	).Scan(&fp)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if !fp.Valid {
+		return "", nil
+	}
+	return fp.String, nil
+}
+
+// SetTLSFingerprint writes back the learned pin during trust-on-first-use.
+// Overwriting an existing pin is explicitly allowed so the reset-fingerprint
+// admin action can rotate the value; callers must audit first.
+func (r *ClusterRepo) SetTLSFingerprint(ctx context.Context, name, fingerprint string) error {
+	_, err := r.db.ExecContext(ctx,
+		`UPDATE clusters SET tls_fingerprint = $1, updated_at = NOW() WHERE name = $2`,
+		fingerprint, name,
+	)
+	return err
+}
+
 func (r *ClusterRepo) List(ctx context.Context) ([]model.Cluster, error) {
 	rows, err := r.db.QueryContext(ctx,
 		`SELECT id, name, display_name, api_url, status, created_at, updated_at

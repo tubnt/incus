@@ -8,6 +8,9 @@ import {
   useCreateProductMutation,
   useUpdateProductMutation,
 } from "@/features/products/api";
+import { Pagination } from "@/shared/components/ui/pagination";
+import type { PageParams } from "@/shared/lib/pagination";
+import { formatCurrency } from "@/shared/lib/utils";
 
 export const Route = createFileRoute("/admin/products")({
   component: ProductsPage,
@@ -17,9 +20,11 @@ function ProductsPage() {
   const { t } = useTranslation();
   const [showCreate, setShowCreate] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
+  const [page, setPage] = useState<PageParams>({ limit: 50, offset: 0 });
 
-  const { data, isLoading } = useAdminProductsQuery();
+  const { data, isLoading } = useAdminProductsQuery(page);
   const products = data?.products ?? [];
+  const total = data?.total ?? products.length;
 
   return (
     <div>
@@ -52,6 +57,7 @@ function ProductsPage() {
           {t("admin.products.empty", "暂无产品套餐。添加后用户可以选择购买。")}
         </div>
       ) : (
+        <>
         <div className="border border-border rounded-lg overflow-hidden">
           <table className="w-full text-sm">
             <thead className="bg-muted/30">
@@ -78,6 +84,14 @@ function ProductsPage() {
             </tbody>
           </table>
         </div>
+        <Pagination
+          total={total}
+          limit={page.limit}
+          offset={page.offset}
+          onChange={(limit, offset) => setPage({ limit, offset })}
+          className="mt-3"
+        />
+        </>
       )}
     </div>
   );
@@ -97,7 +111,7 @@ function ProductRow({ product, onEdit }: { product: Product; onEdit: () => void 
         {product.cpu}C / {(product.memory_mb / 1024).toFixed(0)}G RAM / {product.disk_gb}G SSD
         {product.bandwidth_tb > 0 && ` / ${product.bandwidth_tb}TB`}
       </td>
-      <td className="px-4 py-2 text-right font-mono">${product.price_monthly.toFixed(2)}</td>
+      <td className="px-4 py-2 text-right font-mono">{formatCurrency(product.price_monthly, product.currency)}</td>
       <td className="px-4 py-2">
         <span
           className={`px-2 py-0.5 rounded text-xs font-medium ${product.active ? "bg-success/20 text-success" : "bg-muted text-muted-foreground"}`}
@@ -117,7 +131,7 @@ function ProductRow({ product, onEdit }: { product: Product; onEdit: () => void 
             {t("common.edit", "编辑")}
           </button>
           <button
-            onClick={() => toggleMutation.mutate({ ...product, active: !product.active })}
+            onClick={() => toggleMutation.mutate({ active: !product.active })}
             disabled={toggleMutation.isPending}
             className={`px-2 py-1 text-xs rounded border ${
               product.active

@@ -1,7 +1,6 @@
 package portal
 
 import (
-	"crypto/tls"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -45,8 +44,6 @@ func (h *EventsHandler) StreamEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cc, _ := h.clusters.ConfigByName(clusterName)
-
 	// 构建 Incus events WebSocket URL
 	eventTypes := r.URL.Query().Get("type")
 	if eventTypes == "" {
@@ -64,13 +61,12 @@ func (h *EventsHandler) StreamEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 配置 mTLS dialer
-	tlsConfig := &tls.Config{InsecureSkipVerify: true}
-	if cc.CertFile != "" && cc.KeyFile != "" {
-		cert, err := tls.LoadX509KeyPair(cc.CertFile, cc.KeyFile)
-		if err == nil {
-			tlsConfig.Certificates = []tls.Certificate{cert}
-		}
+	// mTLS + SPKI pin 复用 cluster manager 的 fingerprint store
+	tlsConfig, err := h.clusters.TLSConfigForCluster(clusterName)
+	if err != nil {
+		slog.Error("events tls config failed", "cluster", clusterName, "error", err)
+		http.Error(w, "tls config failed", http.StatusInternalServerError)
+		return
 	}
 
 	dialer := websocket.Dialer{

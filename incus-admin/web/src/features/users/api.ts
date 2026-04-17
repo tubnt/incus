@@ -1,7 +1,10 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { http } from "@/shared/lib/http";
+import { pageKeyPart, pageQueryString, type PageParams } from "@/shared/lib/pagination";
 import { queryClient } from "@/shared/lib/query-client";
 import type { User } from "@/shared/lib/auth";
+
+export type { PageParams } from "@/shared/lib/pagination";
 
 export interface Quota {
   max_vms: number;
@@ -21,14 +24,27 @@ export interface QuotaUsage {
 
 export const userKeys = {
   all: ["user"] as const,
-  adminList: () => [...userKeys.all, "list", "admin"] as const,
+  adminList: (params?: PageParams) =>
+    [...userKeys.all, "list", "admin", pageKeyPart(params)] as const,
   quota: (userId: number) => [...userKeys.all, "quota", userId] as const,
+  topupQuota: (userId: number) => [...userKeys.all, "topup-quota", userId] as const,
 };
 
-export function useAdminUsersQuery() {
+export interface TopUpQuota {
+  used: number;
+  limit: number;
+  remaining: number;
+  per_request_limit: number;
+  window_hours: number;
+}
+
+export function useAdminUsersQuery(params?: PageParams) {
   return useQuery({
-    queryKey: userKeys.adminList(),
-    queryFn: () => http.get<{ users: User[] }>("/admin/users"),
+    queryKey: userKeys.adminList(params),
+    queryFn: () =>
+      http.get<{ users: User[]; total?: number; limit?: number; offset?: number }>(
+        `/admin/users${pageQueryString(params)}`,
+      ),
   });
 }
 
@@ -43,7 +59,19 @@ export function useTopUpBalanceMutation(userId: number) {
   return useMutation({
     mutationFn: (amount: number) =>
       http.post(`/admin/users/${userId}/balance`, { amount, description: "Admin top-up" }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: userKeys.all }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: userKeys.all });
+      queryClient.invalidateQueries({ queryKey: userKeys.topupQuota(userId) });
+    },
+  });
+}
+
+export function useTopUpQuotaQuery(userId: number, enabled = true) {
+  return useQuery({
+    queryKey: userKeys.topupQuota(userId),
+    queryFn: () => http.get<TopUpQuota>(`/admin/users/${userId}/topup-quota`),
+    enabled: enabled && userId > 0,
+    staleTime: 30_000,
   });
 }
 

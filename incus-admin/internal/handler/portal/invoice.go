@@ -36,10 +36,16 @@ func (h *InvoiceHandler) ListMine(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *InvoiceHandler) ListAll(w http.ResponseWriter, r *http.Request) {
-	invoices, err := h.repo.ListAll(r.Context())
+	p := ParsePageParams(r)
+	invoices, total, err := h.repo.ListPaged(r.Context(), p.Limit, p.Offset)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to list invoices"})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"invoices": invoices})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"invoices": invoices,
+		"total":    total,
+		"limit":    p.Limit,
+		"offset":   p.Offset,
+	})
 }

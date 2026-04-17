@@ -8,6 +8,8 @@ import {
   useTicketDetailQuery,
   useUpdateTicketStatusMutation,
 } from "@/features/tickets/api";
+import { Pagination } from "@/shared/components/ui/pagination";
+import type { PageParams } from "@/shared/lib/pagination";
 
 export const Route = createFileRoute("/admin/tickets")({
   component: AdminTicketsPage,
@@ -16,9 +18,11 @@ export const Route = createFileRoute("/admin/tickets")({
 function AdminTicketsPage() {
   const { t } = useTranslation();
   const [selected, setSelected] = useState<number | null>(null);
+  const [page, setPage] = useState<PageParams>({ limit: 50, offset: 0 });
 
-  const { data, isLoading } = useAdminTicketsQuery();
+  const { data, isLoading } = useAdminTicketsQuery(page);
   const tickets = data?.tickets ?? [];
+  const total = data?.total ?? tickets.length;
 
   return (
     <div>
@@ -31,6 +35,7 @@ function AdminTicketsPage() {
           {t("admin.ticketsEmpty", { defaultValue: "暂无工单。" })}
         </div>
       ) : (
+        <>
         <div className="border border-border rounded-lg overflow-hidden">
           <table className="w-full text-sm">
             <thead className="bg-muted/30">
@@ -56,6 +61,14 @@ function AdminTicketsPage() {
             </tbody>
           </table>
         </div>
+        <Pagination
+          total={total}
+          limit={page.limit}
+          offset={page.offset}
+          onChange={(limit, offset) => setPage({ limit, offset })}
+          className="mt-3"
+        />
+        </>
       )}
     </div>
   );

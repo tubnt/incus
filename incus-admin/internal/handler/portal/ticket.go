@@ -11,6 +11,16 @@ import (
 	"github.com/incuscloud/incus-admin/internal/repository"
 )
 
+// 工单状态与优先级枚举（防止前端/第三方传入非法值）。
+var (
+	validTicketStatuses = map[string]bool{
+		"open": true, "pending": true, "closed": true,
+	}
+	validTicketPriorities = map[string]bool{
+		"low": true, "normal": true, "high": true, "urgent": true,
+	}
+)
+
 type TicketHandler struct {
 	repo *repository.TicketRepo
 }
@@ -44,12 +54,18 @@ func (h *TicketHandler) ListMine(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *TicketHandler) ListAll(w http.ResponseWriter, r *http.Request) {
-	tickets, err := h.repo.ListAll(r.Context())
+	p := ParsePageParams(r)
+	tickets, total, err := h.repo.ListPaged(r.Context(), p.Limit, p.Offset)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to list tickets"})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"tickets": tickets})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"tickets": tickets,
+		"total":   total,
+		"limit":   p.Limit,
+		"offset":  p.Offset,
+	})
 }
 
 func (h *TicketHandler) Create(w http.ResponseWriter, r *http.Request) {
@@ -70,6 +86,10 @@ func (h *TicketHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Priority == "" {
 		req.Priority = "normal"
+	}
+	if !validTicketPriorities[req.Priority] {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid priority"})
+		return
 	}
 
 	ticket, err := h.repo.Create(r.Context(), userID, req.Subject, req.Priority)
@@ -111,6 +131,10 @@ func (h *TicketHandler) Reply(w http.ResponseWriter, r *http.Request) {
 	ticket, err := h.repo.GetByID(r.Context(), ticketID)
 	if err != nil || ticket == nil || ticket.UserID != userID {
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "ticket not found"})
+		return
+	}
+	if ticket.Status == "closed" {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": "ticket is closed"})
 		return
 	}
 
@@ -159,6 +183,10 @@ func (h *TicketHandler) UpdateStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Status == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "status required"})
+		return
+	}
+	if !validTicketStatuses[req.Status] {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid status"})
 		return
 	}
 

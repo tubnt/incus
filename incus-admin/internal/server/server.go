@@ -97,9 +97,17 @@ func New(cfg *config.Config, userLookup func(ctx context.Context, email string) 
 	r.Use(chimw.Timeout(60 * time.Second))
 	r.Use(slogMiddleware)
 
+	distHash := DistHash()
+	if distHash == "" {
+		slog.Warn("embedded dist/index.html missing; frontend was not built before go build — run `task web-build`")
+	} else {
+		slog.Info("embedded dist loaded", "index_sha256", distHash[:12])
+	}
 	r.Get("/api/health", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"status":"ok"}`))
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status":    "ok",
+			"dist_hash": distHash,
+		})
 	})
 
 	r.Group(func(r chi.Router) {

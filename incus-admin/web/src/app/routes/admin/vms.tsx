@@ -1,11 +1,12 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
 import { SnapshotPanel } from "@/features/snapshots/snapshot-panel";
 import { VMMetricsPanel } from "@/features/monitoring/vm-metrics-panel";
 import { useConfirm } from "@/shared/components/ui/confirm-dialog";
 import { useClustersQuery } from "@/features/clusters/api";
+import { Pagination } from "@/shared/components/ui/pagination";
 import {
   type IncusInstance,
   extractIP,
@@ -42,8 +43,12 @@ function AllVMsPage() {
 function ClusterVMs({ clusterName, displayName }: { clusterName: string; displayName: string }) {
   const { t } = useTranslation();
   const { data, isLoading, isError, error } = useClusterVMsQuery(clusterName, 15_000);
+  const [limit, setLimit] = useState(20);
+  const [offset, setOffset] = useState(0);
 
   const vms = data?.vms ?? [];
+  const total = vms.length;
+  const pageVms = useMemo(() => vms.slice(offset, offset + limit), [vms, offset, limit]);
   const isStale = data?.stale;
 
   return (
@@ -77,25 +82,36 @@ function ClusterVMs({ clusterName, displayName }: { clusterName: string; display
           {t("vm.noneInCluster")}
         </div>
       ) : (
-        <div className="border border-border rounded-lg overflow-hidden">
-          <table className="w-full text-sm">
-            <thead className="bg-muted/30">
-              <tr>
-                <th className="text-left px-4 py-2 font-medium">{t("vm.name")}</th>
-                <th className="text-left px-4 py-2 font-medium">{t("vm.status")}</th>
-                <th className="text-left px-4 py-2 font-medium">{t("vm.node")}</th>
-                <th className="text-left px-4 py-2 font-medium">{t("vm.config")}</th>
-                <th className="text-left px-4 py-2 font-medium">{t("vm.ip")}</th>
-                <th className="text-right px-4 py-2 font-medium">{t("common.actions")}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {vms.map((vm) => (
-                <VMRow key={vm.name} vm={vm} clusterName={clusterName} />
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <>
+          <div className="border border-border rounded-lg overflow-hidden">
+            <table className="w-full text-sm">
+              <thead className="bg-muted/30">
+                <tr>
+                  <th className="text-left px-4 py-2 font-medium">{t("vm.name")}</th>
+                  <th className="text-left px-4 py-2 font-medium">{t("vm.status")}</th>
+                  <th className="text-left px-4 py-2 font-medium">{t("vm.node")}</th>
+                  <th className="text-left px-4 py-2 font-medium">{t("vm.config")}</th>
+                  <th className="text-left px-4 py-2 font-medium">{t("vm.ip")}</th>
+                  <th className="text-right px-4 py-2 font-medium">{t("common.actions")}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pageVms.map((vm) => (
+                  <VMRow key={vm.name} vm={vm} clusterName={clusterName} />
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {total > 20 && (
+            <Pagination
+              total={total}
+              limit={limit}
+              offset={offset}
+              onChange={(l, o) => { setLimit(l); setOffset(o); }}
+              className="mt-3"
+            />
+          )}
+        </>
       )}
     </div>
   );

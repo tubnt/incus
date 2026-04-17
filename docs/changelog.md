@@ -1,5 +1,19 @@
 # IncusAdmin Changelog
 
+## 2026-04-17 17:30 [progress]
+
+PLAN-013 代码层 + 测试层 + CI 全量落地（Phase A/C/D 完成，Phase B 反代待运维窗口）：
+- A.1 `Pay` 路径 IP 分配回滚集成测试 + `rollbackPayment` 导出供测试
+- A.2 `admin/vms.tsx` 客户端分页
+- A.3 `product.Update` 指针 DTO 真 PATCH 语义（仅合并非 nil 字段 + 3 条单测）
+- C.1 SPKI 指纹 pinning：migration 006 + `cluster/tlspin.go`（TOFU/mismatch reject）+ 适配器接通 REST/WebSocket（events/console）+ 5 条单测
+- C.2 端到端 cluster_id 打通：去掉 `int64(1)` 硬编码，订单创建 / 支付复用订单上的 cluster_id
+- C.3 Observability iframe：HTTP 目标（Grafana/Prom/Alertmanager）改 "new tab only"，Ceph HTTPS 保留嵌入
+- C.4 启动期计算 `dist/index.html` sha256，写入 `/api/health` 并在启动日志给 12 位短哈希
+- D.1 `.github/workflows/ci.yml`：backend-unit → backend-integration（testcontainers, Ryuk 关）→ frontend typecheck/build
+- D.2 `UserRepo.TopUpWithDailyCap`：事务 + `SELECT ... FOR UPDATE` 行锁，根治并发越限；并发 + 边界两条集成用例
+- Phase B（oauth2-proxy callback 500 / Caddy 三条安全头 / favicon 白名单）保留 `[ ]`，等运维低峰窗口经 AIssh 推送，不阻塞代码合并
+
 ## 2026-04-15 17:32 [progress]
 
 All 17 database tables covered with backend APIs and frontend pages. Features: VM lifecycle, console, snapshots, monitoring (Recharts), SSH keys, products, tickets, orders/billing, invoices, audit logs, API tokens with Bearer auth. Deployed at vmc.5ok.co.

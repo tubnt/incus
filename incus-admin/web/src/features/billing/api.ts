@@ -1,5 +1,6 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { http } from "@/shared/lib/http";
+import { pageKeyPart, pageQueryString, type PageParams } from "@/shared/lib/pagination";
 import { queryClient } from "@/shared/lib/query-client";
 import { vmKeys } from "@/features/vms/api";
 
@@ -8,6 +9,7 @@ export interface Order {
   product_id: number;
   status: string;
   amount: number;
+  currency?: string;
   expires_at: string | null;
   created_at: string;
 }
@@ -21,6 +23,7 @@ export interface Invoice {
   id: number;
   order_id: number;
   amount: number;
+  currency?: string;
   status: string;
   due_at?: string | null;
   paid_at: string | null;
@@ -41,13 +44,15 @@ export interface VMCredentials {
 export const orderKeys = {
   all: ["order"] as const,
   myList: () => [...orderKeys.all, "list", "my"] as const,
-  adminList: () => [...orderKeys.all, "list", "admin"] as const,
+  adminList: (params?: PageParams) =>
+    [...orderKeys.all, "list", "admin", pageKeyPart(params)] as const,
 };
 
 export const invoiceKeys = {
   all: ["invoice"] as const,
   myList: () => [...invoiceKeys.all, "list", "my"] as const,
-  adminList: () => [...invoiceKeys.all, "list", "admin"] as const,
+  adminList: (params?: PageParams) =>
+    [...invoiceKeys.all, "list", "admin", pageKeyPart(params)] as const,
 };
 
 export function useMyOrdersQuery() {
@@ -66,8 +71,13 @@ export function useMyInvoicesQuery() {
 
 export function useCreateOrderMutation() {
   return useMutation({
-    mutationFn: (params: { product_id: number; vm_name?: string; os_image?: string }) =>
-      http.post<{ order: Order }>("/portal/orders", params),
+    mutationFn: (params: {
+      product_id: number;
+      vm_name?: string;
+      os_image?: string;
+      cluster_id?: number;
+      cluster_name?: string;
+    }) => http.post<{ order: Order }>("/portal/orders", params),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: orderKeys.all }),
   });
 }
@@ -88,18 +98,24 @@ export function usePayOrderMutation() {
   });
 }
 
-export function useAdminOrdersQuery() {
+export function useAdminOrdersQuery(params?: PageParams) {
   return useQuery({
-    queryKey: orderKeys.adminList(),
-    queryFn: () => http.get<{ orders: AdminOrder[] }>("/admin/orders"),
+    queryKey: orderKeys.adminList(params),
+    queryFn: () =>
+      http.get<{ orders: AdminOrder[]; total?: number; limit?: number; offset?: number }>(
+        `/admin/orders${pageQueryString(params)}`,
+      ),
     refetchInterval: 15_000,
   });
 }
 
-export function useAdminInvoicesQuery() {
+export function useAdminInvoicesQuery(params?: PageParams) {
   return useQuery({
-    queryKey: invoiceKeys.adminList(),
-    queryFn: () => http.get<{ invoices: AdminInvoice[] }>("/admin/invoices"),
+    queryKey: invoiceKeys.adminList(params),
+    queryFn: () =>
+      http.get<{ invoices: AdminInvoice[]; total?: number; limit?: number; offset?: number }>(
+        `/admin/invoices${pageQueryString(params)}`,
+      ),
     refetchInterval: 30_000,
   });
 }

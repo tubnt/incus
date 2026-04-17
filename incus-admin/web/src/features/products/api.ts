@@ -1,5 +1,6 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { http } from "@/shared/lib/http";
+import { pageKeyPart, pageQueryString, type PageParams } from "@/shared/lib/pagination";
 import { queryClient } from "@/shared/lib/query-client";
 
 export interface Product {
@@ -11,17 +12,22 @@ export interface Product {
   disk_gb: number;
   bandwidth_tb: number;
   price_monthly: number;
+  currency?: string;
   access: string;
   active: boolean;
   sort_order: number;
 }
 
 export type ProductFormData = Omit<Product, "id">;
+// ProductPatch mirrors the backend PATCH DTO: every field is optional.
+// Fields omitted from the payload are not touched on the server.
+export type ProductPatch = Partial<ProductFormData>;
 
 export const productKeys = {
   all: ["product"] as const,
   portalList: () => [...productKeys.all, "list", "portal"] as const,
-  adminList: () => [...productKeys.all, "list", "admin"] as const,
+  adminList: (params?: PageParams) =>
+    [...productKeys.all, "list", "admin", pageKeyPart(params)] as const,
 };
 
 export function useProductsQuery() {
@@ -31,10 +37,13 @@ export function useProductsQuery() {
   });
 }
 
-export function useAdminProductsQuery() {
+export function useAdminProductsQuery(params?: PageParams) {
   return useQuery({
-    queryKey: productKeys.adminList(),
-    queryFn: () => http.get<{ products: Product[] }>("/admin/products"),
+    queryKey: productKeys.adminList(params),
+    queryFn: () =>
+      http.get<{ products: Product[]; total?: number; limit?: number; offset?: number }>(
+        `/admin/products${pageQueryString(params)}`,
+      ),
   });
 }
 
@@ -47,7 +56,7 @@ export function useCreateProductMutation() {
 
 export function useUpdateProductMutation(productId: number) {
   return useMutation({
-    mutationFn: (data: ProductFormData | Product) =>
+    mutationFn: (data: ProductPatch) =>
       http.put(`/admin/products/${productId}`, data),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: productKeys.all }),
   });

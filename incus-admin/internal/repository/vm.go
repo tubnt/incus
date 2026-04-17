@@ -54,14 +54,35 @@ func (r *VMRepo) ListByUser(ctx context.Context, userID int64) ([]model.VM, erro
 }
 
 func (r *VMRepo) ListAll(ctx context.Context) ([]model.VM, error) {
-	rows, err := r.db.QueryContext(ctx,
-		`SELECT id, name, cluster_id, user_id, order_id, host(ip)::text, status, cpu, memory_mb, disk_gb, os_image, node, password, created_at, updated_at
-		 FROM vms WHERE status != 'deleted' ORDER BY id DESC`)
+	vms, _, err := r.ListPaged(ctx, 0, 0)
+	return vms, err
+}
+
+// ListPaged 返回非删除态 VM 的分页结果与过滤后总数。limit<=0 表示不限制。
+func (r *VMRepo) ListPaged(ctx context.Context, limit, offset int) ([]model.VM, int64, error) {
+	var total int64
+	if err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM vms WHERE status != 'deleted'`).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count vms: %w", err)
+	}
+
+	query := `SELECT id, name, cluster_id, user_id, order_id, host(ip)::text, status, cpu, memory_mb, disk_gb, os_image, node, password, created_at, updated_at
+		 FROM vms WHERE status != 'deleted' ORDER BY id DESC`
+	args := []any{}
+	if limit > 0 {
+		query += ` LIMIT $1 OFFSET $2`
+		args = append(args, limit, offset)
+	}
+
+	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer rows.Close()
-	return scanVMs(rows)
+	vms, err := scanVMs(rows)
+	if err != nil {
+		return nil, 0, err
+	}
+	return vms, total, nil
 }
 
 func (r *VMRepo) GetByName(ctx context.Context, name string) (*model.VM, error) {
