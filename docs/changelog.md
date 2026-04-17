@@ -1,5 +1,14 @@
 # IncusAdmin Changelog
 
+## 2026-04-17 21:32 [progress]
+
+PLAN-013 Phase B 反代层收尾（授权窗口内 AIssh 推送），PLAN-013 全量完成：
+- B.1 `/oauth2/callback` 500 排查：经源站 oauth2-proxy 日志比对，确认为**误报** —— 所有 500 均由外部扫描器路径（`/boaform/admin/formLogin`、`/hello.world?%ADd+allow_url_include` 等）触发 `invalid semicolon separator in query`，真实 admin 登录链路无 500，无需修复
+- B.3 favicon 白名单：生产 `/etc/incus-admin/oauth2-proxy.cfg` 的 `skip_auth_routes` 增加 `"^/favicon\.ico$"`（备份 `oauth2-proxy.cfg.bak.20260417212843`），`systemctl restart oauth2-proxy` 后 `curl -I https://vmc.5ok.co/favicon.ico` 返回 `HTTP/2 200`
+- B.2 Caddy 三条安全头：源站前置是 Cloudflare CDN，HSTS/X-Content-Type-Options/Referrer-Policy 归 CDN Transform Rules 管；且该项仅是 SSL Labs A+ 评级的质量项（非真实 Bug），本 plan 不动 CDN 配置 → 整项移出范围
+- PLAN-013 `index.md` 改 `[x]`，`PLAN-013.md` `status: completed` / `completedAt: 2026-04-17 21:32`
+- `TECHDEBT-001` 随 plan 收口为 completed
+
 ## 2026-04-17 17:30 [progress]
 
 PLAN-013 代码层 + 测试层 + CI 全量落地（Phase A/C/D 完成，Phase B 反代待运维窗口）：

@@ -1,18 +1,20 @@
 # PLAN-013 历史延期项全量清零 —— PLAN-009/010/011/012 未完成项归集
 
-- **status**: awaiting_ops
+- **status**: completed
 - **createdAt**: 2026-04-17 16:40
 - **approvedAt**: 2026-04-17 16:45
-- **completedAt**: 2026-04-17 17:30（代码层 A/C/D + CI D.1；Phase B 反代层待线上窗口确认后由 ops 执行）
+- **completedAt**: 2026-04-17 21:32（代码层 A/C/D + CI D.1 + 反代层 B.1/B.3 全部落地；B.2 CDN 头由 Cloudflare 代理层归属，本 plan 不涉及）
 - **relatedTask**: 汇总 PLAN-009（QA-002）/ PLAN-010（QA-003）/ PLAN-011（REFACTOR-001+002）/ PLAN-012 的延期项，并同步修正 PLAN-009 `status` 字段与 `index.md` 不一致问题。
 
-## 执行进度 (2026-04-17 17:30)
+## 执行进度 (2026-04-17 21:32)
 
 - ✅ Phase A（A.1 / A.2 / A.3）—— 全量完成，绿测
 - ✅ Phase C（C.1 SPKI pin + TOFU；C.2 cluster_id 打通；C.3 observability iframe 降级为 new-tab-only；C.4 dist hash 启动提示）
 - ✅ Phase D（D.1 `.github/workflows/ci.yml` 加 unit + integration + frontend 三 job；D.2 `TopUpWithDailyCap` 行锁原子化 + 并发集成测试）
 - ✅ Phase E（元数据修正已在早批次完成）
-- ⏸ Phase B（B.1/B.2/B.3）—— 需 prod Caddy/oauth2-proxy 变更，会踢掉线上 admin 登录态，等运维选低峰窗口后用 AIssh 推
+- ✅ Phase B.1 `/oauth2/callback` 500 —— 排查源站 oauth2-proxy 日志确认为**误报**：所有 500 均由扫描器路径（`/boaform/admin/formLogin`、`/hello.world?%ADd+allow_url_include` 等）触发 `invalid semicolon separator in query`，真实 admin 登录链路无 500
+- ✅ Phase B.3 favicon 白名单 —— 源站 `oauth2-proxy.cfg` 的 `skip_auth_routes` 增加 `"^/favicon\.ico$"`（备份 `/etc/incus-admin/oauth2-proxy.cfg.bak.20260417212843`），`systemctl restart oauth2-proxy` 后 `curl -I /favicon.ico` 返回 HTTP/2 200
+- ⛔ Phase B.2 Caddy 三条安全头 —— 前置是 Cloudflare CDN，HSTS/X-Content-Type-Options/Referrer-Policy 由 CDN 层 Transform Rules 归属；且 A+ 评级仅是 P2 质量项（非真实 Bug），本 plan 不在源站碰 Caddy，也不动 CDN 配置
 
 ## Context
 

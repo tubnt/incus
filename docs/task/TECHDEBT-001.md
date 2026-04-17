@@ -1,9 +1,10 @@
 # TECHDEBT-001 Close PLAN-009/010/011/012 deferred items
 
-- **status**: in_progress
+- **status**: completed
 - **priority**: P1
 - **owner**: claude
 - **createdAt**: 2026-04-17 16:45
+- **completedAt**: 2026-04-17 21:32
 - **relatedPlan**: PLAN-013
 
 ## Summary

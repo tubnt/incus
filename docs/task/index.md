@@ -40,6 +40,6 @@ Each task is a single line linking to its detail file. All detailed information 
 - [ ] [**UX-001 UI/UX completeness per PLAN-007**](UX-001.md) `P1`
 - [x] [**QA-002 Code review follow-up — fix PLAN-008 review findings**](QA-002.md) `P0`
 - [x] [**QA-003 Fix 15 QA bugs from 2026-04-16 production browser testing**](QA-003.md) `P1`
-- [-] [**TECHDEBT-001 Close PLAN-009/010/011/012 deferred items**](TECHDEBT-001.md) `P1`
+- [x] [**TECHDEBT-001 Close PLAN-009/010/011/012 deferred items**](TECHDEBT-001.md) `P1`
 - [x] [**INFRA-004 Cluster TLS fingerprint pinning**](INFRA-004.md) `P1`
 - [~] [**INFRA-005 Observability iframe HTTPS reverse proxy**](INFRA-005.md) `P2`
