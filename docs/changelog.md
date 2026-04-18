@@ -1,5 +1,17 @@
 # IncusAdmin Changelog
 
+## 2026-04-18 20:30 [progress]
+
+UX-002 / PLAN-016 后台菜单重组 + 用户/管理员视角分离 —— 部署至生产等待目视回归:
+
+- 拆 `web/src/shared/components/layout/sidebar-data.ts`:`userSidebar` 扁平 7 项 + `adminSidebar` 5 组(监控 / 资源 / 基础设施运维 / 订单财务 / 用户工单)
+- 重写 `app-sidebar.tsx`:路径前缀 `/admin` 自动切视角,admin 视角用 `@base-ui-components/react` Accordion 做二级折叠;当前路径所在组自动展开 + `localStorage('incus.sidebar.admin.openGroups')` 跨刷新持久化;collapsed 态降级为扁平 icon 列表 + 组间分隔线
+- admin 顶部加"进入管理后台 / 返回用户后台"切换按钮(`isAdmin` 门控,非 admin 永不渲染)
+- 补 `sidebar.switchToAdmin / backToUser / group.{monitoring,resources,infrastructure,billing,userOps}` 共 7 条 i18n key(中英双语),移除硬编码 "Admin"
+- 前端 `bun run typecheck` + `bun run build` 通过;dist_hash=`5bd7a8bbece0773d`
+- 部署:本地 go 1.25 交叉编译 linux/amd64 binary(sha256=`603ef5de…`)embed 新 dist,AIssh file_deploy → 原子 mv + `systemctl restart incus-admin`;`/api/health` dist_hash 与本地对齐
+- 浏览器目视回归:agent 侧 saved_browser 非登录态,无法完成 SSO 登录截图,留待用户在 vmc.5ok.co 人工核对 (两个视角 × 折叠/展开 × 深浅色 × collapsed/expanded sidebar)
+
 ## 2026-04-18 18:42 [progress]
 
 PLAN-015 / QA-005 全量落地，QA-004 报告 N1-N15 清零（除 N4/N7/N9/N10/N14 已转 PLAN-014 / 反代窗口）：

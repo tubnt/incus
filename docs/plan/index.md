@@ -44,3 +44,4 @@ Each plan is a single line linking to its detail file. All detailed information 
 - [x] [**PLAN-013 历史延期项全量清零 —— PLAN-009 架构级 + PLAN-010 反代 + PLAN-011 收尾 + PLAN-012 限制**](PLAN-013.md) `2026-04-17`
 - [ ] [**PLAN-014 VM 状态反向同步 worker —— 消除 DB ↔ Incus 漂移**](PLAN-014.md) `2026-04-18`
 - [x] [**PLAN-015 QA-004 后续修复 —— N1-N15 清单**](PLAN-015.md) `2026-04-18`
+- [-] [**PLAN-016 后台菜单重组 + 用户/管理员视角分离**](PLAN-016.md) `2026-04-18`

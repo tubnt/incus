@@ -26,6 +26,17 @@
     "observability": "Observability",
     "admin": "Admin"
   },
+  "sidebar": {
+    "switchToAdmin": "Enter Admin Console",
+    "backToUser": "Back to User Console",
+    "group": {
+      "monitoring": "Monitoring",
+      "resources": "Resources",
+      "infrastructure": "Infra & Ops",
+      "billing": "Orders & Billing",
+      "userOps": "Users & Tickets"
+    }
+  },
   "common": {
     "loading": "Loading...",
     "save": "Save",

@@ -46,3 +46,4 @@ Each task is a single line linking to its detail file. All detailed information 
 - [x] [**QA-004 Full web QA on production after PLAN-013 deploy**](QA-004.md) `P1`
 - [x] [**QA-005 Fix QA-004 bug findings N1-N15**](QA-005.md) `P1`
 - [ ] [**INFRA-006 VM state reverse-sync worker**](INFRA-006.md) `P1`
+- [-] [**UX-002 后台菜单重组 + 用户/管理员视角分离**](UX-002.md) `P2`

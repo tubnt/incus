@@ -26,6 +26,17 @@
     "observability": "可观测性",
     "admin": "管理员"
   },
+  "sidebar": {
+    "switchToAdmin": "进入管理后台",
+    "backToUser": "返回用户后台",
+    "group": {
+      "monitoring": "概览监控",
+      "resources": "资源管理",
+      "infrastructure": "基础设施 / 运维",
+      "billing": "订单 & 财务",
+      "userOps": "用户 & 工单"
+    }
+  },
   "common": {
     "loading": "加载中...",
     "save": "保存",
