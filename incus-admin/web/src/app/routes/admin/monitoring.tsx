@@ -21,6 +21,11 @@ function MonitoringPage() {
   const clusters = data?.clusters ?? [];
   const allVMs = clusters.flatMap((c) => c.vms ?? []);
   const hasWarning = data?.warning;
+  const dbRunningTotal = clusters.reduce(
+    (sum, c) => sum + (c.db_running_count ?? 0),
+    0,
+  );
+  const drifted = allVMs.length === 0 && dbRunningTotal > 0;
 
   return (
     <div>
@@ -52,7 +57,15 @@ function MonitoringPage() {
         </div>
       ) : allVMs.length === 0 ? (
         <div className="border border-border rounded-lg p-6 text-center text-muted-foreground">
-          暂无 VM 监控数据。请确认 Incus metrics 已启用。
+          {drifted ? (
+            <>
+              DB 记录当前集群有 {dbRunningTotal} 个 running VM，但 Incus 侧实时查询为 0。
+              数据已漂移 —— 这些 VM 可能已在 Incus 端被直接删除，状态未同步回 DB。
+              请管理员核对并执行状态同步。
+            </>
+          ) : (
+            <>暂无 VM 监控数据（当前集群无运行中的 VM）。</>
+          )}
         </div>
       ) : (
         <div className="space-y-6">

@@ -169,6 +169,16 @@ func (r *VMRepo) CountByUser(ctx context.Context, userID int64) (vms int, vcpus 
 	return
 }
 
+// CountRunningByCluster returns how many VMs the DB believes are running for a cluster.
+// Used by the admin monitoring page to distinguish "no VMs at all" from "DB/Incus drift".
+func (r *VMRepo) CountRunningByCluster(ctx context.Context, clusterID int64) (int, error) {
+	var n int
+	err := r.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM vms WHERE cluster_id = $1 AND status = 'running'`, clusterID,
+	).Scan(&n)
+	return n, err
+}
+
 func scanVMs(rows *sql.Rows) ([]model.VM, error) {
 	var vms []model.VM
 	for rows.Next() {

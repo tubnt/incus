@@ -1,6 +1,6 @@
 # IncusAdmin - Task List
 
-> Updated: 2026-04-17
+> Updated: 2026-04-17 22:00
 
 ## Usage
 
@@ -43,3 +43,5 @@ Each task is a single line linking to its detail file. All detailed information 
 - [x] [**TECHDEBT-001 Close PLAN-009/010/011/012 deferred items**](TECHDEBT-001.md) `P1`
 - [x] [**INFRA-004 Cluster TLS fingerprint pinning**](INFRA-004.md) `P1`
 - [~] [**INFRA-005 Observability iframe HTTPS reverse proxy**](INFRA-005.md) `P2`
+- [x] [**QA-004 Full web QA on production after PLAN-013 deploy**](QA-004.md) `P1`
+- [ ] [**INFRA-006 VM state reverse-sync worker**](INFRA-006.md) `P1`

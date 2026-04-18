@@ -42,3 +42,4 @@ Each plan is a single line linking to its detail file. All detailed information 
 - [x] [**PLAN-011 Frontend pma-web compliance cleanup**](PLAN-011.md) `2026-04-17`
 - [x] [**PLAN-012 后端核算收尾 —— PayWithBalance 回滚集成测试 + TopUp 日额度**](PLAN-012.md) `2026-04-17`
 - [x] [**PLAN-013 历史延期项全量清零 —— PLAN-009 架构级 + PLAN-010 反代 + PLAN-011 收尾 + PLAN-012 限制**](PLAN-013.md) `2026-04-17`
+- [ ] [**PLAN-014 VM 状态反向同步 worker —— 消除 DB ↔ Incus 漂移**](PLAN-014.md) `2026-04-18`

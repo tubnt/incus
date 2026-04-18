@@ -19,6 +19,7 @@ export interface VMMetric {
 export interface ClusterMetrics {
   name: string;
   vms: VMMetric[];
+  db_running_count?: number;
 }
 
 export const monitoringKeys = {

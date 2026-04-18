@@ -149,8 +149,9 @@ func (h *MetricsHandler) ClusterOverview(w http.ResponseWriter, r *http.Request)
 	}
 
 	type clusterMetrics struct {
-		Name string      `json:"name"`
-		VMs  []*VMMetric `json:"vms"`
+		Name            string      `json:"name"`
+		VMs             []*VMMetric `json:"vms"`
+		DBRunningCount  int         `json:"db_running_count"`
 	}
 
 	var results []clusterMetrics
@@ -168,7 +169,15 @@ func (h *MetricsHandler) ClusterOverview(w http.ResponseWriter, r *http.Request)
 			m.Name = name
 			vms = append(vms, m)
 		}
-		results = append(results, clusterMetrics{Name: ci.Name, VMs: vms})
+		dbCount := 0
+		if h.vmRepo != nil {
+			if cid := h.clusters.IDByName(ci.Name); cid > 0 {
+				if n, err := h.vmRepo.CountRunningByCluster(r.Context(), cid); err == nil {
+					dbCount = n
+				}
+			}
+		}
+		results = append(results, clusterMetrics{Name: ci.Name, VMs: vms, DBRunningCount: dbCount})
 	}
 
 	resp := map[string]any{"clusters": results}

@@ -1,5 +1,14 @@
 # IncusAdmin Changelog
 
+## 2026-04-18 00:05 [progress]
+
+QA-004 后继项：DB ↔ Incus VM 状态漂移修复（生产手工同步 + 前端空态文案 + 后端 db_running_count 指标）：
+- 生产 SQL：`UPDATE vms SET status='deleted' WHERE id IN (7,8)`（vm-d8b7dc / vm-870c48 —— Incus 侧实际 0 实例，DB 残留）；`UPDATE ip_addresses SET status='available', vm_id=NULL WHERE id=5` 释放 202.151.179.239 回池
+- 后端 `MetricsHandler.ClusterOverview` 增加 `db_running_count` 字段，`VMRepo.CountRunningByCluster` 新方法，让管理员一眼识别"DB 说 N 个 running / Incus 0 个"的漂移情形
+- 前端 `admin/monitoring.tsx` 空态文案分流：`drifted=true` 时显示漂移提示和待执行同步提示；否则显示"当前集群无运行中的 VM"
+- 部署：新二进制 sha256=2003ea42…，dist_hash=95c7d8082fdc；systemctl restart 后 `TLS pin learned` 已持久化
+- 新开 `PLAN-014 VM 状态反向同步 worker` + `INFRA-006` 任务，设计后台 60s reconciler 消除未来漂移（不纳入本次部署范围）
+
 ## 2026-04-17 21:32 [progress]
 
 PLAN-013 Phase B 反代层收尾（授权窗口内 AIssh 推送），PLAN-013 全量完成：
