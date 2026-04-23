@@ -81,7 +81,46 @@ export const vmKeys = {
   clusterList: (clusterName: string) => [...vmKeys.all, "list", "cluster", clusterName] as const,
   clusterDetail: (clusterName: string, vmName: string, project?: string) =>
     [...vmKeys.all, "detail", "cluster", clusterName, vmName, project ?? ""] as const,
+  gone: () => [...vmKeys.all, "gone"] as const,
 };
+
+/**
+ * GoneVM is a DB row flagged by the PLAN-020 reconciler as 'gone' — the
+ * Incus instance vanished out-of-band. Admin surfaces these for
+ * investigation + force-delete. Payload shape matches the server's
+ * internal/model.VM but drops fields the panel doesn't render.
+ */
+export interface GoneVM {
+  id: number;
+  name: string;
+  cluster_id: number;
+  user_id: number;
+  ip: string | null;
+  status: string;
+  cpu: number;
+  memory_mb: number;
+  disk_gb: number;
+  os_image: string;
+  node: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export function useGoneVMsQuery() {
+  return useQuery({
+    queryKey: vmKeys.gone(),
+    queryFn: () => http.get<{ vms: GoneVM[]; count: number }>("/admin/vms/gone"),
+    staleTime: 30_000,
+  });
+}
+
+export function useForceDeleteGoneVMMutation() {
+  return useMutation({
+    mutationFn: (id: number) =>
+      http.post<{ status: string; id: number }>(`/admin/vms/${id}/force-delete`, {}),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: vmKeys.gone() }),
+  });
+}
 
 export function useMyVMsQuery() {
   return useQuery({

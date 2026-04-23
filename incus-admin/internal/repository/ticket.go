@@ -157,6 +157,6 @@ func (r *TicketRepo) AddMessage(ctx context.Context, ticketID, userID int64, bod
 		return nil, fmt.Errorf("add message: %w", err)
 	}
 
-	r.db.ExecContext(ctx, `UPDATE tickets SET updated_at = $1 WHERE id = $2`, time.Now(), ticketID)
+	_, _ = r.db.ExecContext(ctx, `UPDATE tickets SET updated_at = $1 WHERE id = $2`, time.Now(), ticketID)
 	return &m, nil
 }

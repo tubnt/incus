@@ -1,10 +1,12 @@
 # INFRA-006 VM state reverse-sync worker
 
-- **status**: pending
+- **status**: completed
 - **priority**: P1
 - **owner**: claude
 - **createdAt**: 2026-04-18 00:05
-- **relatedPlan**: PLAN-014
+- **updatedAt**: 2026-04-19 03:25
+- **completedAt**: 2026-04-19 03:25
+- **relatedPlan**: PLAN-020（原 PLAN-014 已合并）
 
 ## Summary
 
@@ -23,10 +25,10 @@ polluting quota counts (`CountByUser`) and misleading admin dashboards.
 
 ## Scope
 
-See `docs/plan/PLAN-014.md` Phase A/B/C for breakdown:
-- Phase A: worker skeleton + 60s interval + cluster-level reconcile + unit tests
-- Phase B: add `gone` status, update `CountByUser`, admin VM list badge + force-delete button
-- Phase C: audit_logs entry + structured WARN log on drift threshold breach
+See `docs/plan/PLAN-020.md` Phase A/B for breakdown（原 PLAN-014 Phase A/B/C 合并后分布）:
+- PLAN-020 Phase A: polling reconciler skeleton + 60s interval + audit drift
+- PLAN-020 Phase B: `gone` status + CountByUser filter + admin UI badge + force-delete
+- (PLAN-020 Phase C-G covers event-driven HA, not in original PLAN-014 scope)
 
 ## Acceptance
 

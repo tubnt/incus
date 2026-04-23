@@ -11,6 +11,7 @@ import (
 
 	"github.com/incuscloud/incus-admin/internal/cluster"
 	"github.com/incuscloud/incus-admin/internal/config"
+	"github.com/incuscloud/incus-admin/internal/middleware"
 )
 
 type ClusterMgmtHandler struct {
@@ -32,19 +33,14 @@ func (h *ClusterMgmtHandler) AdminRoutes(r chi.Router) {
 
 func (h *ClusterMgmtHandler) AddCluster(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Name        string `json:"name"`
-		DisplayName string `json:"display_name"`
-		APIURL      string `json:"api_url"`
-		CertFile    string `json:"cert_file"`
-		KeyFile     string `json:"key_file"`
-		CAFile      string `json:"ca_file"`
+		Name        string `json:"name"         validate:"required,safename"`
+		DisplayName string `json:"display_name" validate:"omitempty,max=200"`
+		APIURL      string `json:"api_url"      validate:"required,url"`
+		CertFile    string `json:"cert_file"    validate:"omitempty,max=512"`
+		KeyFile     string `json:"key_file"     validate:"omitempty,max=512"`
+		CAFile      string `json:"ca_file"      validate:"omitempty,max=512"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid body"})
-		return
-	}
-	if req.Name == "" || req.APIURL == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "name and api_url required"})
+	if !decodeAndValidate(w, r, &req) {
 		return
 	}
 
@@ -203,9 +199,37 @@ func (h *ClusterMgmtHandler) EvacuateNode(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// PLAN-020 Phase D: double-write healing_events. The row is created
+	// before we touch Incus so a crash between insert + API call still
+	// shows up as in_progress → ExpireStale → partial. Completed once
+	// the Incus evacuate operation returns (or Fail'd on error).
+	var healingID int64
+	if healingRepo != nil {
+		clusterID := h.mgr.IDByName(clusterName)
+		if clusterID > 0 {
+			actorID, _ := r.Context().Value(middleware.CtxUserID).(int64)
+			if a, _ := r.Context().Value(middleware.CtxActorID).(int64); a > 0 {
+				// Under shadow session the "operator" is the admin behind it.
+				actorID = a
+			}
+			var actorPtr *int64
+			if actorID > 0 {
+				actorPtr = &actorID
+			}
+			if id, hErr := healingRepo.Create(r.Context(), clusterID, nodeName, "manual", actorPtr); hErr == nil {
+				healingID = id
+			} else {
+				slog.Warn("healing event create failed", "node", nodeName, "error", hErr)
+			}
+		}
+	}
+
 	evacuateBody := strings.NewReader(`{"action":"evacuate"}`)
 	resp, err := client.APIPost(r.Context(), fmt.Sprintf("/1.0/cluster/members/%s/state", nodeName), evacuateBody)
 	if err != nil {
+		if healingID > 0 && healingRepo != nil {
+			_ = healingRepo.Fail(r.Context(), healingID, err.Error())
+		}
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "evacuate failed: " + err.Error()})
 		return
 	}
@@ -213,14 +237,23 @@ func (h *ClusterMgmtHandler) EvacuateNode(w http.ResponseWriter, r *http.Request
 	if resp != nil && resp.Type == "async" && resp.Operation != "" {
 		opID := extractOperationID(resp.Operation)
 		if opID != "" {
-			_ = client.WaitForOperation(r.Context(), opID)
+			if waitErr := client.WaitForOperation(r.Context(), opID); waitErr != nil {
+				if healingID > 0 && healingRepo != nil {
+					_ = healingRepo.Fail(r.Context(), healingID, waitErr.Error())
+				}
+				slog.Warn("evacuate operation wait failed", "node", nodeName, "error", waitErr)
+			}
 		}
 	}
 
+	if healingID > 0 && healingRepo != nil {
+		_ = healingRepo.Complete(r.Context(), healingID)
+	}
+
 	audit(r.Context(), r, "node.evacuate", "node", 0, map[string]any{
-		"node": nodeName, "cluster": clusterName,
+		"node": nodeName, "cluster": clusterName, "healing_event_id": healingID,
 	})
-	slog.Info("node evacuated", "node", nodeName, "cluster", clusterName)
+	slog.Info("node evacuated", "node", nodeName, "cluster", clusterName, "healing_event_id", healingID)
 	writeJSON(w, http.StatusOK, map[string]any{"status": "evacuated", "node": nodeName})
 }
 

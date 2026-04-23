@@ -112,7 +112,7 @@ func (s *Scheduler) refreshCluster(clusterName string) error {
 			Status     string `json:"status"`
 			Message    string `json:"message"`
 		}
-		json.Unmarshal(raw, &member)
+		_ = json.Unmarshal(raw, &member)
 
 		info := NodeInfo{
 			Name:    member.ServerName,
@@ -131,7 +131,7 @@ func (s *Scheduler) refreshCluster(clusterName string) error {
 					Used  int64 `json:"used"`
 				} `json:"memory"`
 			}
-			json.Unmarshal(resp.Metadata, &res)
+			_ = json.Unmarshal(resp.Metadata, &res)
 			info.CPUTotal = res.CPU.Total
 			info.MemTotal = res.Memory.Total
 			info.MemUsed = res.Memory.Used

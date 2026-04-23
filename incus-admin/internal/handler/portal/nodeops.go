@@ -1,7 +1,6 @@
 package portal
 
 import (
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -54,16 +53,11 @@ func (h *NodeOpsHandler) AdminRoutes(r chi.Router) {
 
 func (h *NodeOpsHandler) TestSSH(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Host    string `json:"host"`
-		User    string `json:"user"`
-		KeyFile string `json:"key_file"`
+		Host    string `json:"host"     validate:"required,hostname_rfc1123|ip"`
+		User    string `json:"user"     validate:"omitempty,max=64"`
+		KeyFile string `json:"key_file" validate:"omitempty,max=512"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid body"})
-		return
-	}
-	if req.Host == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "host required"})
+	if !decodeAndValidate(w, r, &req) {
 		return
 	}
 	if req.User == "" { req.User = h.defaultUser }
@@ -90,17 +84,12 @@ func (h *NodeOpsHandler) TestSSH(w http.ResponseWriter, r *http.Request) {
 
 func (h *NodeOpsHandler) ExecCommand(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Host    string `json:"host"`
-		User    string `json:"user"`
-		KeyFile string `json:"key_file"`
-		Command string `json:"command"`
+		Host    string `json:"host"     validate:"required,hostname_rfc1123|ip"`
+		User    string `json:"user"     validate:"omitempty,max=64"`
+		KeyFile string `json:"key_file" validate:"omitempty,max=512"`
+		Command string `json:"command"  validate:"required,min=1,max=4096"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid body"})
-		return
-	}
-	if req.Host == "" || req.Command == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "host and command required"})
+	if !decodeAndValidate(w, r, &req) {
 		return
 	}
 	if req.User == "" { req.User = h.defaultUser }

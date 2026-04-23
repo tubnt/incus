@@ -64,7 +64,7 @@ func (h *IPPoolHandler) ListIPAddresses(w http.ResponseWriter, r *http.Request) 
 						} `json:"network"`
 					} `json:"state"`
 				}
-				json.Unmarshal(raw, &inst)
+				_ = json.Unmarshal(raw, &inst)
 				for nic, data := range inst.State.Network {
 					if nic == "lo" {
 						continue
@@ -93,14 +93,13 @@ func (h *IPPoolHandler) ListIPAddresses(w http.ResponseWriter, r *http.Request) 
 
 func (h *IPPoolHandler) AddPool(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Cluster string `json:"cluster"`
-		CIDR    string `json:"cidr"`
-		Gateway string `json:"gateway"`
-		Range   string `json:"range"`
-		VLAN    int    `json:"vlan"`
+		Cluster string `json:"cluster" validate:"required,safename"`
+		CIDR    string `json:"cidr"    validate:"required,cidr"`
+		Gateway string `json:"gateway" validate:"omitempty,ip"`
+		Range   string `json:"range"   validate:"omitempty,max=128"`
+		VLAN    int    `json:"vlan"    validate:"gte=0,lte=4094"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Cluster == "" || req.CIDR == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "cluster, cidr required"})
+	if !decodeAndValidate(w, r, &req) {
 		return
 	}
 
@@ -229,7 +228,7 @@ func countIPs(ctx context.Context, mgr *cluster.Manager, clusterName, ipRange st
 					} `json:"network"`
 				} `json:"state"`
 			}
-			json.Unmarshal(raw, &inst)
+			_ = json.Unmarshal(raw, &inst)
 			for nic, data := range inst.State.Network {
 				if nic == "lo" {
 					continue

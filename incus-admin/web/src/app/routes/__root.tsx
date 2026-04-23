@@ -103,6 +103,7 @@ function RootLayout() {
       <AppHeader
         email={user.email}
         balance={user.balance}
+        actingAs={user.acting_as}
         sidebarCollapsed={desktopCollapsed}
         onMenuClick={toggleSidebar}
       />

@@ -85,11 +85,45 @@ type Handlers struct {
 		PortalRouteRegistrar
 	}
 	Events AdminRouteRegistrar
+	// Healing registers PLAN-020 Phase F history endpoints
+	// (GET /admin/ha/events, GET /admin/ha/events/{id}).
+	Healing AdminRouteRegistrar
+	// Auth exposes the step-up OIDC round-trip handlers. Start requires an
+	// active session (mounted inside the ProxyAuth group); Callback is reached
+	// directly from Logto (mounted outside, allowlisted by oauth2-proxy's
+	// skip_auth_routes).
+	Auth StepUpHandler
+	// Shadow exposes LoginAdmin (admin-only), Enter (consumes the signed
+	// token and sets the cookie) and Exit (clears the cookie). All three
+	// require an existing oauth2-proxy session.
+	Shadow ShadowHandler
 }
+
+// StepUpHandler is satisfied by *handler/auth.Handler.
+type StepUpHandler interface {
+	Start(w http.ResponseWriter, r *http.Request)
+	Callback(w http.ResponseWriter, r *http.Request)
+}
+
+// ShadowHandler is satisfied by *handler/admin.ShadowHandler.
+type ShadowHandler interface {
+	LoginAdmin(w http.ResponseWriter, r *http.Request)
+	Enter(w http.ResponseWriter, r *http.Request)
+	Exit(w http.ResponseWriter, r *http.Request)
+}
+
+// StepUpLookup is the function the admin middleware uses to check whether a
+// user has a recent step-up completion. Wired to UserRepo.GetStepUpAuthAt.
+type StepUpLookup = middleware.StepUpLookup
+
+// AuditWriter is wired by main.go to repository.AuditRepo.Log; mounted as
+// middleware on the /api/admin router group so every write request gets a
+// coarse-grained audit_logs row automatically.
+type AuditWriter = middleware.AuditWriter
 
 type UserBalanceLookup func(ctx context.Context, userID int64) (float64, error)
 
-func New(cfg *config.Config, userLookup func(ctx context.Context, email string) (int64, string, error), roleLookup func(ctx context.Context, userID int64) (string, error), balanceLookup UserBalanceLookup, h Handlers) *Server {
+func New(cfg *config.Config, userLookup func(ctx context.Context, email string) (int64, string, error), roleLookup func(ctx context.Context, userID int64) (string, error), balanceLookup UserBalanceLookup, stepUpLookup StepUpLookup, auditWriter AuditWriter, h Handlers) *Server {
 	r := chi.NewRouter()
 
 	r.Use(chimw.RequestID)
@@ -110,6 +144,14 @@ func New(cfg *config.Config, userLookup func(ctx context.Context, email string) 
 			"dist_hash": distHash,
 		})
 	})
+
+	// Step-up OIDC callback lives outside the ProxyAuth group because Logto
+	// redirects the browser back here after the user completes re-authentication.
+	// oauth2-proxy's skip_auth_routes must also include this path; otherwise
+	// the callback would be intercepted before reaching incus-admin.
+	if h.Auth != nil {
+		r.Get("/api/auth/stepup-callback", h.Auth.Callback)
+	}
 
 	r.Group(func(r chi.Router) {
 		r.Use(middleware.ProxyAuth)
@@ -151,6 +193,26 @@ func New(cfg *config.Config, userLookup func(ctx context.Context, email string) 
 
 		r.Route("/api/admin", func(r chi.Router) {
 			r.Use(middleware.RequireRole("admin"))
+			// Step-up gate: lookup == nil → no-op. See middleware/stepup.go
+			// for the sensitive-route allowlist.
+			r.Use(middleware.RequireRecentAuthOnSensitive(stepUpLookup, cfg.Auth.StepUpMaxAge))
+			// Write-audit middleware: auditWriter == nil → no-op. Captures
+			// every POST/PUT/PATCH/DELETE that survives step-up and reaches
+			// the handler so coverage is guaranteed even if the handler
+			// forgets to call audit() explicitly.
+			r.Use(middleware.AuditAdminWrites(auditWriter))
+			// Shadow-mode money gate: when a shadow session is active,
+			// reject anything under moneyRoutes (balance adjustments,
+			// refunds, etc) with 403. Non-shadow or non-money routes pass
+			// through untouched.
+			r.Use(middleware.RejectShadowSessionOnMoney)
+
+			// Admin-only shadow-login entry point. Must live under /api/admin
+			// so it inherits RequireRole("admin") — only admins can start a
+			// shadow session against another user.
+			if h.Shadow != nil {
+				r.Post("/users/{id}/shadow-login", h.Shadow.LoginAdmin)
+			}
 			if h.Admin != nil {
 				h.Admin.Routes(r)
 			}
@@ -196,27 +258,59 @@ func New(cfg *config.Config, userLookup func(ctx context.Context, email string) 
 			if h.Events != nil {
 				h.Events.AdminRoutes(r)
 			}
+			if h.Healing != nil {
+				h.Healing.AdminRoutes(r)
+			}
 		})
 
 		if h.Console != nil {
 			r.Get("/api/console", h.Console.HandleConsole)
 		}
 
+		// Step-up OIDC start requires an existing session so only the current
+		// logged-in user can initiate a re-authentication for themselves.
+		if h.Auth != nil {
+			r.Get("/api/auth/stepup/start", h.Auth.Start)
+		}
+
+		// Shadow login enter/exit endpoints live inside the ProxyAuth group
+		// so oauth2-proxy has already verified the admin's identity before
+		// the cookie is minted/cleared.
+		if h.Shadow != nil {
+			r.Get("/shadow/enter", h.Shadow.Enter)
+			r.Post("/shadow/exit", h.Shadow.Exit)
+		}
+
 		r.Get("/api/auth/me", func(w http.ResponseWriter, r *http.Request) {
 			email, _ := r.Context().Value(middleware.CtxUserEmail).(string)
 			userID, _ := r.Context().Value(middleware.CtxUserID).(int64)
 			role, _ := r.Context().Value(middleware.CtxUserRole).(string)
+			actorID, _ := r.Context().Value(middleware.CtxActorID).(int64)
+			actorEmail, _ := r.Context().Value(middleware.CtxActorEmail).(string)
 			var balance float64
 			if balanceLookup != nil && userID > 0 {
 				balance, _ = balanceLookup(r.Context(), userID)
 			}
-			writeJSON(w, http.StatusOK, map[string]any{
+			resp := map[string]any{
 				"id":      userID,
 				"email":   email,
 				"name":    email,
 				"role":    role,
 				"balance": balance,
-			})
+			}
+			// When under shadow, expose actor info so the frontend banner
+			// can display "you're acting as X · exit". HttpOnly cookie means
+			// JS can't read the session directly; this endpoint is the
+			// sanctioned way to check.
+			if actorID > 0 {
+				resp["acting_as"] = map[string]any{
+					"target_user_id": userID,
+					"target_email":   email,
+					"actor_id":       actorID,
+					"actor_email":    actorEmail,
+				}
+			}
+			writeJSON(w, http.StatusOK, resp)
 		})
 	})
 
@@ -251,8 +345,9 @@ func (s *Server) Run() error {
 	}
 
 	emergencySrv := &http.Server{
-		Addr:    s.cfg.Server.EmergencyListen,
-		Handler: s.emergencyRouter(),
+		Addr:              s.cfg.Server.EmergencyListen,
+		Handler:           s.emergencyRouter(),
+		ReadHeaderTimeout: 10 * time.Second,
 	}
 
 	errCh := make(chan error, 2)
@@ -330,6 +425,9 @@ func (s *Server) emergencyRouter() http.Handler {
 		}
 		failMu.Unlock()
 
+		// 限制 emergency 登录 body 大小防止 memory exhaustion —— 这里只接受单个 token
+		// 字段，8KB 完全够用。
+		r.Body = http.MaxBytesReader(w, r.Body, 8*1024)
 		token := r.FormValue("token")
 		if !constantTimeEqual(token, s.cfg.Auth.EmergencyToken) {
 			failMu.Lock()

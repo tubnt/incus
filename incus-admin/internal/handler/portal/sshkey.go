@@ -1,9 +1,8 @@
 package portal
 
 import (
-	"crypto/md5"
+	"crypto/md5" //nolint:gosec // G501: SSH 公钥指纹（RFC 4716）以 MD5 展示，属协议约定值而非密码哈希
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -43,11 +42,10 @@ func (h *SSHKeyHandler) Create(w http.ResponseWriter, r *http.Request) {
 	userID, _ := r.Context().Value(middleware.CtxUserID).(int64)
 
 	var req struct {
-		Name      string `json:"name"`
-		PublicKey string `json:"public_key"`
+		Name      string `json:"name"       validate:"omitempty,max=100"`
+		PublicKey string `json:"public_key" validate:"required,min=1,max=16384"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid body"})
+	if !decodeAndValidate(w, r, &req) {
 		return
 	}
 
@@ -78,6 +76,10 @@ func (h *SSHKeyHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	audit(r.Context(), r, "ssh_key.create", "ssh_key", key.ID, map[string]any{
+		"name":        key.Name,
+		"fingerprint": fp,
+	})
 	writeJSON(w, http.StatusCreated, map[string]any{"key": key})
 }
 
@@ -94,6 +96,7 @@ func (h *SSHKeyHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	audit(r.Context(), r, "ssh_key.delete", "ssh_key", id, nil)
 	writeJSON(w, http.StatusOK, map[string]any{"status": "deleted"})
 }
 
@@ -106,7 +109,7 @@ func sshFingerprint(pubKey string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	hash := md5.Sum(decoded)
+	hash := md5.Sum(decoded) //nolint:gosec // G401: 同上 —— SSH 指纹展示用，非安全哈希用途
 	fp := make([]string, len(hash))
 	for i, b := range hash {
 		fp[i] = fmt.Sprintf("%02x", b)

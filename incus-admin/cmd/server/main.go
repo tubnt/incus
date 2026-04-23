@@ -6,16 +6,21 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 
+	authcore "github.com/incuscloud/incus-admin/internal/auth"
 	"github.com/incuscloud/incus-admin/internal/cluster"
 	"github.com/incuscloud/incus-admin/internal/config"
+	adminhandler "github.com/incuscloud/incus-admin/internal/handler/admin"
+	authhandler "github.com/incuscloud/incus-admin/internal/handler/auth"
 	"github.com/incuscloud/incus-admin/internal/handler/portal"
 	"github.com/incuscloud/incus-admin/internal/middleware"
 	"github.com/incuscloud/incus-admin/internal/repository"
 	"github.com/incuscloud/incus-admin/internal/server"
 	"github.com/incuscloud/incus-admin/internal/service"
+	"github.com/incuscloud/incus-admin/internal/worker"
 )
 
 func main() {
@@ -115,9 +120,12 @@ func main() {
 	quotaRepo := repository.NewQuotaRepo(db)
 
 	ipAddrRepo := repository.NewIPAddrRepo(db)
+	healingRepo := repository.NewHealingEventRepo(db)
 	portal.SetAuditRepo(auditRepo)
 	portal.SetIPAddrRepo(ipAddrRepo)
 	portal.SetUserRepo(userRepo)
+	portal.SetHealingRepo(healingRepo)
+	portal.SetAppEnv(cfg.Server.Env)
 	middleware.SetEmergencySecret(cfg.Auth.EmergencyToken)
 
 	middleware.SetTokenValidator(func(ctx context.Context, token string) (int64, error) {
@@ -128,7 +136,134 @@ func main() {
 		return t.UserID, nil
 	})
 
-	srv := server.New(cfg, userLookup, roleLookup, balanceLookup, server.Handlers{
+	// Step-up OIDC is optional; absence just disables sensitive-route protection.
+	// Init is outside the clusterMgr block because step-up has no cluster dependency.
+	var stepUpHandler server.StepUpHandler
+	if cfg.Auth.OIDCIssuer != "" && cfg.Auth.OIDCClientID != "" && cfg.Auth.OIDCClientSecret != "" && cfg.Auth.StepUpCallbackURL != "" {
+		oidcClient, oidcErr := authcore.NewOIDCClient(context.Background(),
+			cfg.Auth.OIDCIssuer, cfg.Auth.OIDCClientID, cfg.Auth.OIDCClientSecret, cfg.Auth.StepUpCallbackURL)
+		if oidcErr != nil {
+			slog.Warn("step-up OIDC discovery failed, disabled", "issuer", cfg.Auth.OIDCIssuer, "error", oidcErr)
+		} else {
+			stateSecret := cfg.Auth.StepUpStateSecret
+			if stateSecret == "" {
+				// Reuse the session secret — saves an env var for single-node deploys.
+				stateSecret = cfg.Server.SessionSecret
+			}
+			stepUpHandler = authhandler.NewHandler(oidcClient, userRepo, stateSecret)
+			slog.Info("step-up OIDC ready", "issuer", cfg.Auth.OIDCIssuer, "max_age", cfg.Auth.StepUpMaxAge)
+		}
+	} else {
+		slog.Info("step-up OIDC not configured, sensitive-route protection disabled")
+	}
+
+	// StepUpLookup stays nil when OIDC is disabled (middleware becomes a no-op).
+	var stepUpLookup server.StepUpLookup
+	if stepUpHandler != nil {
+		stepUpLookup = userRepo.GetStepUpAuthAt
+	}
+
+	// Route-level audit writer wraps AuditRepo.Log; signature matches
+	// server.AuditWriter. Every /api/admin write gets a coarse-grained row.
+	auditWriter := server.AuditWriter(auditRepo.Log)
+
+	// Shadow-session signing secret falls back to SessionSecret for
+	// single-node deploys. Handler + cookie verifier share one key so the
+	// verify path matches what LoginAdmin signs.
+	shadowSecret := cfg.Auth.ShadowSessionSecret
+	if shadowSecret == "" {
+		shadowSecret = cfg.Server.SessionSecret
+	}
+	middleware.SetShadowVerifier(func(cookieValue string) (int64, string, int64, string, error) {
+		c, err := authcore.VerifyShadow([]byte(shadowSecret), cookieValue)
+		if err != nil {
+			return 0, "", 0, "", err
+		}
+		return c.ActorID, c.ActorEmail, c.TargetID, c.TargetEmail, nil
+	})
+	shadowHandler := adminhandler.NewShadowHandler(userRepo, shadowSecret, func(actorID int64, action, targetType string, targetID int64, details map[string]any, ip string) {
+		bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		var uid *int64
+		if actorID > 0 {
+			uid = &actorID
+		}
+		auditRepo.Log(bgCtx, uid, action, targetType, targetID, details, ip)
+	})
+
+	// Retention worker: deletes audit_logs rows older than
+	// AUDIT_RETENTION_DAYS (default 365). Runs until server shutdown.
+	go worker.RunAuditCleanup(context.Background(), auditRepo, cfg.Auth.AuditRetentionDays)
+
+	// API token cleanup: removes expired rows after a 30d grace period so
+	// audit cross-references survive short investigations.
+	go worker.RunAPITokenCleanup(context.Background(), apiTokenRepo, 30*24*time.Hour)
+
+	// PLAN-020 Phase A: VM state reverse-sync worker. Polls each Incus
+	// cluster every 60s, diffs against active `vms` rows, and flips rows
+	// that have vanished from Incus to status='gone' while releasing their
+	// IPs. Only starts when a cluster manager exists (skipped in DB-only
+	// test/dev environments).
+	if clusterMgr != nil {
+		snapshotFn := worker.ClusterSnapshotFromManager(clusterMgr, "customers")
+		reconcileCfg := worker.VMReconcilerConfig{Interval: 60 * time.Second}
+		go worker.RunVMReconciler(
+			context.Background(),
+			reconcileCfg,
+			snapshotFn,
+			vmRepo,
+			ipAddrRepo,
+			auditRepo,
+		)
+
+		// PLAN-020 Phase C: event-driven listener. Each cluster gets a
+		// goroutine that subscribes to /1.0/events (lifecycle + cluster)
+		// over WebSocket. Faster than the 60s reconciler for in-band
+		// changes; reconciler stays as safety net + initial catch-up on
+		// reconnect.
+		streamFn := func() []worker.ClusterStream {
+			out := make([]worker.ClusterStream, 0)
+			for _, c := range clusterMgr.List() {
+				tlsCfg, err := clusterMgr.TLSConfigForCluster(c.Name)
+				if err != nil {
+					slog.Warn("event listener: skip cluster, no tls", "cluster", c.Name, "error", err)
+					continue
+				}
+				out = append(out, worker.ClusterStream{
+					ID:     clusterMgr.IDByName(c.Name),
+					Name:   c.Name,
+					APIURL: c.APIURL,
+					TLS:    tlsCfg,
+				})
+			}
+			return out
+		}
+		// On reconnect, trigger a single reconcile pass so any drift that
+		// accumulated during the outage surfaces quickly.
+		reconcileOnDemand := func(ctx context.Context) {
+			worker.RunVMReconcilerOnce(ctx, reconcileCfg, snapshotFn, vmRepo, ipAddrRepo, auditRepo)
+		}
+		// Phase D.2/D.3 healing adapter bridges worker.HealingTracker to
+		// HealingEventRepo without leaking repository types into the worker
+		// package.
+		healingAdapter := healingTrackerAdapter{repo: healingRepo}
+		go worker.RunEventListener(
+			context.Background(),
+			worker.EventListenerConfig{},
+			streamFn,
+			vmRepo,
+			healingAdapter,
+			reconcileOnDemand,
+		)
+
+		// PLAN-020 Phase D.3 sweeper: any healing_events row left in
+		// 'in_progress' for more than 15 minutes is likely the consequence
+		// of an Incus event we never received (network glitch, crash).
+		// Flip to 'partial' so the history UI doesn't show stuck entries.
+		go worker.RunHealingExpireStale(context.Background(), healingRepo, 15*time.Minute, 5*time.Minute)
+	}
+
+	srv := server.New(cfg, userLookup, roleLookup, balanceLookup, stepUpLookup, auditWriter, server.Handlers{
 		Admin:     portal.NewAdminVMHandler(vmSvc, vmRepo, sshKeyRepo, clusterMgr, scheduler),
 		Portal:    portal.NewVMHandler(vmSvc, vmRepo, sshKeyRepo, clusterMgr),
 		Users:     portal.NewUserHandler(userRepo),
@@ -148,6 +283,9 @@ func main() {
 		NodeOps:     portal.NewNodeOpsHandler(cfg.Monitor.CephSSHUser, cfg.Monitor.CephSSHKey, cfg.Monitor.SSHKnownHostsFile),
 		Quotas:      portal.NewQuotaHandler(quotaRepo, vmRepo),
 		Events:      portal.NewEventsHandler(clusterMgr),
+		Healing:     portal.NewHealingHandler(healingRepo, clusterMgr),
+		Auth:        stepUpHandler,
+		Shadow:      shadowHandler,
 	})
 
 	if err := srv.Run(); err != nil {
@@ -168,4 +306,31 @@ func (s *clusterPinStore) Get(ctx context.Context, clusterName string) (string, 
 
 func (s *clusterPinStore) Set(ctx context.Context, clusterName, fingerprint string) error {
 	return s.repo.SetTLSFingerprint(ctx, clusterName, fingerprint)
+}
+
+// healingTrackerAdapter lets the worker talk to HealingEventRepo without
+// importing repository types — keeps the worker's interface consumer-side.
+type healingTrackerAdapter struct {
+	repo *repository.HealingEventRepo
+}
+
+func (a healingTrackerAdapter) FindInProgressByNode(ctx context.Context, clusterID int64, nodeName, trigger string) (int64, error) {
+	return a.repo.FindInProgressByNode(ctx, clusterID, nodeName, trigger)
+}
+
+func (a healingTrackerAdapter) Create(ctx context.Context, clusterID int64, nodeName, trigger string, actorID *int64) (int64, error) {
+	return a.repo.Create(ctx, clusterID, nodeName, trigger, actorID)
+}
+
+func (a healingTrackerAdapter) AppendEvacuatedVM(ctx context.Context, eventID int64, vm worker.HealingEvacuatedVM) error {
+	return a.repo.AppendEvacuatedVM(ctx, eventID, repository.EvacuatedVM{
+		VMID:     vm.VMID,
+		Name:     vm.Name,
+		FromNode: vm.FromNode,
+		ToNode:   vm.ToNode,
+	})
+}
+
+func (a healingTrackerAdapter) CompleteByNode(ctx context.Context, clusterID int64, nodeName string) (int64, error) {
+	return a.repo.CompleteByNode(ctx, clusterID, nodeName)
 }

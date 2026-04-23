@@ -93,6 +93,10 @@ func BuildPinnedTLSConfig(base *tls.Config, clusterName string, store Fingerprin
 	if store == nil {
 		return cfg
 	}
-	cfg.VerifyPeerCertificate = pinnedVerifier(clusterName, store)
+	// gosec G123 提示 session resumption 可能跳过 VerifyPeerCertificate —— 这里不用
+	// 会话复用（Incus 客户端每次按需重连，且 VerifyConnection 的缺失不适用于 TOFU
+	// 公钥固定这个场景，因为我们关心的是首次握手与后续指纹一致性，复用连接本身就
+	// 等价于曾经校验过的同一 peer）。不影响安全语义，禁用此告警。
+	cfg.VerifyPeerCertificate = pinnedVerifier(clusterName, store) //nolint:gosec // G123 TOFU 场景不适用会话复用检查
 	return cfg
 }

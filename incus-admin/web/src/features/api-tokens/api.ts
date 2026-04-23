@@ -23,9 +23,34 @@ export function useAPITokensQuery() {
   });
 }
 
+export interface CreateTokenInput {
+  name: string;
+  /** TTL in hours; omit to use server default (24h). Server clamps to [1h, 90d]. */
+  expiresInHours?: number;
+}
+
 export function useCreateAPITokenMutation() {
   return useMutation({
-    mutationFn: (name: string) => http.post<{ token: APIToken }>("/portal/api-tokens", { name }),
+    mutationFn: (input: CreateTokenInput) =>
+      http.post<{ token: APIToken }>("/portal/api-tokens", {
+        name: input.name,
+        expires_in_hours: input.expiresInHours,
+      }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: apiTokenKeys.all }),
+  });
+}
+
+export interface RenewTokenInput {
+  id: number;
+  expiresInHours?: number;
+}
+
+export function useRenewAPITokenMutation() {
+  return useMutation({
+    mutationFn: ({ id, expiresInHours }: RenewTokenInput) =>
+      http.post<{ token: APIToken }>(`/portal/api-tokens/${id}/renew`, {
+        expires_in_hours: expiresInHours,
+      }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: apiTokenKeys.all }),
   });
 }

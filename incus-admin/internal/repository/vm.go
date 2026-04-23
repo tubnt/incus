@@ -44,8 +44,11 @@ func (r *VMRepo) GetByID(ctx context.Context, id int64) (*model.VM, error) {
 
 func (r *VMRepo) ListByUser(ctx context.Context, userID int64) ([]model.VM, error) {
 	rows, err := r.db.QueryContext(ctx,
+		// Users never need to see `gone` rows — the instance is unreachable
+		// and they can't act on it. Admins see them via the admin list page
+		// (ListPaged) so they can force-delete.
 		`SELECT id, name, cluster_id, user_id, order_id, host(ip)::text, status, cpu, memory_mb, disk_gb, os_image, node, password, created_at, updated_at
-		 FROM vms WHERE user_id = $1 AND status != 'deleted' ORDER BY id DESC`, userID)
+		 FROM vms WHERE user_id = $1 AND status NOT IN ('deleted','gone') ORDER BY id DESC`, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -161,12 +164,134 @@ func (r *VMRepo) Delete(ctx context.Context, id int64) error {
 	return err
 }
 
+// ListActiveForReconcile returns VMs in "live" statuses older than `cutoff`
+// for the given cluster, used by PLAN-020 vm_reconciler to diff against the
+// Incus instance listing. The cutoff excludes just-provisioned rows so a VM
+// created within the buffer window isn't mislabelled as gone while Incus is
+// still materialising it. Does not include status='gone' or 'deleted' rows.
+func (r *VMRepo) ListActiveForReconcile(ctx context.Context, clusterID int64, cutoff time.Time) ([]model.VM, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT id, name, cluster_id, user_id, order_id, host(ip)::text, status, cpu, memory_mb, disk_gb, os_image, node, password, created_at, updated_at
+		 FROM vms
+		 WHERE cluster_id = $1
+		   AND status IN ('creating','running','stopped','migrating')
+		   AND created_at < $2`,
+		clusterID, cutoff,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list active for reconcile: %w", err)
+	}
+	defer rows.Close()
+	return scanVMs(rows)
+}
+
+// MarkGone flips a VM's status to 'gone' — distinct from 'deleted' (which
+// records user-initiated removals). The reconciler uses this when a row
+// exists in DB but the Incus instance has disappeared, so quota accounting
+// and UIs can surface the drift without mutating the original `deleted`
+// lifecycle.
+func (r *VMRepo) MarkGone(ctx context.Context, id int64) error {
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE vms SET status = 'gone', updated_at = NOW()
+		 WHERE id = $1 AND status NOT IN ('gone','deleted')`,
+		id,
+	)
+	if err != nil {
+		return fmt.Errorf("mark vm gone: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		// Either already gone/deleted or the row vanished under us. Not an
+		// error for the reconciler — next cycle will simply see no drift.
+		return nil
+	}
+	return nil
+}
+
 func (r *VMRepo) CountByUser(ctx context.Context, userID int64) (vms int, vcpus int, ramMB int, diskGB int, err error) {
 	err = r.db.QueryRowContext(ctx,
+		// 'gone' = Incus instance vanished out-of-band (PLAN-020 reconciler).
+		// Counting it would double-charge quota after the reconciler flips
+		// the row but before the admin force-deletes it.
 		`SELECT COUNT(*), COALESCE(SUM(cpu),0), COALESCE(SUM(memory_mb),0), COALESCE(SUM(disk_gb),0)
-		 FROM vms WHERE user_id = $1 AND status NOT IN ('deleted','error')`, userID,
+		 FROM vms WHERE user_id = $1 AND status NOT IN ('deleted','error','gone')`, userID,
 	).Scan(&vms, &vcpus, &ramMB, &diskGB)
 	return
+}
+
+// MarkGoneByName flips status to 'gone' identified by (cluster_id, name).
+// Used by the event listener when an instance-deleted event arrives — the
+// name is all the event carries, no DB id. Active statuses only; already
+// 'deleted' (user-initiated) or 'gone' rows are left alone. Returns nil
+// (not ErrNoRows) when the name isn't found so event arrival after the
+// reconciler already cleaned up is a no-op.
+func (r *VMRepo) MarkGoneByName(ctx context.Context, clusterID int64, name string) error {
+	_, err := r.db.ExecContext(ctx,
+		`UPDATE vms SET status = 'gone', updated_at = NOW()
+		 WHERE cluster_id = $1 AND name = $2
+		   AND status IN ('creating','running','stopped','migrating')`,
+		clusterID, name,
+	)
+	if err != nil {
+		return fmt.Errorf("mark gone by name: %w", err)
+	}
+	return nil
+}
+
+// LookupForEvent returns (id, currentNode) for the VM matching
+// (cluster_id, name). Used by the event listener to capture the from-node
+// before applying UpdateNodeByName, so an in_progress healing_events row
+// can record where each VM came from. Returns (0, "", nil) when the row
+// isn't found — events for out-of-band / external instances are silent.
+func (r *VMRepo) LookupForEvent(ctx context.Context, clusterID int64, name string) (int64, string, error) {
+	var id int64
+	var node sql.NullString
+	err := r.db.QueryRowContext(ctx,
+		`SELECT id, node FROM vms
+		 WHERE cluster_id = $1 AND name = $2
+		   AND status NOT IN ('deleted','gone')
+		 LIMIT 1`,
+		clusterID, name,
+	).Scan(&id, &node)
+	if err == sql.ErrNoRows {
+		return 0, "", nil
+	}
+	if err != nil {
+		return 0, "", fmt.Errorf("lookup for event: %w", err)
+	}
+	if node.Valid {
+		return id, node.String, nil
+	}
+	return id, "", nil
+}
+
+// UpdateNodeByName records a new host node for a VM identified by name +
+// cluster, driven by instance-updated / migrate events. No-op when the row
+// isn't found so stale events don't error out.
+func (r *VMRepo) UpdateNodeByName(ctx context.Context, clusterID int64, name string, node string) error {
+	_, err := r.db.ExecContext(ctx,
+		`UPDATE vms SET node = $3, updated_at = NOW()
+		 WHERE cluster_id = $1 AND name = $2`,
+		clusterID, name, node,
+	)
+	if err != nil {
+		return fmt.Errorf("update node by name: %w", err)
+	}
+	return nil
+}
+
+// ListGone returns rows flagged by the reconciler as 'gone' — Incus instance
+// vanished out-of-band. Admin surfaces these for force-delete / investigation.
+// Ordered by updated_at DESC so the freshest drift shows first.
+func (r *VMRepo) ListGone(ctx context.Context) ([]model.VM, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT id, name, cluster_id, user_id, order_id, host(ip)::text, status, cpu, memory_mb, disk_gb, os_image, node, password, created_at, updated_at
+		 FROM vms WHERE status = 'gone' ORDER BY updated_at DESC`)
+	if err != nil {
+		return nil, fmt.Errorf("list gone vms: %w", err)
+	}
+	defer rows.Close()
+	return scanVMs(rows)
 }
 
 // CountRunningByCluster returns how many VMs the DB believes are running for a cluster.

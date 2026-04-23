@@ -1,7 +1,6 @@
 package portal
 
 import (
-	"encoding/json"
 	"net/http"
 	"strconv"
 
@@ -63,16 +62,16 @@ func (h *QuotaHandler) UpdateUserQuota(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 上限合理防御：单用户最多 1000 VM / 4096 vCPU / 16 TB RAM / 1 PB Disk；超出应启用新方案。
 	var req struct {
-		MaxVMs       int `json:"max_vms"`
-		MaxVCPUs     int `json:"max_vcpus"`
-		MaxRAMMB     int `json:"max_ram_mb"`
-		MaxDiskGB    int `json:"max_disk_gb"`
-		MaxIPs       int `json:"max_ips"`
-		MaxSnapshots int `json:"max_snapshots"`
+		MaxVMs       int `json:"max_vms"       validate:"gte=0,lte=1000"`
+		MaxVCPUs     int `json:"max_vcpus"     validate:"gte=0,lte=4096"`
+		MaxRAMMB     int `json:"max_ram_mb"    validate:"gte=0,lte=16777216"`
+		MaxDiskGB    int `json:"max_disk_gb"   validate:"gte=0,lte=1048576"`
+		MaxIPs       int `json:"max_ips"       validate:"gte=0,lte=4096"`
+		MaxSnapshots int `json:"max_snapshots" validate:"gte=0,lte=10000"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid body"})
+	if !decodeAndValidate(w, r, &req) {
 		return
 	}
 

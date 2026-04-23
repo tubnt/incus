@@ -8,10 +8,13 @@ import { useConfirm } from "@/shared/components/ui/confirm-dialog";
 import { useClustersQuery } from "@/features/clusters/api";
 import { Pagination } from "@/shared/components/ui/pagination";
 import {
+  type GoneVM,
   type IncusInstance,
   extractIP,
   useClusterVMsQuery,
   useDeleteVMMutation,
+  useForceDeleteGoneVMMutation,
+  useGoneVMsQuery,
   useReinstallVMMutation,
   useVMStateMutation,
 } from "@/features/vms/api";
@@ -33,9 +36,105 @@ function AllVMsPage() {
           {t("nav.createVm")}
         </Link>
       </div>
+      <GoneVMsPanel />
       {clusters.map((c) => (
         <ClusterVMs key={c.name} clusterName={c.name} displayName={c.display_name} />
       ))}
+    </div>
+  );
+}
+
+/**
+ * GoneVMsPanel surfaces rows the PLAN-020 reconciler flagged as gone
+ * (Incus instance disappeared out-of-band). Hidden entirely when count=0
+ * so the normal admin VM page stays clean in a healthy cluster. Each row
+ * exposes a "清理" action that calls /admin/vms/{id}/force-delete, which
+ * soft-deletes the row and releases its IP.
+ */
+function GoneVMsPanel() {
+  const { t } = useTranslation();
+  const { data, isLoading } = useGoneVMsQuery();
+  const forceDelete = useForceDeleteGoneVMMutation();
+  const confirm = useConfirm();
+
+  if (isLoading) return null;
+  const goneVMs = data?.vms ?? [];
+  if (goneVMs.length === 0) return null;
+
+  const cleanup = async (vm: GoneVM) => {
+    const ok = await confirm({
+      title: t("vm.forceDeleteTitle", { defaultValue: "清理 Drift VM？" }),
+      message: t("vm.forceDeleteMessage", {
+        defaultValue: "将物理删除 DB 行并释放 IP {{ip}}。此操作不可撤销（原 VM 在 Incus 端已消失）。",
+        ip: vm.ip ?? "(无)",
+      }),
+      destructive: true,
+    });
+    if (!ok) return;
+    forceDelete.mutate(vm.id, {
+      onSuccess: () => toast.success(t("vm.forceDeleted", { defaultValue: "已清理" }) + ` ${vm.name}`),
+      onError: (err) => toast.error((err as Error).message),
+    });
+  };
+
+  return (
+    <div className="mb-6 border border-destructive/30 rounded-lg bg-destructive/5 p-4">
+      <div className="flex items-center justify-between mb-3">
+        <h2 className="text-base font-semibold text-destructive">
+          ⚠️ Drift VMs ({goneVMs.length}) — status=gone
+        </h2>
+        <span className="text-xs text-muted-foreground">
+          {t("vm.driftHint", {
+            defaultValue: "Incus 端实例已消失，DB 残留；审计后可清理",
+          })}
+        </span>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead className="bg-muted/30">
+            <tr>
+              <th className="text-left px-3 py-2 font-medium">ID</th>
+              <th className="text-left px-3 py-2 font-medium">{t("vm.name")}</th>
+              <th className="text-left px-3 py-2 font-medium">{t("vm.status")}</th>
+              <th className="text-left px-3 py-2 font-medium">{t("vm.ip")}</th>
+              <th className="text-left px-3 py-2 font-medium">{t("vm.node")}</th>
+              <th className="text-left px-3 py-2 font-medium">
+                {t("vm.markedGoneAt", { defaultValue: "标记时间" })}
+              </th>
+              <th className="text-right px-3 py-2 font-medium">{t("common.actions")}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {goneVMs.map((vm) => (
+              <tr key={vm.id} className="border-t border-border">
+                <td className="px-3 py-2 text-xs text-muted-foreground">{vm.id}</td>
+                <td className="px-3 py-2 font-mono">{vm.name}</td>
+                <td className="px-3 py-2">
+                  <span className="px-2 py-0.5 rounded text-xs font-medium bg-muted text-muted-foreground">
+                    gone
+                  </span>
+                </td>
+                <td className="px-3 py-2 font-mono text-xs">{vm.ip ?? "—"}</td>
+                <td className="px-3 py-2 text-muted-foreground">{vm.node || "—"}</td>
+                <td className="px-3 py-2 text-xs text-muted-foreground">
+                  {new Date(vm.updated_at).toLocaleString()}
+                </td>
+                <td className="px-3 py-2 text-right">
+                  <button
+                    onClick={() => cleanup(vm)}
+                    disabled={forceDelete.isPending}
+                    className="px-2 py-1 rounded text-xs font-medium bg-destructive/20 text-destructive hover:bg-destructive/30 disabled:opacity-50"
+                  >
+                    {forceDelete.isPending
+                      ? t("common.loading")
+                      : t("vm.cleanup", { defaultValue: "清理" })}
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

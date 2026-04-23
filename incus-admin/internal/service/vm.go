@@ -112,7 +112,7 @@ func (s *VMService) Create(ctx context.Context, params CreateVMParams) (*CreateV
 
 	if resp.Type == "async" {
 		var op struct{ ID string }
-		json.Unmarshal(resp.Metadata, &op)
+		_ = json.Unmarshal(resp.Metadata, &op)
 		if op.ID != "" {
 			if err := client.WaitForOperation(ctx, op.ID); err != nil {
 				slog.Error("wait for create operation failed", "vm", vmName, "error", err)
@@ -127,16 +127,16 @@ func (s *VMService) Create(ctx context.Context, params CreateVMParams) (*CreateV
 		slog.Error("start instance failed", "vm", vmName, "error", err)
 	} else if startResp.Type == "async" {
 		var op struct{ ID string }
-		json.Unmarshal(startResp.Metadata, &op)
+		_ = json.Unmarshal(startResp.Metadata, &op)
 		if op.ID != "" {
-			client.WaitForOperation(ctx, op.ID)
+			_ = client.WaitForOperation(ctx, op.ID)
 		}
 	}
 
 	node := ""
 	if instanceData, err := client.GetInstance(ctx, params.Project, vmName); err == nil {
 		var inst struct{ Location string }
-		json.Unmarshal(instanceData, &inst)
+		_ = json.Unmarshal(instanceData, &inst)
 		node = inst.Location
 	}
 
@@ -168,7 +168,7 @@ func (s *VMService) ChangeState(ctx context.Context, clusterName, project, vmNam
 
 	if resp.Type == "async" {
 		var op struct{ ID string }
-		json.Unmarshal(resp.Metadata, &op)
+		_ = json.Unmarshal(resp.Metadata, &op)
 		if op.ID != "" {
 			return client.WaitForOperation(ctx, op.ID)
 		}
@@ -263,7 +263,7 @@ func (s *VMService) Reinstall(ctx context.Context, params ReinstallParams) (*Rei
 
 	if resp.Type == "async" {
 		var op struct{ ID string }
-		json.Unmarshal(resp.Metadata, &op)
+		_ = json.Unmarshal(resp.Metadata, &op)
 		if op.ID != "" {
 			if err := client.WaitForOperation(ctx, op.ID); err != nil {
 				slog.Error("wait for reinstall create failed", "vm", params.VMName, "error", err)
@@ -278,9 +278,9 @@ func (s *VMService) Reinstall(ctx context.Context, params ReinstallParams) (*Rei
 		slog.Error("start reinstalled instance failed", "vm", params.VMName, "error", err)
 	} else if startResp.Type == "async" {
 		var op struct{ ID string }
-		json.Unmarshal(startResp.Metadata, &op)
+		_ = json.Unmarshal(startResp.Metadata, &op)
 		if op.ID != "" {
-			client.WaitForOperation(ctx, op.ID)
+			_ = client.WaitForOperation(ctx, op.ID)
 		}
 	}
 

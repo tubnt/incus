@@ -13,17 +13,69 @@ function AuditLogsPage() {
   const { t } = useTranslation();
   const [offset, setOffset] = useState(0);
   const [limit, setLimit] = useState(50);
+  // CSV export form state — these only affect the download URL, not the
+  // paginated list above. TODO(i18n): labels here use literals; move to
+  // translation keys once admin page batch sync lands.
+  const [exportFrom, setExportFrom] = useState("");
+  const [exportTo, setExportTo] = useState("");
+  const [exportAction, setExportAction] = useState("");
 
   const { data, isLoading } = useAuditLogsQuery(offset, limit);
 
   const logs = data?.logs ?? [];
   const total = data?.total ?? 0;
 
+  const exportParams = new URLSearchParams();
+  if (exportFrom) exportParams.set("from", exportFrom);
+  if (exportTo) exportParams.set("to", exportTo);
+  if (exportAction) exportParams.set("action", exportAction);
+  const exportQuery = exportParams.toString();
+  const exportHref = `/api/admin/audit-logs/export${exportQuery ? `?${exportQuery}` : ""}`;
+
   return (
     <div>
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-bold">{t("admin.auditLogsTitle")}</h1>
         <span className="text-xs text-muted-foreground">{t("admin.totalRows", { count: total })}</span>
+      </div>
+
+      <div className="flex flex-wrap gap-3 items-end mb-4 p-3 border border-border rounded-lg bg-muted/20">
+        <div className="flex flex-col">
+          <label className="text-xs text-muted-foreground mb-1">起始日期</label>
+          <input
+            type="date"
+            value={exportFrom}
+            onChange={(e) => setExportFrom(e.target.value)}
+            className="h-8 px-2 text-sm border border-border rounded bg-background"
+          />
+        </div>
+        <div className="flex flex-col">
+          <label className="text-xs text-muted-foreground mb-1">截止日期</label>
+          <input
+            type="date"
+            value={exportTo}
+            onChange={(e) => setExportTo(e.target.value)}
+            className="h-8 px-2 text-sm border border-border rounded bg-background"
+          />
+        </div>
+        <div className="flex flex-col">
+          <label className="text-xs text-muted-foreground mb-1">动作前缀</label>
+          <input
+            type="text"
+            value={exportAction}
+            onChange={(e) => setExportAction(e.target.value)}
+            placeholder="如 vm. / node. / http."
+            className="h-8 px-2 text-sm border border-border rounded bg-background w-40"
+          />
+        </div>
+        <a
+          href={exportHref}
+          download
+          className="h-8 px-3 text-sm bg-primary text-primary-foreground rounded hover:bg-primary/90 inline-flex items-center"
+        >
+          导出 CSV
+        </a>
+        <span className="text-xs text-muted-foreground self-center">默认 30 天，最多 10 万行</span>
       </div>
 
       {isLoading ? (

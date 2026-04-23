@@ -33,10 +33,28 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
 
   if (!response.ok) {
     const body = await response.json().catch(() => null);
+    // Sensitive admin operations return 401 with { error, redirect } when the
+    // user hasn't completed a recent step-up re-authentication. Bouncing the
+    // browser to the redirect kicks off the Logto OIDC round-trip; the server
+    // records auth_time on callback and the retried request passes through.
+    if (response.status === 401 && isStepUpRequired(body)) {
+      window.location.href = body.redirect;
+    }
     throw new HttpError(response.status, response.statusText, body);
   }
 
   return response.json();
+}
+
+interface StepUpRequired {
+  error: "step_up_required";
+  redirect: string;
+}
+
+function isStepUpRequired(body: unknown): body is StepUpRequired {
+  if (!body || typeof body !== "object") return false;
+  const b = body as Record<string, unknown>;
+  return b.error === "step_up_required" && typeof b.redirect === "string";
 }
 
 export const http = {

@@ -191,12 +191,11 @@ func (h *CephHandler) CreatePool(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Name  string `json:"name"`
-		PGNum int    `json:"pg_num"`
-		Type  string `json:"type"` // replicated or erasure
+		Name  string `json:"name"   validate:"required,max=128"`
+		PGNum int    `json:"pg_num" validate:"gte=0,lte=65536"`
+		Type  string `json:"type"   validate:"omitempty,oneof=replicated erasure"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid body"})
+	if !decodeAndValidate(w, r, &req) {
 		return
 	}
 	if !cephPoolNameRe.MatchString(req.Name) {
@@ -205,10 +204,6 @@ func (h *CephHandler) CreatePool(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.PGNum <= 0 {
 		req.PGNum = 128
-	}
-	if req.PGNum > 65536 {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "pg_num out of range"})
-		return
 	}
 	if req.Type == "" {
 		req.Type = "replicated"

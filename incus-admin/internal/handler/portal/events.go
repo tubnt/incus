@@ -75,7 +75,10 @@ func (h *EventsHandler) StreamEvents(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 连接 Incus events WebSocket
-	incusConn, _, err := dialer.Dial(incusWSURL, nil)
+	incusConn, incusResp, err := dialer.Dial(incusWSURL, nil)
+	if incusResp != nil {
+		_ = incusResp.Body.Close()
+	}
 	if err != nil {
 		slog.Error("incus events ws dial failed", "url", incusWSURL, "error", err)
 		http.Error(w, "incus events connection failed: "+err.Error(), http.StatusBadGateway)

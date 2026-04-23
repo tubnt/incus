@@ -63,13 +63,13 @@ func (r *Runner) Run(ctx context.Context, cmd string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("ssh dial %s: %w", addr, err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	session, err := client.NewSession()
 	if err != nil {
 		return "", fmt.Errorf("ssh session: %w", err)
 	}
-	defer session.Close()
+	defer func() { _ = session.Close() }()
 
 	out, err := session.CombinedOutput(cmd)
 	if err != nil {
@@ -104,7 +104,8 @@ func shellQuote(s string) string {
 func (r *Runner) hostKeyCallback() (ssh.HostKeyCallback, error) {
 	if r.knownHostsFile == "" {
 		slog.Warn("ssh host key verification disabled (no known_hosts file configured)", "host", r.host)
-		return ssh.InsecureIgnoreHostKey(), nil
+		return ssh.InsecureIgnoreHostKey(), nil //nolint:gosec // G106: 向后兼容 —— 未配 known_hosts 时走 warn，生产强制配置由运维约束
+
 	}
 	if _, err := os.Stat(r.knownHostsFile); err != nil {
 		return nil, fmt.Errorf("known_hosts %q not accessible: %w", r.knownHostsFile, err)

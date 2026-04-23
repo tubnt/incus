@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -17,11 +18,16 @@ type Config struct {
 }
 
 type ServerConfig struct {
-	Listen         string        `json:"listen"`
-	EmergencyListen string       `json:"emergency_listen"`
-	Domain         string        `json:"domain"`
-	SessionSecret  string        `json:"session_secret"`
-	SessionTTL     time.Duration `json:"session_ttl"`
+	Listen          string        `json:"listen"`
+	EmergencyListen string        `json:"emergency_listen"`
+	Domain          string        `json:"domain"`
+	SessionSecret   string        `json:"session_secret"`
+	SessionTTL      time.Duration `json:"session_ttl"`
+	// Env controls destructive operations that should never fire in
+	// production — chaos drill is the canonical example. Defaults to
+	// "production" so the safe-by-default path requires an explicit override
+	// on staging/dev deploys.
+	Env string `json:"env"`
 }
 
 type DatabaseConfig struct {
@@ -34,6 +40,24 @@ type DatabaseConfig struct {
 type AuthConfig struct {
 	AdminEmails    []string `json:"admin_emails"`
 	EmergencyToken string   `json:"emergency_token"`
+
+	// Step-up OIDC. Optional: when any of the first four is empty the step-up
+	// subsystem stays disabled and sensitive-route middleware falls back to a
+	// permissive mode (logged warning only). In production all four must be set.
+	OIDCIssuer        string        `json:"oidc_issuer"`
+	OIDCClientID      string        `json:"oidc_client_id"`
+	OIDCClientSecret  string        `json:"oidc_client_secret"`
+	StepUpCallbackURL string        `json:"stepup_callback_url"`
+	StepUpStateSecret string        `json:"stepup_state_secret"`
+	StepUpMaxAge      time.Duration `json:"stepup_max_age"`
+
+	// AuditRetentionDays governs how long audit_logs rows are kept before the
+	// cleanup worker deletes them. <= 0 disables cleanup entirely (test envs).
+	AuditRetentionDays int `json:"audit_retention_days"`
+
+	// ShadowSessionSecret signs shadow_session cookies (HMAC-SHA256). Falls
+	// back to Server.SessionSecret when unset to simplify single-node deploys.
+	ShadowSessionSecret string `json:"shadow_session_secret"`
 }
 
 type ClusterConfig struct {
@@ -85,6 +109,7 @@ func Load() (*Config, error) {
 			Domain:          envOr("DOMAIN", "vmc.5ok.co"),
 			SessionSecret:   mustEnv("SESSION_SECRET"),
 			SessionTTL:      24 * time.Hour,
+			Env:             envOr("INCUS_ADMIN_ENV", "production"),
 		},
 		Database: DatabaseConfig{
 			DSN:             mustEnv("DATABASE_URL"),
@@ -93,8 +118,16 @@ func Load() (*Config, error) {
 			ConnMaxLifetime: time.Hour,
 		},
 		Auth: AuthConfig{
-			AdminEmails:    strings.Split(envOr("ADMIN_EMAILS", ""), ","),
-			EmergencyToken: mustEnv("EMERGENCY_TOKEN"),
+			AdminEmails:       strings.Split(envOr("ADMIN_EMAILS", ""), ","),
+			EmergencyToken:    mustEnv("EMERGENCY_TOKEN"),
+			OIDCIssuer:        envOr("OIDC_ISSUER", ""),
+			OIDCClientID:      envOr("OIDC_CLIENT_ID", ""),
+			OIDCClientSecret:  envOr("OIDC_CLIENT_SECRET", ""),
+			StepUpCallbackURL: envOr("STEPUP_CALLBACK_URL", ""),
+			StepUpStateSecret: envOr("STEPUP_STATE_SECRET", ""),
+			StepUpMaxAge:       parseDurationOr("STEPUP_MAX_AGE", 5*time.Minute),
+			AuditRetentionDays:  parseIntOr("AUDIT_RETENTION_DAYS", 365),
+			ShadowSessionSecret: envOr("SHADOW_SESSION_SECRET", ""),
 		},
 		Billing: BillingConfig{
 			Currency: envOr("BILLING_CURRENCY", "USD"),
@@ -150,6 +183,32 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func parseIntOr(key string, fallback int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "invalid int for %s=%q: %v; using default %d\n", key, v, err, fallback)
+		return fallback
+	}
+	return n
+}
+
+func parseDurationOr(key string, fallback time.Duration) time.Duration {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "invalid duration for %s=%q: %v; using default %s\n", key, v, err, fallback)
+		return fallback
+	}
+	return d
 }
 
 func mustEnv(key string) string {

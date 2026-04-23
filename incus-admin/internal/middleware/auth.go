@@ -9,22 +9,36 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+
 )
 
 type ctxKey string
 
 const (
-	CtxUserEmail    ctxKey = "user_email"
-	CtxUserRole     ctxKey = "user_role"
-	CtxUserID       ctxKey = "user_id"
-	CtxAuthMethod   ctxKey = "auth_method"
+	CtxUserEmail  ctxKey = "user_email"
+	CtxUserRole   ctxKey = "user_role"
+	CtxUserID     ctxKey = "user_id"
+	CtxAuthMethod ctxKey = "auth_method"
+	// CtxActorID is set only when the request runs under a shadow-login
+	// session. When present, CtxUserID is the *target* user (so handler
+	// business logic sees the target's resources) while CtxActorID records
+	// the admin who initiated shadowing. Audit code reads both to distinguish
+	// who actually performed the action from whose resources were touched.
+	CtxActorID    ctxKey = "actor_id"
+	CtxActorEmail ctxKey = "actor_email"
 )
 
 type TokenValidator func(ctx context.Context, token string) (userID int64, err error)
 
+// ShadowVerifier verifies a shadow_session cookie and returns the actor and
+// target identities. main.go wires this to auth.VerifyShadow; left nil in
+// test/dev envs disables shadow cookie handling without breaking ProxyAuth.
+type ShadowVerifier func(cookieValue string) (actorID int64, actorEmail string, targetID int64, targetEmail string, err error)
+
 var (
-	tokenValidator   TokenValidator
-	emergencySecret  string
+	tokenValidator  TokenValidator
+	emergencySecret string
+	shadowVerifier  ShadowVerifier
 )
 
 func SetTokenValidator(v TokenValidator) {
@@ -33,6 +47,10 @@ func SetTokenValidator(v TokenValidator) {
 
 func SetEmergencySecret(secret string) {
 	emergencySecret = secret
+}
+
+func SetShadowVerifier(v ShadowVerifier) {
+	shadowVerifier = v
 }
 
 func verifyEmergencyCookie(email, sig string) bool {
@@ -47,6 +65,31 @@ func verifyEmergencyCookie(email, sig string) bool {
 
 func ProxyAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Shadow session cookie takes precedence over every other auth path.
+		// When present and valid, we treat the request as originating from
+		// the *target* user (so handler business logic is scoped correctly)
+		// but record the admin's identity for audit via CtxActorID.
+		if shadowVerifier != nil {
+			if c, err := r.Cookie("shadow_session"); err == nil && c.Value != "" {
+				actorID, actorEmail, targetID, targetEmail, verifyErr := shadowVerifier(c.Value)
+				if verifyErr == nil && actorID > 0 && targetID > 0 {
+					ctx := r.Context()
+					ctx = context.WithValue(ctx, CtxUserID, targetID)
+					ctx = context.WithValue(ctx, CtxUserEmail, strings.ToLower(strings.TrimSpace(targetEmail)))
+					ctx = context.WithValue(ctx, CtxActorID, actorID)
+					ctx = context.WithValue(ctx, CtxActorEmail, strings.ToLower(strings.TrimSpace(actorEmail)))
+					ctx = context.WithValue(ctx, CtxAuthMethod, "shadow")
+					next.ServeHTTP(w, r.WithContext(ctx))
+					return
+				}
+				// Invalid cookie: don't silently fall through with target
+				// identity; clear it and keep walking the other auth paths
+				// so the admin can still work from their own session.
+				slog.Warn("invalid shadow session", "error", verifyErr)
+				http.SetCookie(w, &http.Cookie{Name: "shadow_session", Value: "", Path: "/", MaxAge: -1})
+			}
+		}
+
 		// Bearer token 认证
 		if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
 			token := strings.TrimPrefix(auth, "Bearer ")
@@ -115,6 +158,26 @@ func UserFromEmail(userLookup func(ctx context.Context, email string) (int64, st
 				userID, _ := r.Context().Value(CtxUserID).(int64)
 				if userID > 0 && roleLookup != nil {
 					role, err := roleLookup(r.Context(), userID)
+					if err != nil {
+						http.Error(w, `{"error":"internal error"}`, http.StatusInternalServerError)
+						return
+					}
+					ctx := context.WithValue(r.Context(), CtxUserRole, role)
+					next.ServeHTTP(w, r.WithContext(ctx))
+					return
+				}
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			// Shadow session: CtxUserID is the target but role must come from
+			// the actor (admin). Without this override, /api/admin routes
+			// would 403 because the target might be a plain customer —
+			// defeating the whole purpose of shadowing.
+			if method, _ := r.Context().Value(CtxAuthMethod).(string); method == "shadow" {
+				actorID, _ := r.Context().Value(CtxActorID).(int64)
+				if actorID > 0 && roleLookup != nil {
+					role, err := roleLookup(r.Context(), actorID)
 					if err != nil {
 						http.Error(w, `{"error":"internal error"}`, http.StatusInternalServerError)
 						return

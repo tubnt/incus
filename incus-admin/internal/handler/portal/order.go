@@ -2,7 +2,6 @@ package portal
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -96,14 +95,13 @@ func (h *OrderHandler) Create(w http.ResponseWriter, r *http.Request) {
 	userID, _ := r.Context().Value(middleware.CtxUserID).(int64)
 
 	var req struct {
-		ProductID   int64  `json:"product_id"`
-		VMName      string `json:"vm_name"`
-		OSImage     string `json:"os_image"`
-		ClusterID   int64  `json:"cluster_id"`
-		ClusterName string `json:"cluster_name"`
+		ProductID   int64  `json:"product_id"   validate:"required,gt=0"`
+		VMName      string `json:"vm_name"      validate:"omitempty,safename"`
+		OSImage     string `json:"os_image"     validate:"omitempty,max=200"`
+		ClusterID   int64  `json:"cluster_id"   validate:"omitempty,gt=0"`
+		ClusterName string `json:"cluster_name" validate:"omitempty,safename"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid body"})
+	if !decodeAndValidate(w, r, &req) {
 		return
 	}
 
@@ -140,6 +138,12 @@ func (h *OrderHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	audit(r.Context(), r, "order.create", "order", order.ID, map[string]any{
+		"product_id": req.ProductID,
+		"cluster_id": clusterID,
+		"amount":     product.PriceMonthly,
+		"currency":   product.Currency,
+	})
 	writeJSON(w, http.StatusCreated, map[string]any{"order": order})
 }
 
@@ -148,10 +152,12 @@ func (h *OrderHandler) Pay(w http.ResponseWriter, r *http.Request) {
 	userID, _ := r.Context().Value(middleware.CtxUserID).(int64)
 
 	var payReq struct {
-		VMName  string `json:"vm_name"`
-		OSImage string `json:"os_image"`
+		VMName  string `json:"vm_name"  validate:"omitempty,safename"`
+		OSImage string `json:"os_image" validate:"omitempty,max=200"`
 	}
-	json.NewDecoder(r.Body).Decode(&payReq)
+	if !decodeAndValidate(w, r, &payReq) {
+		return
+	}
 
 	order, err := h.orders.GetByID(r.Context(), orderID)
 	if err != nil || order == nil || order.UserID != userID {
@@ -233,7 +239,7 @@ func (h *OrderHandler) Pay(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.orders.UpdateStatus(r.Context(), orderID, model.OrderActive)
+	_ = h.orders.UpdateStatus(r.Context(), orderID, model.OrderActive)
 
 	vm := &model.VM{
 		Name:      result.VMName,
@@ -258,6 +264,11 @@ func (h *OrderHandler) Pay(w http.ResponseWriter, r *http.Request) {
 	}
 
 	slog.Info("VM auto-provisioned after payment", "order", orderID, "vm", result.VMName)
+	audit(r.Context(), r, "order.pay", "order", orderID, map[string]any{
+		"vm_name": result.VMName,
+		"ip":      result.IP,
+		"amount":  order.Amount,
+	})
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":   "provisioned",
 		"vm_name":  result.VMName,
@@ -299,16 +310,18 @@ func (h *OrderHandler) Cancel(w http.ResponseWriter, r *http.Request) {
 func (h *OrderHandler) UpdateStatus(w http.ResponseWriter, r *http.Request) {
 	orderID, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	var req struct {
-		Status string `json:"status"`
+		Status string `json:"status" validate:"required,oneof=pending paid provisioning active expired cancelled"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Status == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "status required"})
+	if !decodeAndValidate(w, r, &req) {
 		return
 	}
 	if err := h.orders.UpdateStatus(r.Context(), orderID, req.Status); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
+	audit(r.Context(), r, "order.update_status", "order", orderID, map[string]any{
+		"status": req.Status,
+	})
 	writeJSON(w, http.StatusOK, map[string]any{"status": req.Status})
 }
 

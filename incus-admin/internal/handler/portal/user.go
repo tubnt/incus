@@ -1,7 +1,6 @@
 package portal
 
 import (
-	"encoding/json"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -77,14 +76,9 @@ func (h *UserHandler) UpdateRole(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Role string `json:"role"`
+		Role string `json:"role" validate:"required,oneof=admin customer"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid body"})
-		return
-	}
-	if req.Role != "admin" && req.Role != "customer" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "role must be admin or customer"})
+	if !decodeAndValidate(w, r, &req) {
 		return
 	}
 	if err := h.repo.UpdateRole(r.Context(), id, req.Role); err != nil {
@@ -93,6 +87,9 @@ func (h *UserHandler) UpdateRole(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	slog.Info("user role updated", "user_id", id, "role", req.Role)
+	audit(r.Context(), r, "user.update_role", "user", id, map[string]any{
+		"role": req.Role,
+	})
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
 }
 
@@ -103,22 +100,12 @@ func (h *UserHandler) TopUpBalance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Amount      float64 `json:"amount"`
-		Description string  `json:"description"`
+		// Amount 上下限通过 validator tag 约束；注意 gt=0 要求"严格大于 0"，
+		// lte=10000 对应 MaxTopUpPerRequest —— 若后者调整需同步修改 tag。
+		Amount      float64 `json:"amount"      validate:"required,gt=0,lte=10000"`
+		Description string  `json:"description" validate:"omitempty,max=500"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid body"})
-		return
-	}
-	if req.Amount <= 0 {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "amount must be positive"})
-		return
-	}
-	if req.Amount > MaxTopUpPerRequest {
-		writeJSON(w, http.StatusBadRequest, map[string]any{
-			"error": "amount exceeds per-request limit",
-			"limit": MaxTopUpPerRequest,
-		})
+	if !decodeAndValidate(w, r, &req) {
 		return
 	}
 	// 禁止管理员给自己充值（防止特权账号自充）。

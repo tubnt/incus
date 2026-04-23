@@ -76,18 +76,17 @@ func (h *SnapshotHandler) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"snapshots": json.RawMessage(resp.Metadata)})
+	writeJSON(w, http.StatusOK, map[string]any{"snapshots": resp.Metadata})
 }
 
 func (h *SnapshotHandler) Create(w http.ResponseWriter, r *http.Request) {
 	vmName := chi.URLParam(r, "name")
 	var req struct {
-		Cluster string `json:"cluster"`
-		Project string `json:"project"`
-		Name    string `json:"name"`
+		Cluster string `json:"cluster" validate:"required,safename"`
+		Project string `json:"project" validate:"omitempty,safename"`
+		Name    string `json:"name"    validate:"omitempty,safename"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid body"})
+	if !decodeAndValidate(w, r, &req) {
 		return
 	}
 	if req.Name == "" {
@@ -111,13 +110,19 @@ func (h *SnapshotHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 	if resp.Type == "async" {
 		var op struct{ ID string }
-		json.Unmarshal(resp.Metadata, &op)
+		_ = json.Unmarshal(resp.Metadata, &op)
 		if op.ID != "" {
-			client.WaitForOperation(r.Context(), op.ID)
+			_ = client.WaitForOperation(r.Context(), op.ID)
 		}
 	}
 
 	slog.Info("snapshot created", "vm", vmName, "name", req.Name)
+	audit(r.Context(), r, "snapshot.create", "vm", 0, map[string]any{
+		"vm":      vmName,
+		"cluster": req.Cluster,
+		"project": req.Project,
+		"name":    req.Name,
+	})
 	writeJSON(w, http.StatusCreated, map[string]any{"status": "ok", "name": req.Name})
 }
 
@@ -147,13 +152,19 @@ func (h *SnapshotHandler) Delete(w http.ResponseWriter, r *http.Request) {
 
 	if resp != nil && resp.Type == "async" {
 		var op struct{ ID string }
-		json.Unmarshal(resp.Metadata, &op)
+		_ = json.Unmarshal(resp.Metadata, &op)
 		if op.ID != "" {
-			client.WaitForOperation(r.Context(), op.ID)
+			_ = client.WaitForOperation(r.Context(), op.ID)
 		}
 	}
 
 	slog.Info("snapshot deleted", "vm", vmName, "snap", snapName)
+	audit(r.Context(), r, "snapshot.delete", "vm", 0, map[string]any{
+		"vm":      vmName,
+		"cluster": clusterName,
+		"project": project,
+		"name":    snapName,
+	})
 	writeJSON(w, http.StatusOK, map[string]any{"status": "deleted"})
 }
 
@@ -165,10 +176,12 @@ func (h *SnapshotHandler) Restore(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Cluster string `json:"cluster"`
-		Project string `json:"project"`
+		Cluster string `json:"cluster" validate:"required,safename"`
+		Project string `json:"project" validate:"omitempty,safename"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if !decodeAndValidate(w, r, &req) {
+		return
+	}
 
 	client, ok := h.clusters.Get(req.Cluster)
 	if !ok {
@@ -187,12 +200,18 @@ func (h *SnapshotHandler) Restore(w http.ResponseWriter, r *http.Request) {
 
 	if resp.Type == "async" {
 		var op struct{ ID string }
-		json.Unmarshal(resp.Metadata, &op)
+		_ = json.Unmarshal(resp.Metadata, &op)
 		if op.ID != "" {
-			client.WaitForOperation(r.Context(), op.ID)
+			_ = client.WaitForOperation(r.Context(), op.ID)
 		}
 	}
 
 	slog.Info("snapshot restored", "vm", vmName, "snap", snapName)
+	audit(r.Context(), r, "snapshot.restore", "vm", 0, map[string]any{
+		"vm":      vmName,
+		"cluster": req.Cluster,
+		"project": req.Project,
+		"name":    snapName,
+	})
 	writeJSON(w, http.StatusOK, map[string]any{"status": "restored"})
 }

@@ -1,7 +1,6 @@
 package portal
 
 import (
-	"encoding/json"
 	"net/http"
 	"strconv"
 
@@ -11,15 +10,8 @@ import (
 	"github.com/incuscloud/incus-admin/internal/repository"
 )
 
-// 工单状态与优先级枚举（防止前端/第三方传入非法值）。
-var (
-	validTicketStatuses = map[string]bool{
-		"open": true, "pending": true, "closed": true,
-	}
-	validTicketPriorities = map[string]bool{
-		"low": true, "normal": true, "high": true, "urgent": true,
-	}
-)
+// 工单状态/优先级枚举以 validator 的 oneof 约束表达，定义在各 handler 的 req 结构体上。
+// 这两个常量曾作为手动校验的查找表，validator 迁移后不再使用。
 
 type TicketHandler struct {
 	repo *repository.TicketRepo
@@ -73,24 +65,15 @@ func (h *TicketHandler) Create(w http.ResponseWriter, r *http.Request) {
 	userID, _ := r.Context().Value(middleware.CtxUserID).(int64)
 
 	var req struct {
-		Subject  string `json:"subject"`
-		Body     string `json:"body"`
-		Priority string `json:"priority"`
+		Subject  string `json:"subject"  validate:"required,min=1,max=200"`
+		Body     string `json:"body"     validate:"omitempty,max=10000"`
+		Priority string `json:"priority" validate:"omitempty,oneof=low normal high urgent"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid body"})
-		return
-	}
-	if req.Subject == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "subject required"})
+	if !decodeAndValidate(w, r, &req) {
 		return
 	}
 	if req.Priority == "" {
 		req.Priority = "normal"
-	}
-	if !validTicketPriorities[req.Priority] {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid priority"})
-		return
 	}
 
 	ticket, err := h.repo.Create(r.Context(), userID, req.Subject, req.Priority)
@@ -100,9 +83,13 @@ func (h *TicketHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.Body != "" {
-		h.repo.AddMessage(r.Context(), ticket.ID, userID, req.Body, false)
+		_, _ = h.repo.AddMessage(r.Context(), ticket.ID, userID, req.Body, false)
 	}
 
+	audit(r.Context(), r, "ticket.create", "ticket", ticket.ID, map[string]any{
+		"subject":  ticket.Subject,
+		"priority": ticket.Priority,
+	})
 	writeJSON(w, http.StatusCreated, map[string]any{"ticket": ticket})
 }
 
@@ -140,10 +127,9 @@ func (h *TicketHandler) Reply(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Body string `json:"body"`
+		Body string `json:"body" validate:"required,min=1,max=10000"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Body == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "body required"})
+	if !decodeAndValidate(w, r, &req) {
 		return
 	}
 
@@ -153,6 +139,10 @@ func (h *TicketHandler) Reply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	audit(r.Context(), r, "ticket.reply", "ticket", ticketID, map[string]any{
+		"message_id": msg.ID,
+		"is_staff":   false,
+	})
 	writeJSON(w, http.StatusCreated, map[string]any{"message": msg})
 }
 
@@ -161,10 +151,9 @@ func (h *TicketHandler) AdminReply(w http.ResponseWriter, r *http.Request) {
 	ticketID, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 
 	var req struct {
-		Body string `json:"body"`
+		Body string `json:"body" validate:"required,min=1,max=10000"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Body == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "body required"})
+	if !decodeAndValidate(w, r, &req) {
 		return
 	}
 
@@ -174,6 +163,10 @@ func (h *TicketHandler) AdminReply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	audit(r.Context(), r, "ticket.reply", "ticket", ticketID, map[string]any{
+		"message_id": msg.ID,
+		"is_staff":   true,
+	})
 	writeJSON(w, http.StatusCreated, map[string]any{"message": msg})
 }
 
@@ -205,14 +198,9 @@ func (h *TicketHandler) CloseMine(w http.ResponseWriter, r *http.Request) {
 func (h *TicketHandler) UpdateStatus(w http.ResponseWriter, r *http.Request) {
 	ticketID, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	var req struct {
-		Status string `json:"status"`
+		Status string `json:"status" validate:"required,oneof=open pending closed"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Status == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "status required"})
-		return
-	}
-	if !validTicketStatuses[req.Status] {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid status"})
+	if !decodeAndValidate(w, r, &req) {
 		return
 	}
 
@@ -221,5 +209,8 @@ func (h *TicketHandler) UpdateStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	audit(r.Context(), r, "ticket.update_status", "ticket", ticketID, map[string]any{
+		"status": req.Status,
+	})
 	writeJSON(w, http.StatusOK, map[string]any{"status": req.Status})
 }

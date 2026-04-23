@@ -16,6 +16,7 @@ import {
 } from "@/features/users/api";
 import { Pagination } from "@/shared/components/ui/pagination";
 import { formatCurrency } from "@/shared/lib/utils";
+import { http } from "@/shared/lib/http";
 
 export const Route = createFileRoute("/admin/users")({
   component: UsersPage,
@@ -144,6 +145,28 @@ function UserRow({ user }: { user: User }) {
               className="px-2 py-1 rounded text-xs bg-primary/20 text-primary hover:bg-primary/30"
             >
               + {t("admin.topUp", { defaultValue: "Top Up" })}
+            </button>
+            <button
+              onClick={async () => {
+                const reason = window.prompt(
+                  t("shadow.reasonPrompt", { defaultValue: "请输入 Shadow Login 的原因（必填，审计记录用）" }),
+                  "",
+                );
+                if (!reason || !reason.trim()) return;
+                try {
+                  const resp = await http.post<{ redirect_url: string }>(
+                    `/admin/users/${user.id}/shadow-login`,
+                    { reason: reason.trim() },
+                  );
+                  window.location.href = resp.redirect_url;
+                } catch (e) {
+                  toast.error(String((e as Error).message ?? e));
+                }
+              }}
+              className="px-2 py-1 rounded text-xs bg-destructive/20 text-destructive hover:bg-destructive/30"
+              title={t("shadow.loginTitle", { defaultValue: "以该用户身份登入（审计、排障用）" })}
+            >
+              Shadow
             </button>
           </div>
         </td>

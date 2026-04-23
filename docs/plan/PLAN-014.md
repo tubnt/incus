@@ -1,8 +1,18 @@
 # PLAN-014 VM 状态反向同步 worker —— 消除 DB ↔ Incus 漂移
 
-- **status**: draft
+- **status**: merged（已合并到 PLAN-020）
 - **createdAt**: 2026-04-18 00:05
-- **relatedTask**: INFRA-006
+- **mergedAt**: 2026-04-19
+- **mergedInto**: PLAN-020
+- **relatedTask**: INFRA-006（relatedPlan 已迁移至 PLAN-020）
+
+> ⚠️ **合并说明**：2026-04-19 HA 真正化立项时，发现本 PLAN 的"状态同步"与 HA 的"事件订阅"底层同构，合并到 PLAN-020 以避免两套 worker / 两套测试 harness。
+>
+> - 原 Phase A（60s 轮询 reconciler）→ **PLAN-020 Phase A**
+> - 原 Phase B（`gone` 状态 + UI 清理）→ **PLAN-020 Phase B**
+> - 原 Phase C（审计 + 告警）→ 并入 **PLAN-020 Phase A 审计部分**
+>
+> 本文件仅作历史留档，不再更新。
 
 ## Context
 

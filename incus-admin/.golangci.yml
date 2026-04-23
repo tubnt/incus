@@ -1,0 +1,82 @@
+version: "2"
+
+# 保守起步：先开稳定、误报少的 linter。
+# 后续按需要追加（revive 各 rule、sloglint、testifylint 等）。
+linters:
+  default: none
+  enable:
+    - govet           # 官方静态检查（nilfunc/assign/printf 等）
+    - errcheck        # 未处理 error
+    - staticcheck     # SA/ST 套装（含原 gosimple/stylecheck 等）
+    - ineffassign     # 无效赋值
+    - unused          # 未使用变量/函数
+    - misspell        # 拼写错误
+    - gosec           # 安全扫描（弱加密、tls 低版本、SQL 注入等）
+    - unconvert       # 多余类型转换
+    - prealloc        # slice 预分配提示
+    - bodyclose       # http.Response.Body 未关闭
+    - rowserrcheck    # sql.Rows.Err 未检查
+
+  settings:
+    staticcheck:
+      # 少数 ST/QF 报警对本项目噪音大；按需放宽。ST1000=包注释缺失（我们用中文无需严格）、
+      # QF1003/QF1008=switch/if 风格建议偏激。
+      checks:
+        - all
+        - -ST1000
+        - -QF1003
+        - -QF1008
+    errcheck:
+      # 常见可忽略的一次性 best-effort 调用，避免噪音。
+      # json.Unmarshal / repository 写入等仍需显式 _ = 处理，不在此处白名单。
+      exclude-functions:
+        - (net/http.ResponseWriter).Write
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - (*database/sql.DB).Close
+        - (*database/sql.Rows).Close
+        - (*database/sql.Tx).Rollback
+        - (*net/http.Response).Body.Close
+        - (io.Closer).Close
+        - (*golang.org/x/crypto/ssh.Client).Close
+        - (*golang.org/x/crypto/ssh.Session).Close
+        - (*github.com/gorilla/websocket.Conn).Close
+        - (*encoding/json.Encoder).Encode
+        - (*net/http.Server).Shutdown
+    gosec:
+      # G104=未检查 error（staticcheck/errcheck 已覆盖）
+      # G601=range 变量取地址（Go 1.22+ 已修）
+      # G115=int ↔ uint 安全转换，对 DB 计数类场景噪音大
+      # G202=SQL 字符串拼接误报：我们用 $N 占位符，where/placeholders 不含用户输入
+      # G404=弱随机，仅用于 event-listener jitter 与 cooldown，非安全敏感
+      # G706=log injection：slog 结构化日志（k/v pairs）不会拼接进格式串，误报
+      excludes:
+        - G104
+        - G601
+        - G115
+        - G202
+        - G404
+        - G706
+
+  exclusions:
+    generated: lax
+    paths:
+      - web/node_modules
+      - internal/server/dist
+    rules:
+      # 测试文件允许未检查 error（table-driven 常用 _ = foo()）
+      - path: _test\.go
+        linters:
+          - errcheck
+          - gosec
+      # main.go 启动期错误允许 os.Exit 直返，不走包装
+      - path: cmd/server/main\.go
+        linters:
+          - gosec
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+run:
+  timeout: 5m

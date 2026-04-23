@@ -60,7 +60,7 @@ func (r *UserRepo) FindOrCreate(ctx context.Context, email, name, logtoSub strin
 	}
 
 	if logtoSub != "" && user.LogtoSub != logtoSub {
-		r.db.ExecContext(ctx, `UPDATE users SET logto_sub = $1, updated_at = $2 WHERE id = $3`, logtoSub, time.Now(), user.ID)
+		_, _ = r.db.ExecContext(ctx, `UPDATE users SET logto_sub = $1, updated_at = $2 WHERE id = $3`, logtoSub, time.Now(), user.ID)
 		user.LogtoSub = logtoSub
 	}
 
@@ -215,6 +215,40 @@ func (r *UserRepo) SumDepositsSince(ctx context.Context, userID int64, since tim
 		return 0, err
 	}
 	return sum.Float64, nil
+}
+
+// GetStepUpAuthAt returns the user's last step-up auth completion time, or
+// nil if the user has never completed step-up. Reads only the stepup_auth_at
+// column to avoid touching all existing user row scans.
+func (r *UserRepo) GetStepUpAuthAt(ctx context.Context, userID int64) (*time.Time, error) {
+	var t sql.NullTime
+	err := r.db.QueryRowContext(ctx,
+		`SELECT stepup_auth_at FROM users WHERE id = $1`, userID,
+	).Scan(&t)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get stepup auth at: %w", err)
+	}
+	if !t.Valid {
+		return nil, nil
+	}
+	return &t.Time, nil
+}
+
+// SetStepUpAuthAt records the auth_time reported by Logto for the most recent
+// step-up re-authentication. Called from the stepup callback after id_token
+// verification succeeds.
+func (r *UserRepo) SetStepUpAuthAt(ctx context.Context, userID int64, at time.Time) error {
+	_, err := r.db.ExecContext(ctx,
+		`UPDATE users SET stepup_auth_at = $1, updated_at = NOW() WHERE id = $2`,
+		at, userID,
+	)
+	if err != nil {
+		return fmt.Errorf("set stepup auth at: %w", err)
+	}
+	return nil
 }
 
 // ListPaged 返回分页后的用户列表以及过滤后的总数。

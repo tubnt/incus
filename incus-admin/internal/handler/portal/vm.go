@@ -52,9 +52,11 @@ func (h *VMHandler) Reinstall(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		OSImage string `json:"os_image"`
+		OSImage string `json:"os_image" validate:"omitempty,max=200"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if !decodeAndValidate(w, r, &req) {
+		return
+	}
 	if req.OSImage == "" { req.OSImage = "images:ubuntu/24.04/cloud" }
 
 	cc, _ := h.clusters.ConfigByName(findClusterName(h.clusters, vm.ClusterID))
@@ -105,7 +107,7 @@ func (h *VMHandler) ResetPassword(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 更新 DB 中的密码
-	h.vmRepo.UpdatePassword(r.Context(), vmID, newPassword)
+	_ = h.vmRepo.UpdatePassword(r.Context(), vmID, newPassword)
 
 	audit(r.Context(), r, "vm.reset_password", "vm", vmID, map[string]any{"name": vm.Name})
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -206,23 +208,18 @@ func (h *VMHandler) CreateService(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Name     string `json:"name"`
-		CPU      int    `json:"cpu"`
-		MemoryMB int    `json:"memory_mb"`
-		DiskGB   int    `json:"disk_gb"`
-		OSImage  string `json:"os_image"`
+		Name     string `json:"name"      validate:"omitempty,safename"`
+		CPU      int    `json:"cpu"       validate:"gte=0,lte=32"`
+		MemoryMB int    `json:"memory_mb" validate:"gte=0,lte=65536"`
+		DiskGB   int    `json:"disk_gb"   validate:"gte=0,lte=2000"`
+		OSImage  string `json:"os_image"  validate:"omitempty,max=200"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid body"})
+	if !decodeAndValidate(w, r, &req) {
 		return
 	}
 	if req.CPU <= 0 { req.CPU = 2 }
 	if req.MemoryMB <= 0 { req.MemoryMB = 2048 }
 	if req.DiskGB <= 0 { req.DiskGB = 50 }
-	if req.CPU > 32 || req.MemoryMB > 65536 || req.DiskGB > 2000 {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "resource limits exceeded"})
-		return
-	}
 	if req.OSImage == "" { req.OSImage = "images:ubuntu/24.04/cloud" }
 
 	sshKeys, _ := h.sshKeys.GetByUser(r.Context(), userID)
@@ -352,12 +349,93 @@ func (h *AdminVMHandler) Routes(r chi.Router) {
 	r.Get("/clusters/{name}/ha", h.GetHAStatus)
 	r.Post("/clusters/{name}/nodes/{node}/evacuate", h.EvacuateNode)
 	r.Post("/clusters/{name}/nodes/{node}/restore", h.RestoreNode)
+	// PLAN-020 Phase E: chaos drill — locked behind appEnv != "production"
+	// at the handler level so a misclick in prod can never run it.
+	r.Post("/clusters/{name}/ha/chaos/simulate-node-down", h.ChaosSimulateNodeDown)
 	r.Get("/vms", h.ListAllVMs)
 	r.Put("/vms/{name}/state", h.ChangeVMState)
 	r.Post("/vms/{name}/reinstall", h.ReinstallVM)
 	r.Post("/vms/{name}/migrate", h.MigrateVM)
 	r.Post("/vms/{name}/reset-password", h.ResetPasswordAdmin)
 	r.Delete("/vms/{name}", h.DeleteVM)
+	// PLAN-020 Phase B: gone-VM inventory + force-delete must sit on static
+	// path segments before the name-wildcard routes so chi doesn't match
+	// /vms/gone as name="gone".
+	r.Get("/vms/gone", h.ListGoneVMs)
+	r.Post("/vms/{id}/force-delete", h.ForceDeleteGone)
+}
+
+// ListGoneVMs returns rows marked `gone` by the reconciler. Frontend's
+// admin VM list renders a "Drift" panel fed by this endpoint so the admin
+// can investigate + clean up out-of-band deletions.
+func (h *AdminVMHandler) ListGoneVMs(w http.ResponseWriter, r *http.Request) {
+	vms, err := h.vmRepo.ListGone(r.Context())
+	if err != nil {
+		slog.Error("list gone vms", "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "list failed"})
+		return
+	}
+	if vms == nil {
+		vms = []model.VM{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"vms": vms, "count": len(vms)})
+}
+
+// ForceDeleteGone soft-deletes a VM row whose status is 'gone' (marked by
+// PLAN-020 reconciler when the Incus instance vanished out-of-band) and
+// releases any still-assigned IP. Non-gone rows are rejected with 409 to
+// prevent accidental destruction of active VMs through this admin-only
+// escape hatch. Identified by numeric id because gone rows are decoupled
+// from any live Incus state, so the typical name-based routes no longer
+// apply.
+func (h *AdminVMHandler) ForceDeleteGone(w http.ResponseWriter, r *http.Request) {
+	idParam := chi.URLParam(r, "id")
+	id, err := strconv.ParseInt(idParam, 10, 64)
+	if err != nil || id <= 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid id"})
+		return
+	}
+
+	vm, err := h.vmRepo.GetByID(r.Context(), id)
+	if err != nil {
+		slog.Error("force-delete lookup", "id", id, "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "lookup failed"})
+		return
+	}
+	if vm == nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "vm not found"})
+		return
+	}
+	if vm.Status != "gone" {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error":   "force delete only allowed for gone VMs",
+			"status":  vm.Status,
+			"message": "只能强删 status='gone' 的记录；其他状态请走常规删除",
+		})
+		return
+	}
+
+	if err := h.vmRepo.Delete(r.Context(), id); err != nil {
+		slog.Error("force-delete row update", "id", id, "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "delete failed"})
+		return
+	}
+
+	// Release the IP if still marked assigned. Non-fatal: next reconciler
+	// pass + IP cooldown recovery would clean it up anyway.
+	if vm.IP != nil && *vm.IP != "" && ipAddrRepo != nil {
+		if err := ipAddrRepo.Release(r.Context(), *vm.IP); err != nil {
+			slog.Warn("force-delete ip release", "id", id, "ip", *vm.IP, "error", err)
+		}
+	}
+
+	audit(r.Context(), r, "vm.force_delete", "vm", id, map[string]any{
+		"name":   vm.Name,
+		"ip":     vm.IP,
+		"reason": "gone-cleanup",
+	})
+
+	writeJSON(w, http.StatusOK, map[string]any{"status": "force_deleted", "id": id})
 }
 
 func (h *AdminVMHandler) ListClusters(w http.ResponseWriter, r *http.Request) {
@@ -384,6 +462,155 @@ func (h *AdminVMHandler) ListNodes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"nodes": nodes})
+}
+
+// ChaosSimulateNodeDown is the PLAN-020 Phase E drill entry point. It
+// evacuates a node, waits the requested duration, then restores it —
+// recording the whole cycle as a healing_events row with trigger='chaos'
+// and the actor pinned. Gated at two layers:
+//
+//   1. Hard-reject when appEnv == "production" regardless of RBAC.
+//   2. Caller must already be an admin (middleware.RequireRole) and have
+//      completed a recent step-up (sensitive-route allowlist).
+//
+// The evacuate → wait → restore cycle runs in a background goroutine so
+// the HTTP handler returns immediately with the healing_event_id for the
+// admin UI to poll / render in the history page.
+func (h *AdminVMHandler) ChaosSimulateNodeDown(w http.ResponseWriter, r *http.Request) {
+	if appEnv == "production" {
+		writeJSON(w, http.StatusForbidden, map[string]any{
+			"error":   "chaos_disabled_in_production",
+			"message": "Chaos drill is disabled in production environments.",
+		})
+		return
+	}
+
+	clusterName := chi.URLParam(r, "name")
+	var req struct {
+		Node            string `json:"node"             validate:"required,safename"`
+		DurationSeconds int    `json:"duration_seconds" validate:"required,gte=10,lte=600"`
+		Reason          string `json:"reason"           validate:"required,min=1,max=500"`
+	}
+	if !decodeAndValidate(w, r, &req) {
+		return
+	}
+
+	client, ok := h.clusters.Get(clusterName)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "cluster not found"})
+		return
+	}
+	clusterID := h.clusters.IDByName(clusterName)
+	if clusterID == 0 {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "cluster id unknown"})
+		return
+	}
+
+	// Pin the actor (admin) from the current request ctx — shadow session
+	// preserves CtxActorID, plain admin puts identity in CtxUserID.
+	actorID, _ := r.Context().Value(middleware.CtxUserID).(int64)
+	if a, _ := r.Context().Value(middleware.CtxActorID).(int64); a > 0 {
+		actorID = a
+	}
+	var actorPtr *int64
+	if actorID > 0 {
+		actorPtr = &actorID
+	}
+
+	var healingID int64
+	if healingRepo != nil {
+		if id, hErr := healingRepo.Create(r.Context(), clusterID, req.Node, "chaos", actorPtr); hErr == nil {
+			healingID = id
+		} else {
+			slog.Warn("chaos healing event create failed", "node", req.Node, "error", hErr)
+		}
+	}
+
+	audit(r.Context(), r, "node.chaos_drill.start", "node", 0, map[string]any{
+		"cluster":          clusterName,
+		"node":             req.Node,
+		"duration_seconds": req.DurationSeconds,
+		"reason":           req.Reason,
+		"healing_event_id": healingID,
+	})
+
+	// Run the evac/wait/restore asynchronously. Using context.Background()
+	// so the handler returning doesn't cancel the operation mid-flight. The
+	// healing_events row is the durable record of what happened.
+	duration := time.Duration(req.DurationSeconds) * time.Second
+	//nolint:gosec // G118: 意图为之 —— handler 返回 202 后 drill 继续；runChaosCycle 内部 WithTimeout(duration+5min) 封底
+	go runChaosCycle(clusterName, req.Node, duration, healingID, client)
+
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"status":           "started",
+		"healing_event_id": healingID,
+		"duration_seconds": req.DurationSeconds,
+		"node":             req.Node,
+	})
+}
+
+// runChaosCycle performs the evacuate → wait → restore cycle in its own
+// goroutine. Each step updates healing_events so the history UI reflects
+// progress. Uses context.Background() with a generous timeout so the whole
+// drill fits inside one supervised goroutine lifetime.
+func runChaosCycle(clusterName, nodeName string, duration time.Duration, healingID int64, client *cluster.Client) {
+	ctx, cancel := context.WithTimeout(context.Background(), duration+5*time.Minute)
+	defer cancel()
+
+	failHealing := func(reason string) {
+		if healingID > 0 && healingRepo != nil {
+			_ = healingRepo.Fail(ctx, healingID, reason)
+		}
+		slog.Warn("chaos drill failed", "node", nodeName, "reason", reason)
+	}
+
+	// Evacuate
+	evacBody := strings.NewReader(`{"action":"evacuate"}`)
+	resp, err := client.APIPost(ctx, fmt.Sprintf("/1.0/cluster/members/%s/state", nodeName), evacBody)
+	if err != nil {
+		failHealing("evacuate: " + err.Error())
+		return
+	}
+	if resp != nil && resp.Type == "async" && resp.Operation != "" {
+		opID := extractOperationID(resp.Operation)
+		if opID != "" {
+			if werr := client.WaitForOperation(ctx, opID); werr != nil {
+				failHealing("evacuate wait: " + werr.Error())
+				return
+			}
+		}
+	}
+	slog.Info("chaos: node evacuated", "node", nodeName, "wait", duration)
+
+	// Wait the drill duration
+	select {
+	case <-time.After(duration):
+	case <-ctx.Done():
+		failHealing("ctx cancelled during wait")
+		return
+	}
+
+	// Restore
+	restoreBody := strings.NewReader(`{"action":"restore"}`)
+	resp, err = client.APIPost(ctx, fmt.Sprintf("/1.0/cluster/members/%s/state", nodeName), restoreBody)
+	if err != nil {
+		failHealing("restore: " + err.Error())
+		return
+	}
+	if resp != nil && resp.Type == "async" && resp.Operation != "" {
+		opID := extractOperationID(resp.Operation)
+		if opID != "" {
+			if werr := client.WaitForOperation(ctx, opID); werr != nil {
+				failHealing("restore wait: " + werr.Error())
+				return
+			}
+		}
+	}
+
+	if healingID > 0 && healingRepo != nil {
+		_ = healingRepo.Complete(ctx, healingID)
+	}
+	slog.Info("chaos: drill completed", "node", nodeName)
 }
 
 func (h *AdminVMHandler) GetHAStatus(w http.ResponseWriter, r *http.Request) {
@@ -413,7 +640,7 @@ func (h *AdminVMHandler) GetHAStatus(w http.ResponseWriter, r *http.Request) {
 	var nodes []memberStatus
 	for _, raw := range members {
 		var m memberStatus
-		json.Unmarshal(raw, &m)
+		_ = json.Unmarshal(raw, &m)
 		nodes = append(nodes, m)
 	}
 	if nodes == nil {
@@ -442,10 +669,37 @@ func (h *AdminVMHandler) EvacuateNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// PLAN-020 Phase D: healing_events double-write around the Incus call.
+	// Row is created first so a crash between insert and completion still
+	// surfaces as in_progress → ExpireStale → partial. Failed/completed
+	// terminate the row deterministically below.
+	var healingID int64
+	if healingRepo != nil {
+		clusterID := h.clusters.IDByName(clusterName)
+		if clusterID > 0 {
+			actorID, _ := r.Context().Value(middleware.CtxUserID).(int64)
+			if a, _ := r.Context().Value(middleware.CtxActorID).(int64); a > 0 {
+				actorID = a // shadow session: credit the acting admin
+			}
+			var actorPtr *int64
+			if actorID > 0 {
+				actorPtr = &actorID
+			}
+			if id, hErr := healingRepo.Create(r.Context(), clusterID, nodeName, "manual", actorPtr); hErr == nil {
+				healingID = id
+			} else {
+				slog.Warn("healing event create failed", "node", nodeName, "error", hErr)
+			}
+		}
+	}
+
 	body, _ := json.Marshal(map[string]any{"action": "evacuate"})
 	path := fmt.Sprintf("/1.0/cluster/members/%s/state", nodeName)
 	resp, err := client.APIPost(r.Context(), path, bytes.NewReader(body))
 	if err != nil {
+		if healingID > 0 && healingRepo != nil {
+			_ = healingRepo.Fail(r.Context(), healingID, err.Error())
+		}
 		slog.Error("evacuate node failed", "node", nodeName, "error", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
@@ -453,13 +707,22 @@ func (h *AdminVMHandler) EvacuateNode(w http.ResponseWriter, r *http.Request) {
 
 	if resp.Type == "async" {
 		var op struct{ ID string }
-		json.Unmarshal(resp.Metadata, &op)
+		_ = json.Unmarshal(resp.Metadata, &op)
 		if op.ID != "" {
-			client.WaitForOperation(r.Context(), op.ID)
+			if waitErr := client.WaitForOperation(r.Context(), op.ID); waitErr != nil {
+				if healingID > 0 && healingRepo != nil {
+					_ = healingRepo.Fail(r.Context(), healingID, waitErr.Error())
+				}
+				slog.Warn("evacuate operation wait failed", "node", nodeName, "error", waitErr)
+			}
 		}
 	}
 
-	audit(r.Context(), r, "node.evacuate", "node", 0, map[string]any{"cluster": clusterName, "node": nodeName})
+	if healingID > 0 && healingRepo != nil {
+		_ = healingRepo.Complete(r.Context(), healingID)
+	}
+
+	audit(r.Context(), r, "node.evacuate", "node", 0, map[string]any{"cluster": clusterName, "node": nodeName, "healing_event_id": healingID})
 	slog.Info("node evacuated", "cluster", clusterName, "node", nodeName)
 	writeJSON(w, http.StatusOK, map[string]any{"status": "evacuated", "node": nodeName})
 }
@@ -487,9 +750,9 @@ func (h *AdminVMHandler) RestoreNode(w http.ResponseWriter, r *http.Request) {
 	}
 	if resp.Type == "async" {
 		var op struct{ ID string }
-		json.Unmarshal(resp.Metadata, &op)
+		_ = json.Unmarshal(resp.Metadata, &op)
 		if op.ID != "" {
-			client.WaitForOperation(r.Context(), op.ID)
+			_ = client.WaitForOperation(r.Context(), op.ID)
 		}
 	}
 
@@ -622,17 +885,19 @@ func (h *AdminVMHandler) CreateVM(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 默认值通过零值 + 后置填充实现，避免 required/min 与"缺省即默认"的冲突。
+	// OSImage / Project 允许为空串（后置填默认）；CPU/Memory/Disk 上限仅做合理防御，
+	// 真正的额度限制在 quota 层。
 	var req struct {
-		CPU          int      `json:"cpu"`
-		MemoryMB     int      `json:"memory_mb"`
-		DiskGB       int      `json:"disk_gb"`
-		OSImage      string   `json:"os_image"`
-		Project      string   `json:"project"`
-		SSHKeys      []string `json:"ssh_keys"`
-		TargetUserID int64    `json:"target_user_id"`
+		CPU          int      `json:"cpu"            validate:"gte=0,lte=128"`
+		MemoryMB     int      `json:"memory_mb"      validate:"gte=0,lte=1048576"`
+		DiskGB       int      `json:"disk_gb"        validate:"gte=0,lte=10240"`
+		OSImage      string   `json:"os_image"       validate:"omitempty,max=200"`
+		Project      string   `json:"project"        validate:"omitempty,safename"`
+		SSHKeys      []string `json:"ssh_keys"       validate:"omitempty,dive,max=8192"`
+		TargetUserID int64    `json:"target_user_id" validate:"gte=0"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid body"})
+	if !decodeAndValidate(w, r, &req) {
 		return
 	}
 
@@ -743,13 +1008,12 @@ func (h *AdminVMHandler) ChangeVMState(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Action  string `json:"action"`
+		Action  string `json:"action"  validate:"required,oneof=start stop restart freeze unfreeze"`
 		Force   bool   `json:"force"`
-		Cluster string `json:"cluster"`
-		Project string `json:"project"`
+		Cluster string `json:"cluster" validate:"omitempty,safename"`
+		Project string `json:"project" validate:"omitempty,safename"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid body"})
+	if !decodeAndValidate(w, r, &req) {
 		return
 	}
 	if req.Cluster == "" {
@@ -832,7 +1096,7 @@ func (h *AdminVMHandler) DeleteVM(w http.ResponseWriter, r *http.Request) {
 	var deletedID int64
 	if dbVM, _ := h.vmRepo.GetByName(r.Context(), vmName); dbVM != nil {
 		deletedID = dbVM.ID
-		h.vmRepo.Delete(r.Context(), dbVM.ID)
+		_ = h.vmRepo.Delete(r.Context(), dbVM.ID)
 	}
 
 	slog.Info("vm deleted", "vm", vmName)
@@ -847,16 +1111,11 @@ func (h *AdminVMHandler) ReinstallVM(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Cluster string `json:"cluster"`
-		Project string `json:"project"`
-		OSImage string `json:"os_image"`
+		Cluster string `json:"cluster"  validate:"required,safename"`
+		Project string `json:"project"  validate:"omitempty,safename"`
+		OSImage string `json:"os_image" validate:"omitempty,max=200"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid body"})
-		return
-	}
-	if req.Cluster == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "cluster required"})
+	if !decodeAndValidate(w, r, &req) {
 		return
 	}
 	if req.Project == "" {
@@ -887,20 +1146,15 @@ func (h *AdminVMHandler) ReinstallVM(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// MigrateVM 将单个 VM 迁移到指定目标节点
+// ResetPasswordAdmin 给 VM 重置密码（admin 路径），通过 non-interactive exec 调 chpasswd。
 func (h *AdminVMHandler) ResetPasswordAdmin(w http.ResponseWriter, r *http.Request) {
 	vmName := chi.URLParam(r, "name")
 	var req struct {
-		Cluster  string `json:"cluster"`
-		Project  string `json:"project"`
-		Username string `json:"username"`
+		Cluster  string `json:"cluster"  validate:"required,safename"`
+		Project  string `json:"project"  validate:"omitempty,safename"`
+		Username string `json:"username" validate:"omitempty,max=64"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid body"})
-		return
-	}
-	if req.Cluster == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "cluster required"})
+	if !decodeAndValidate(w, r, &req) {
 		return
 	}
 	if req.Project == "" {
@@ -932,16 +1186,11 @@ func (h *AdminVMHandler) MigrateVM(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Cluster    string `json:"cluster"`
-		Project    string `json:"project"`
-		TargetNode string `json:"target_node"`
+		Cluster    string `json:"cluster"     validate:"required,safename"`
+		Project    string `json:"project"     validate:"omitempty,safename"`
+		TargetNode string `json:"target_node" validate:"required,safename"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid body"})
-		return
-	}
-	if req.Cluster == "" || req.TargetNode == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "cluster and target_node required"})
+	if !decodeAndValidate(w, r, &req) {
 		return
 	}
 	if req.Project == "" {
@@ -1136,7 +1385,7 @@ func pickNextIP(ctx context.Context, vmSvc *service.VMService, clusterName, proj
 					} `json:"network"`
 				} `json:"state"`
 			}
-			json.Unmarshal(raw, &inst)
+			_ = json.Unmarshal(raw, &inst)
 			for nic, data := range inst.State.Network {
 				if nic == "lo" { continue }
 				for _, addr := range data.Addresses {

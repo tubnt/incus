@@ -88,7 +88,7 @@ func (h *ConsoleHandler) HandleConsole(w http.ResponseWriter, r *http.Request) {
 			FDs map[string]string `json:"fds"`
 		} `json:"metadata"`
 	}
-	json.Unmarshal(resp.Metadata, &opMeta)
+	_ = json.Unmarshal(resp.Metadata, &opMeta)
 
 	fd0Secret := opMeta.Metadata.FDs["0"]
 	controlSecret := opMeta.Metadata.FDs["control"]
@@ -114,7 +114,11 @@ func (h *ConsoleHandler) HandleConsole(w http.ResponseWriter, r *http.Request) {
 		EnableCompression: false,
 	}
 	headers := http.Header{}
-	incusConn, _, err := dialer.Dial(incusWSURL, headers)
+	incusConn, incusResp, err := dialer.Dial(incusWSURL, headers)
+	if incusResp != nil {
+		// gorilla 返回的 resp 即便成功也需要关闭 Body（底层 HTTP/1.1 upgrade 响应）
+		_ = incusResp.Body.Close()
+	}
 	if err != nil {
 		slog.Error("incus ws dial failed", "url", incusWSURL, "error", err)
 		http.Error(w, "incus websocket failed: "+err.Error(), http.StatusBadGateway)
@@ -124,7 +128,10 @@ func (h *ConsoleHandler) HandleConsole(w http.ResponseWriter, r *http.Request) {
 
 	// Control WebSocket must be connected for Incus to start the shell
 	if controlWSURL != "" {
-		controlConn, _, err := dialer.Dial(controlWSURL, headers)
+		controlConn, controlResp, err := dialer.Dial(controlWSURL, headers)
+		if controlResp != nil {
+			_ = controlResp.Body.Close()
+		}
 		if err != nil {
 			slog.Warn("control ws dial failed", "error", err)
 		} else {

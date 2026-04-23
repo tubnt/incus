@@ -1,7 +1,6 @@
 package portal
 
 import (
-	"encoding/json"
 	"net/http"
 	"strconv"
 
@@ -73,22 +72,49 @@ func (h *ProductHandler) ListAll(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *ProductHandler) Create(w http.ResponseWriter, r *http.Request) {
-	var p model.Product
-	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid body"})
+	// 创建接口不直接绑定 model.Product 是为了让校验 tag 跟 handler 层走，
+	// model 包保持纯粹的持久化形状。字段集与 UpdateProductReq 对齐，只是这里
+	// 没有指针（创建时需要给字段提供默认/显式值）。
+	var req struct {
+		Name         string  `json:"name"          validate:"required,min=1,max=200"`
+		Slug         string  `json:"slug"          validate:"omitempty,safename"`
+		CPU          int     `json:"cpu"           validate:"gte=0,lte=128"`
+		MemoryMB     int     `json:"memory_mb"     validate:"gte=0,lte=1048576"`
+		DiskGB       int     `json:"disk_gb"       validate:"gte=0,lte=10240"`
+		BandwidthTB  int     `json:"bandwidth_tb"  validate:"gte=0,lte=1024"`
+		PriceMonthly float64 `json:"price_monthly" validate:"gte=0"`
+		Currency     string  `json:"currency"      validate:"omitempty,len=3,alpha"`
+		Access       string  `json:"access"        validate:"omitempty,max=64"`
+		SortOrder    int     `json:"sort_order"    validate:"gte=0,lte=100000"`
+	}
+	if !decodeAndValidate(w, r, &req) {
 		return
 	}
-	if p.Name == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "name required"})
-		return
+	p := model.Product{
+		Name:         req.Name,
+		Slug:         req.Slug,
+		CPU:          req.CPU,
+		MemoryMB:     req.MemoryMB,
+		DiskGB:       req.DiskGB,
+		BandwidthTB:  req.BandwidthTB,
+		PriceMonthly: req.PriceMonthly,
+		Currency:     req.Currency,
+		Access:       req.Access,
+		SortOrder:    req.SortOrder,
+		Active:       true,
 	}
-	p.Active = true
 
 	created, err := h.repo.Create(r.Context(), &p)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
+	audit(r.Context(), r, "product.create", "product", created.ID, map[string]any{
+		"name":          created.Name,
+		"slug":          created.Slug,
+		"price_monthly": created.PriceMonthly,
+		"active":        created.Active,
+	})
 	writeJSON(w, http.StatusCreated, map[string]any{"product": created})
 }
 
@@ -96,17 +122,17 @@ func (h *ProductHandler) Create(w http.ResponseWriter, r *http.Request) {
 // "field absent from request" from "field explicitly set to zero / empty".
 // Only non-nil fields are merged into the existing record.
 type UpdateProductReq struct {
-	Name         *string  `json:"name"`
-	Slug         *string  `json:"slug"`
-	CPU          *int     `json:"cpu"`
-	MemoryMB     *int     `json:"memory_mb"`
-	DiskGB       *int     `json:"disk_gb"`
-	BandwidthTB  *int     `json:"bandwidth_tb"`
-	PriceMonthly *float64 `json:"price_monthly"`
-	Currency     *string  `json:"currency"`
-	Access       *string  `json:"access"`
+	Name         *string  `json:"name"          validate:"omitempty,min=1,max=200"`
+	Slug         *string  `json:"slug"          validate:"omitempty,safename"`
+	CPU          *int     `json:"cpu"           validate:"omitempty,gte=0,lte=128"`
+	MemoryMB     *int     `json:"memory_mb"     validate:"omitempty,gte=0,lte=1048576"`
+	DiskGB       *int     `json:"disk_gb"       validate:"omitempty,gte=0,lte=10240"`
+	BandwidthTB  *int     `json:"bandwidth_tb"  validate:"omitempty,gte=0,lte=1024"`
+	PriceMonthly *float64 `json:"price_monthly" validate:"omitempty,gte=0"`
+	Currency     *string  `json:"currency"      validate:"omitempty,len=3,alpha"`
+	Access       *string  `json:"access"        validate:"omitempty,max=64"`
 	Active       *bool    `json:"active"`
-	SortOrder    *int     `json:"sort_order"`
+	SortOrder    *int     `json:"sort_order"    validate:"omitempty,gte=0,lte=100000"`
 }
 
 func applyUpdateProductReq(p *model.Product, req UpdateProductReq) {
@@ -159,8 +185,7 @@ func (h *ProductHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req UpdateProductReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid body"})
+	if !decodeAndValidate(w, r, &req) {
 		return
 	}
 	applyUpdateProductReq(existing, req)
@@ -171,5 +196,10 @@ func (h *ProductHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	audit(r.Context(), r, "product.update", "product", id, map[string]any{
+		"name":          existing.Name,
+		"price_monthly": existing.PriceMonthly,
+		"active":        existing.Active,
+	})
 	writeJSON(w, http.StatusOK, map[string]any{"product": existing})
 }
