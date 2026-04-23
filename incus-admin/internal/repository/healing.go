@@ -139,14 +139,17 @@ func (r *HealingEventRepo) FindInProgressByNode(ctx context.Context, clusterID i
 	return id, nil
 }
 
-// CompleteByNode flips every in_progress row for (cluster, node) to
-// 'completed'. Invoked when the node returns online so auto-created auto
-// rows don't linger. Returns affected row count.
+// CompleteByNode flips auto-tracked in_progress rows for (cluster, node) to
+// 'completed' when the node is observed online again. Explicitly scoped to
+// trigger='auto' so a manual evacuate or chaos drill still in progress isn't
+// prematurely closed by an online lifecycle event — those flows Complete
+// themselves from their own handler/goroutine.
 func (r *HealingEventRepo) CompleteByNode(ctx context.Context, clusterID int64, nodeName string) (int64, error) {
 	res, err := r.db.ExecContext(ctx,
 		`UPDATE healing_events
 		 SET status = 'completed', completed_at = NOW()
-		 WHERE cluster_id = $1 AND node_name = $2 AND status = 'in_progress'`,
+		 WHERE cluster_id = $1 AND node_name = $2
+		   AND status = 'in_progress' AND trigger = 'auto'`,
 		clusterID, nodeName,
 	)
 	if err != nil {
@@ -154,6 +157,32 @@ func (r *HealingEventRepo) CompleteByNode(ctx context.Context, clusterID int64, 
 	}
 	n, _ := res.RowsAffected()
 	return n, nil
+}
+
+// GetByID returns a single healing event by primary key, or (nil, nil) if no
+// such row exists. Used by the admin HA history drawer when the user clicks
+// a row — cheaper than scanning ListFiltered output, and unbounded (the 500-row
+// list cap used to hide events beyond that window).
+func (r *HealingEventRepo) GetByID(ctx context.Context, id int64) (*HealingEvent, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT id, cluster_id, node_name, trigger, actor_id,
+		        COALESCE(evacuated_vms, '[]'::jsonb)::text,
+		        started_at, completed_at, status, error
+		 FROM healing_events WHERE id = $1`,
+		id,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("get healing event: %w", err)
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		return nil, nil
+	}
+	e, err := scanHealingRow(rows)
+	if err != nil {
+		return nil, err
+	}
+	return &e, nil
 }
 
 // ExpireStale marks in-progress events older than `cutoff` as 'partial' —

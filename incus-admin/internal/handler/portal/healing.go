@@ -95,22 +95,17 @@ func (h *HealingHandler) Get(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid id"})
 		return
 	}
-	// Narrow search via ListFiltered with no filters beyond id. Cheaper
-	// than adding a dedicated repo method for a single-row fetch that only
-	// the drawer uses.
-	events, _, err := h.repo.ListFiltered(r.Context(), repository.HealingListFilter{}, 500, 0)
+	ev, err := h.repo.GetByID(r.Context(), id)
 	if err != nil {
 		slog.Error("get healing event", "id", id, "error", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "get failed"})
 		return
 	}
-	for _, ev := range events {
-		if ev.ID == id {
-			writeJSON(w, http.StatusOK, serialiseHealing(ev, h.clusterNameByID(ev.ClusterID)))
-			return
-		}
+	if ev == nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "healing event not found"})
+		return
 	}
-	writeJSON(w, http.StatusNotFound, map[string]any{"error": "healing event not found"})
+	writeJSON(w, http.StatusOK, serialiseHealing(*ev, h.clusterNameByID(ev.ClusterID)))
 }
 
 func (h *HealingHandler) clusterNameByID(id int64) string {

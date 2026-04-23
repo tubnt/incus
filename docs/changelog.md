@@ -1,5 +1,29 @@
 # IncusAdmin Changelog
 
+## 2026-04-23 22:50 [fix]
+
+pma-cr 代码审查修复 —— 8 项 findings 全部处理 + 21 条新单测 + 状态诚实化：
+
+**P1 修复**：
+- `HealingEventRepo.GetByID` 独立单行查询，替换 handler Get 里 "ListFiltered 500 行 + 内存扫描" 的 O(n) 实现；超过 500 条历史后 drawer 打不开的 regression 消除
+- PLAN-020 + HA-001 状态回退到 `implementing` / `in_progress`：Phase G 拆为 G.1 单测（已完成 19+ cases）+ G.2 容器化 E2E（推迟，独立 PR 立项）。之前误标 completed 不诚实
+
+**P2 修复**：
+- i18n `ha.statusInProgress` → `ha.statusInprogress`（匹配 JSON 小写 + runtime capitalize 模板）
+- `CompleteByNode` 增 `AND trigger='auto'` —— 避免 node online 事件抢先关闭 chaos/manual 在跑的 healing 行
+- `http.ts` step-up redirect 加同源白名单：只接受 `/api/auth/stepup/` 前缀，拒绝 protocol-relative `//` 和 absolute URL
+- `event_listener` backoff 健康判定：连接存活 ≥ 5min 后断开视为"曾健康"，从 MinBackoff 重试而非继承 MaxBackoff cap
+- Workers 迁到 `workerCtx`（`context.WithCancel(context.Background())` + `defer cancel()`），SIGTERM → HTTP drain → cancel workers → 进程退出链路清晰
+
+**新单测（21 cases）**：
+- `internal/auth/shadow_test.go` 5 cases：HMAC round-trip / short secret / malformed / bad signature / expired
+- `internal/auth/oidc_test.go` 5 cases：SignState / VerifyState 五条等价路径
+- `internal/middleware/stepup_test.go` 7 cases：无 lookup / 非敏感 / 无 userID / fresh / stale / shadow actor lookup / isSensitive 枚举覆盖
+- `internal/middleware/shadow_test.go` 3 cases：无 actor / money 路径 shadow 拒绝 / 非 money 路径 shadow 放行
+- `HealingEventRepo.GetByID` 无数据库不跑（需 integration test 基建）—— 留 TODO
+
+CI 全绿：`go build/vet/test ./...` + `golangci-lint run` 0 issue + `bun run typecheck/test/build` 37 tests passed。生产部署 dd61ede8… 健康检查通过。
+
 ## 2026-04-19 07:30 [completed]
 
 REFACTOR-002 关闭 —— validator 全量收官：
@@ -70,6 +94,17 @@ PLAN-020 Phase D.2 + D.3 + F 上线 — HA 可视化收尾（事件自动追踪 
 - **单测**：`worker/event_listener_test.go` 6 cases —— instance-deleted → gone / instance-updated append healing / 无 active healing 跳 append / cluster-member offline 幂等 / online complete / healing=nil 静默无副作用。
 
 INFRA-001 task 切 `[x]` —— HA 自动故障转移 + 管理面板 + 手动 evacuate + 历史回放 + chaos drill 全部交付；Slack/Lark 告警路由推迟独立小 PR。PLAN-020 剩 Phase G（集成测试，约 5d）+ Phase H（runbook，约 1d）由 HA-001 继续推进。本地 `go build/vet/test ./...` + `bun run typecheck/build` 全绿；生产部署 E2E 验证待用户确认后走 AIssh MCP。
+
+## 2026-04-23 22:15 [progress]
+
+PLAN-019/PLAN-020 tech debt 清零：
+
+- **handler audit 覆盖率 100%**（PLAN-019 收尾）：`scripts/audit-coverage-check.sh` 原先把同一 handler 的 admin+portal 双重注册（snapshot.go 的 Create/Delete/Restore）统计成 2 个 write，误判 `partial`。重写计数为"提取 handler 最后一段标识符去重"，snapshot.go 从 6/3 → 3/3 ok。实测 `47/47 ok`：apitoken/ceph/clustermgmt/ippool/nodeops/order/product/quota/snapshot/sshkey/ticket/user/vm 全部 handler 业务 audit 齐备（middleware route-level 兜底仍在）。
+- **Fake Incus HTTP 集成测试**（PLAN-020 收尾）：`internal/cluster/client_integration_test.go` — `httptest.NewServer` mock `/1.0/instances?recursion=2` / `/1.0/cluster/members` / `/1.0/operations/{id}/wait`，bypass newClient mTLS 健康检查直连 fake。4 case 覆盖 GetInstances success+error / GetClusterMembers / WaitForOperation。
+- **事件解析纯函数测试**：`internal/cluster/events_test.go` — `InstanceNameFromSource` 7 case + `ClusterMemberNameFromSource` 5 case + `buildEventsWSURL` 5 case（scheme switch + type 编码 + 异常 scheme）。
+- **ExpireStale worker 生命周期测试**：`internal/worker/healing_expire_test.go` — disabled 3 case（nil/0/负 maxAge 立即退出）+ TicksAndCancels（50ms tick，cutoff 精度 ±1s）+ ErrorContinues（transient DB 错不杀 worker）。
+
+累计 22+ 新 case。全量 `go test ./internal/...` 绿灯。
 
 ## 2026-04-23 20:45 [completed]
 

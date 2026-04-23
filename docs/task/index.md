@@ -1,6 +1,6 @@
 # IncusAdmin - Task List
 
-> Updated: 2026-04-19 07:30
+> Updated: 2026-04-23 22:50
 
 ## Usage
 
@@ -50,4 +50,4 @@ Each task is a single line linking to its detail file. All detailed information 
 - [x] [**QA-006 全量用户端 E2E + N1-N11 bug 修复**](QA-006.md) `P1`
 - [x] [**UX-003 用户端功能缺口填补(G1-G5)**](UX-003.md) `P2`
 - [x] [**SEC-001 安全与审计基线加固**](SEC-001.md) `P1`
-- [x] [**HA-001 事件驱动 HA 实现 + 故障演练 + 历史回放**](HA-001.md) `P1`
+- [-] [**HA-001 事件驱动 HA 实现 + 故障演练 + 历史回放**](HA-001.md) `P1`

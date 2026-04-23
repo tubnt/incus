@@ -37,7 +37,11 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
     // user hasn't completed a recent step-up re-authentication. Bouncing the
     // browser to the redirect kicks off the Logto OIDC round-trip; the server
     // records auth_time on callback and the retried request passes through.
-    if (response.status === 401 && isStepUpRequired(body)) {
+    //
+    // Only accept same-origin relative paths under the step-up prefix so a
+    // compromised server can't pivot the client to an external host via this
+    // channel (protocol-relative //evil.com, absolute https://…, etc).
+    if (response.status === 401 && isStepUpRequired(body) && isSafeStepUpRedirect(body.redirect)) {
       window.location.href = body.redirect;
     }
     throw new HttpError(response.status, response.statusText, body);
@@ -55,6 +59,13 @@ function isStepUpRequired(body: unknown): body is StepUpRequired {
   if (!body || typeof body !== "object") return false;
   const b = body as Record<string, unknown>;
   return b.error === "step_up_required" && typeof b.redirect === "string";
+}
+
+// isSafeStepUpRedirect rejects anything that isn't an absolute path on our own
+// origin pointing into the step-up prefix. Protocol-relative (`//…`), absolute
+// (`https://…`), and paths outside `/api/auth/stepup/` are all refused.
+function isSafeStepUpRedirect(url: string): boolean {
+  return url.startsWith("/api/auth/stepup/") && !url.startsWith("//");
 }
 
 export const http = {

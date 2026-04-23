@@ -1,6 +1,6 @@
 # Incus Cloud Platform - Plan Index
 
-> Updated: 2026-04-19
+> Updated: 2026-04-23
 
 ## Usage
 
@@ -48,4 +48,4 @@ Each plan is a single line linking to its detail file. All detailed information 
 - [x] [**PLAN-017 QA-006 用户端 E2E N1-N11 修复**](PLAN-017.md) `2026-04-18`
 - [x] [**PLAN-018 用户端功能缺口填补(G1-G5)**](PLAN-018.md) `2026-04-18`
 - [x] [**PLAN-019 安全与审计基线（Step-up / 审计全覆盖 / Token TTL / Shadow Login）**](PLAN-019.md) `2026-04-19`
-- [x] [**PLAN-020 HA 真正化 + VM 状态反向同步（合并 PLAN-014）**](PLAN-020.md) `2026-04-19`
+- [-] [**PLAN-020 HA 真正化 + VM 状态反向同步（合并 PLAN-014）**](PLAN-020.md) `2026-04-19`

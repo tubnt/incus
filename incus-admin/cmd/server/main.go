@@ -191,13 +191,23 @@ func main() {
 		auditRepo.Log(bgCtx, uid, action, targetType, targetID, details, ip)
 	})
 
+	// workerCtx is the parent context for every long-running background
+	// goroutine (cleanup loops, reconciler, event listener, expire-stale
+	// sweeper). srv.Run() blocks until SIGINT/SIGTERM + HTTP drain finishes
+	// then returns, at which point the deferred cancel fires and workers
+	// exit cleanly via their select on ctx.Done(). Using context.Background()
+	// per worker worked, but left them alive until os.Exit — harmless on
+	// systemd but prevented clean shutdown in tests.
+	workerCtx, cancelWorkers := context.WithCancel(context.Background())
+	defer cancelWorkers()
+
 	// Retention worker: deletes audit_logs rows older than
 	// AUDIT_RETENTION_DAYS (default 365). Runs until server shutdown.
-	go worker.RunAuditCleanup(context.Background(), auditRepo, cfg.Auth.AuditRetentionDays)
+	go worker.RunAuditCleanup(workerCtx, auditRepo, cfg.Auth.AuditRetentionDays)
 
 	// API token cleanup: removes expired rows after a 30d grace period so
 	// audit cross-references survive short investigations.
-	go worker.RunAPITokenCleanup(context.Background(), apiTokenRepo, 30*24*time.Hour)
+	go worker.RunAPITokenCleanup(workerCtx, apiTokenRepo, 30*24*time.Hour)
 
 	// PLAN-020 Phase A: VM state reverse-sync worker. Polls each Incus
 	// cluster every 60s, diffs against active `vms` rows, and flips rows
@@ -208,7 +218,7 @@ func main() {
 		snapshotFn := worker.ClusterSnapshotFromManager(clusterMgr, "customers")
 		reconcileCfg := worker.VMReconcilerConfig{Interval: 60 * time.Second}
 		go worker.RunVMReconciler(
-			context.Background(),
+			workerCtx,
 			reconcileCfg,
 			snapshotFn,
 			vmRepo,
@@ -248,7 +258,7 @@ func main() {
 		// package.
 		healingAdapter := healingTrackerAdapter{repo: healingRepo}
 		go worker.RunEventListener(
-			context.Background(),
+			workerCtx,
 			worker.EventListenerConfig{},
 			streamFn,
 			vmRepo,
@@ -260,7 +270,7 @@ func main() {
 		// 'in_progress' for more than 15 minutes is likely the consequence
 		// of an Incus event we never received (network glitch, crash).
 		// Flip to 'partial' so the history UI doesn't show stuck entries.
-		go worker.RunHealingExpireStale(context.Background(), healingRepo, 15*time.Minute, 5*time.Minute)
+		go worker.RunHealingExpireStale(workerCtx, healingRepo, 15*time.Minute, 5*time.Minute)
 	}
 
 	srv := server.New(cfg, userLookup, roleLookup, balanceLookup, stepUpLookup, auditWriter, server.Handlers{

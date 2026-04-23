@@ -141,25 +141,37 @@ func runClusterListener(
 	stream := initial
 	backoff := cfg.MinBackoff
 
+	// healthyResetAfter 决定"一次连接存活多久就重置 backoff"。避免把一个一口气跑
+	// 几小时的连接的 disconnect 视为高频 flap：长连接断开应从 MinBackoff 重试，
+	// 而不是继承上一次已经被 cap 到 MaxBackoff 的值。
+	const healthyResetAfter = 5 * time.Minute
+
 	for {
 		if ctx.Err() != nil {
 			return
 		}
 
+		connectedAt := time.Now()
 		err := cluster.StreamEvents(ctx, stream.TLS, stream.APIURL, cfg.EventTypes, func(ev cluster.Event) error {
 			dispatchEvent(ctx, stream, ev, repo, healing)
 			return nil
 		})
+		connectionLifetime := time.Since(connectedAt)
 
 		if ctx.Err() != nil {
 			slog.Info("event listener stopping", "cluster", stream.Name)
 			return
 		}
 
+		// 上一次连接存活够久 → 视为"曾健康"，从 MinBackoff 重试；否则按指数退避。
+		if connectionLifetime >= healthyResetAfter {
+			backoff = cfg.MinBackoff
+		}
+
 		if err != nil {
-			slog.Warn("event listener disconnected", "cluster", stream.Name, "error", err, "backoff", backoff)
+			slog.Warn("event listener disconnected", "cluster", stream.Name, "error", err, "backoff", backoff, "lifetime", connectionLifetime)
 		} else {
-			slog.Info("event listener closed, reconnecting", "cluster", stream.Name, "backoff", backoff)
+			slog.Info("event listener closed, reconnecting", "cluster", stream.Name, "backoff", backoff, "lifetime", connectionLifetime)
 		}
 
 		// Sleep with jitter.

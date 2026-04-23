@@ -239,7 +239,7 @@ function HistoryPanel({
           onChange={(v) => { setStatus(v as HealingStatus | ""); setPage(0); }}
           options={[
             { value: "", label: t("ha.filterAll") },
-            { value: "in_progress", label: t("ha.statusInProgress") },
+            { value: "in_progress", label: t("ha.statusInprogress") },
             { value: "completed", label: t("ha.statusCompleted") },
             { value: "failed", label: t("ha.statusFailed") },
             { value: "partial", label: t("ha.statusPartial") },

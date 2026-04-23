@@ -205,6 +205,19 @@
   - #5 Shadow Login 采用全权 + 金钱类 403 默认方案，不引入 read-only 兜底
 - 2026-04-19 PLAN-019 所有 Open Questions 已清零，具备进入 Phase 3 条件
 
+### 2026-04-23 Tech debt 收尾 — audit 覆盖率 100%
+
+**实测覆盖率**（`scripts/audit-coverage-check.sh` 修改后统计）：
+
+| file | writes | audits | status |
+|------|-------:|-------:|--------|
+| apitoken/ceph/clustermgmt/ippool/nodeops/order/product/quota/snapshot/sshkey/ticket/user/vm | 47 | 47 | **ok** |
+| 合计 | **47** | **47** | **100%** |
+
+脚本修复：原先按 `r.Post/Put/Patch/Delete(` 次数统计 writes，把 snapshot.go 的 admin+portal 双重注册（同一 handler）误判为 2 个 write。改成提取 handler 最后一段标识符（`Create/Delete/Restore`）去重后计算，snapshot.go 从 6/3 partial 修正为 3/3 ok。
+
+全部 handler 的业务 audit 调用齐备（协作工具在 Phase A-E 各期滚动补齐 — snapshot/sshkey/order/ticket/user/apitoken 所有分支均有 `audit()` 或走 middleware `AuditAdminWrites` 兜底）。
+
 ### 2026-04-19 Phase A 实施批注
 
 **实施路径最终版（V3 方案：应用自接 OIDC 子流程）**

@@ -44,9 +44,22 @@ for f in "$HANDLER_DIR"/*.go; do
   base=$(basename "$f")
   [[ "$base" == *_test.go ]] && continue
 
-  # Count write-method route registrations: r.Post(, r.Put(, r.Patch(, r.Delete(
-  writes=$(grep -cE 'r\.(Post|Put|Patch|Delete)\(' "$f" 2>/dev/null || true)
-  audits=$(grep -cE '\baudit\(' "$f" 2>/dev/null || true)
+  # Count *unique* handler references among write-method route
+  # registrations. Extracting the last identifier inside the paren group
+  # folds admin+portal double-registration of the same method (common
+  # pattern in snapshot.go) into one "write" so the ratio stays meaningful.
+  # `|| true` on every grep so set -e doesn't abort on zero-match files.
+  routes=$(grep -oE 'r\.(Post|Put|Patch|Delete)\([^)]*\)' "$f" 2>/dev/null || true)
+  if [[ -z "$routes" ]]; then
+    writes=0
+  else
+    writes=$(echo "$routes" \
+      | grep -oE '[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\)' \
+      | sed -E 's/[[:space:]]*\).*//' \
+      | sort -u \
+      | wc -l)
+  fi
+  audits=$(grep -cE '\baudit\(' "$f" 2>/dev/null || echo 0)
 
   if [[ "$writes" -eq 0 ]]; then
     continue
