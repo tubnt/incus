@@ -139,7 +139,7 @@ PLAN-053 一期可在不依赖本 PLAN 的情况下上线（按 monthly 接 clou
 | Phase | 状态 | 落地点 |
 | ----- | --- | ------ |
 | F schema | ✅ 完成（L3-C 640vr0dt 2026-05-26） | `db/migrations/028_billing_subscriptions.sql` + products.price_daily/period_supported + orders.period + vm_subscriptions + billing_charges UNIQUE(sub,date) + 3 索引 + model 常量 + repo skeleton（subscription/charge/idempotency） |
-| G 订单流 hook | ⏳ 待 L3-E | 订单流 period 透传 + sub 行写入（schema 已就绪） |
+| G 订单流 hook | ✅ 完成（L3-E z071x2iz 2026-05-26） | `POST /portal/orders` 接 period + 校验 product.period_supported / rate 不为 null；pay 成功 + vm row 写入后 INSERT vm_subscriptions（sub 失败回滚整单）；VM trash → sub cancelled；VM restore → sub active + paid_until 重置 |
 | H worker | ⏳ 待 L3-F | `worker/billing_daily_charger.go` + `billing_grace_expire.go` |
 | I UI | ⏳ 待 L3-I | portal `/billing` subscription tab + runway 估算 + admin 手动恢复 |
 | J audit + cloud-gateway | ⏳ 待 L3-J | /v1/types prices.daily + /v1/account estimated_runway_days |
@@ -165,3 +165,41 @@ PLAN-053 一期可在不依赖本 PLAN 的情况下上线（按 monthly 接 clou
 - 计费 worker（L3-F）
 - Idempotency middleware 本体（L3-H）
 - UI（L3-I）+ audit + cloud-gateway 集成（L3-J）
+
+### Phase G 订单流 hook（2026-05-26 完成 · L3-E z071x2iz）
+
+- ✅ `POST /portal/orders` 接 `period` 字段（omitempty + `oneof=daily monthly`），未传默认
+  monthly（兼容现状）。校验 `product.PeriodSupported` 包含目标 period，否则 422
+  `{errors:[{field:"period", reason:"unsupported"}]}`；对应单价（daily=price_daily /
+  monthly=price_monthly）缺失返 422 `{reason:"rate_missing"}`。订单写入走
+  `OrderRepo.CreateWithPeriod`，amount 用对应 rate。
+- ✅ pay 成功后写 `vm_subscriptions`：vm row 写入完成后调
+  `OrderHandler.createSubscriptionForOrder`；daily/monthly 单价从 product 取并仅写一侧
+  rate；`paid_until = NOW + BillingPeriodDuration(period)`（daily 24h / monthly 30d）。
+  sub 失败 → 删 VM 行 + rollbackPayment（refund + IP release + order cancelled），
+  保持订单 + 余额 + VM + sub 四方一致；job create / enqueue 失败也清 sub。
+- ✅ VM trash → sub cancelled：`portal/services/{id}` DELETE + admin `vms/{name}` DELETE
+  都在 `MarkTrashed` 成功后调 `cancelSubscriptionOnTrash`（仅动 status='active' 行，
+  paid_until 不变）。audit `subscription_cancelled`。
+- ✅ VM restore → sub active + paid_until 重置：portal + admin restore 路径在
+  `UnmarkTrashed` 成功后调 `reactivateSubscriptionOnRestore` —— GetLatestByVM 取
+  period 后 paid_until 重置为 `NOW + duration`（免费"恢复"语义，不重新扣费）。
+  audit `subscription_restored`。
+- ✅ `SubscriptionRepo` 业务补全：`GetLatestByVM`（任意状态）/ `CancelByVM`（只动
+  active）/ `ReactivateByVM`（只动最新 cancelled）；与原 skeleton（Insert / GetByVM /
+  ListByUser / ListDueActive / UpdateStatus / UpdatePaidUntil / UpdateSuspension /
+  ClearSuspension）正交。
+- ✅ 共享 helper：`model.BillingPeriodDuration(period)` 单点定义周期长度，避免
+  worker / restore 两处硬编码漂移。
+- ✅ 测试：repo 集成（CancelByVM idempotent / Reactivate 改 paid_until / 二次 no-op）+
+  handler 集成（pay → sub 写入 daily / monthly / trash → cancelled paid_until 不动 /
+  restore → active 重置 paid_until / subs nil noop）+ 单测（BillingPeriodDuration
+  锁定 24h/30d）。
+- ✅ wiring：`cmd/server/main.go` 注入 `subRepo` 到 `OrderHandler.WithSubscriptions` +
+  `VMHandler.WithSubscriptions` + `AdminVMHandler.WithSubscriptions`。
+
+#### Phase G 范围内**未做**（按设计）
+
+- billing worker（L3-F）：每日扣费 / suspension / grace expire / topup 触发恢复
+- `/v1/instances` 一键创建（L3-G）：走 cloud-gateway 内部调本 phase 改造好的 OrderService
+- UI（L3-I）+ cloud-gateway 集成（L3-J）
