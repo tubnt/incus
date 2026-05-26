@@ -141,7 +141,7 @@ PLAN-053 一期可在不依赖本 PLAN 的情况下上线（按 monthly 接 clou
 | F schema | ✅ 完成（L3-C 640vr0dt 2026-05-26） | `db/migrations/028_billing_subscriptions.sql` + products.price_daily/period_supported + orders.period + vm_subscriptions + billing_charges UNIQUE(sub,date) + 3 索引 + model 常量 + repo skeleton（subscription/charge/idempotency） |
 | G 订单流 hook | ✅ 完成（L3-E z071x2iz 2026-05-26） | `POST /portal/orders` 接 period + 校验 product.period_supported / rate 不为 null；pay 成功 + vm row 写入后 INSERT vm_subscriptions（sub 失败回滚整单）；VM trash → sub cancelled；VM restore → sub active + paid_until 重置 |
 | H worker | ⏳ 待 L3-F | `worker/billing_daily_charger.go` + `billing_grace_expire.go` |
-| I UI | ⏳ 待 L3-I | portal `/billing` subscription tab + runway 估算 + admin 手动恢复 |
+| I UI | ✅ 完成（L3-I snuahzue 2026-05-26） | portal `/billing` Tabs + subscription tab + runway 余额预估 + /launch 按月/按日切换 + admin `/admin/subscriptions` 手动恢复 + `/api-tokens` cloud-gateway banner |
 | J audit + cloud-gateway | ⏳ 待 L3-J | /v1/types prices.daily + /v1/account estimated_runway_days |
 
 ### Phase F schema（2026-05-26 完成 · L3-C 640vr0dt · 与 PLAN-053 Phase E 同批）
@@ -203,3 +203,41 @@ PLAN-053 一期可在不依赖本 PLAN 的情况下上线（按 monthly 接 clou
 - billing worker（L3-F）：每日扣费 / suspension / grace expire / topup 触发恢复
 - `/v1/instances` 一键创建（L3-G）：走 cloud-gateway 内部调本 phase 改造好的 OrderService
 - UI（L3-I）+ cloud-gateway 集成（L3-J）
+
+### Phase I UI（2026-05-26 完成 · L3-I snuahzue）
+
+- ✅ portal `/billing` 升级 Tabs：「我的订单 / 订阅 / 发票」三 tab，订阅 tab 用
+  新组件 `features/billing/subscription-list/subscription-list.tsx`：VM 名（来自
+  `useMyVMsQuery` 映射） / 周期 chip / 单价 / suspended 红行 + ⚠ Tooltip（含 grace_until 时间）
+  / paid_until / 剩余天数（`runwayDaysFromNow` 整数天）；suspended 行排在最上。
+- ✅ 余额 `BalanceCard` 下方加运行时预估：`computeRunwayDays(balance, subs)` —— daily +
+  monthly（折算 daily=monthly/30）汇总 daily burn，余额 / burn = 剩余天数；< 7 天
+  warning 黄；balance ≤ 0 / 无 active sub / 全部 rate 缺失时不显示。
+- ✅ `/launch` 加 §2「计费周期」FormSection：`PeriodPicker` 二选一 RadioGroup（按月 /
+  按日），默认 monthly；product.period_supported 不含目标 period 时 disable + Tooltip
+  解释；提交 `POST /portal/orders` 带 period 字段；SummaryCard hero 单价 + 单位
+  跟 period 切换。
+- ✅ admin `/admin/subscriptions` 新页：filter（status × user）+ 列出全用户订阅，
+  suspended/cancelled 行有「恢复」按钮 → `POST /admin/subscriptions/{id}/reactivate`。
+  后端走 `SubscriptionHandler.Reactivate`：调 `SubscriptionRepo.AdminReactivate`
+  把 status 切回 active + paid_until 重置 + 清空 suspended_at/grace_until。
+  audit `subscription_admin_reactivated`。
+- ✅ `/api-tokens` 顶部加 cloud-gateway banner（accent 强调）：说明 token 用法 +
+  建议 TTL ≥ 7 天 + docs 占位锚点；不动现有 CRUD。
+- ✅ 单测：`subscriptions-api.test.ts` 覆盖 `computeRunwayDays`（balance=0/负 / 无
+  active / daily/monthly 单独 + 混合 / rate null 边界 / NaN+Infinity）和
+  `runwayDaysFromNow`（过期 / 同时刻 / 未来 / 非法 date）共 14 个 case；
+  `period-picker.test.tsx` jsdom 渲染 PeriodPicker 验证 disabled 状态 + onChange
+  路径 + productSupports 边界共 7 个 case；全 62 测试通过。
+- ✅ i18n：`subscription` / `period` 顶层 block 中英双语 + `billing.runwayHint` +
+  `apiToken.cloudGateway*` + `admin.subscriptions.*` + `nav.subscriptions`，
+  同步加 `common.all`（admin 筛选器用）。
+- ✅ DESIGN.md 严格合规：`grep -E 'p-\[|m-\[|h-\[|w-\[|gap-\[|text-\['` 在
+  features/billing / features/launch / 4 个改动路由 0 命中；新增 `--size-input-medium`
+  token 取代 arbitrary。
+
+#### Phase I 范围内**未做**（按设计）
+
+- `/v1/account` 加 `estimated_runway_days` 字段（L3-J 后端补 + 前端读）
+- 审计页加 `subscription_*` 事件展示（cosmetic，下期）
+- Playwright E2E（L3-J 收尾时跑）

@@ -1,4 +1,5 @@
 import type { PayResponse, VMCredentials } from "@/features/billing/api";
+import type { Period } from "@/features/launch/components/period-picker";
 import { useQuery } from "@tanstack/react-query";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { Rocket } from "lucide-react";
@@ -10,6 +11,7 @@ import { useJobStream } from "@/features/jobs/use-job-stream";
 import { DonePanel } from "@/features/launch/components/done-panel";
 import { FailedPanel } from "@/features/launch/components/failed-panel";
 import { FormSection } from "@/features/launch/components/form-section";
+import { PeriodPicker, productSupports } from "@/features/launch/components/period-picker";
 import { EmptyPlanHint, PlanCard, PlanSkeleton } from "@/features/launch/components/plan-card";
 import { ProvisioningPanel } from "@/features/launch/components/provisioning-panel";
 import { SSHKeyHint } from "@/features/launch/components/ssh-key-hint";
@@ -48,6 +50,9 @@ function LaunchPage() {
   const [productId, setProductId] = useState<number | null>(null);
   const [osImage, setOsImage] = useState<string>(DEFAULT_OS_IMAGE);
   const [vmName, setVmName] = useState("");
+  // PLAN-054 / INFRA-013：默认 monthly（保留现有行为）；product 不支持时
+  // 提交按钮 disable，由用户切到支持的那一档。
+  const [period, setPeriod] = useState<Period>("monthly");
 
   // ── provisioning / 完成态 ──────────────────────────────
   const [credentials, setCredentials] = useState<VMCredentials | null>(null);
@@ -118,17 +123,30 @@ function LaunchPage() {
         })
       : "";
 
-  const balanceInsufficient = product != null && balance < product.price_monthly;
+  // PLAN-054：当前周期对应单价；不支持时 displayed unit price 仍存在但提交 disable。
+  const unitPrice =
+    period === "daily"
+      ? product?.price_daily ?? null
+      : product?.price_monthly ?? null;
+  const periodSupported = productSupports(product, period);
+  const balanceInsufficient =
+    product != null && unitPrice != null && balance < unitPrice;
   const submitDisabled =
-    isSubmitting || !product || !!vmNameError || balanceInsufficient;
+    isSubmitting
+    || !product
+    || !!vmNameError
+    || balanceInsufficient
+    || !periodSupported
+    || unitPrice == null;
 
   const submitOrder = () => {
     if (!product || vmNameError) return;
+    if (!periodSupported || unitPrice == null) return;
     setAsyncError(null);
     setCredentials(null);
     setPending(null);
     orderMutation.mutate(
-      { product_id: product.id, vm_name: vmName || undefined, os_image: osImage },
+      { product_id: product.id, vm_name: vmName || undefined, os_image: osImage, period },
       {
         onSuccess: (data) => {
           payMutation.mutate(
@@ -217,6 +235,20 @@ function LaunchPage() {
 
                       <FormSection
                         index="2"
+                        title={t("period.title", { defaultValue: "计费周期" })}
+                        hint={t("period.hint", {
+                          defaultValue: "按月：一次扣 30 天，停机不退；按日：每天 UTC 00:00 扣 1 天。",
+                        })}
+                      >
+                        <PeriodPicker
+                          product={product}
+                          value={period}
+                          onChange={setPeriod}
+                        />
+                      </FormSection>
+
+                      <FormSection
+                        index="3"
                         title={t("vm.osImage", { defaultValue: "系统镜像" })}
                         hint={t("admin.osImageHint", {
                           defaultValue: "搜索发行版或版本快速定位",
@@ -230,7 +262,7 @@ function LaunchPage() {
                       </FormSection>
 
                       <FormSection
-                        index="3"
+                        index="4"
                         title={t("launch.authTitle", { defaultValue: "认证" })}
                         hint={t("launch.authHint", {
                           defaultValue:
@@ -241,7 +273,7 @@ function LaunchPage() {
                       </FormSection>
 
                       <FormSection
-                        index="4"
+                        index="5"
                         title={t("launch.hostnameTitle", { defaultValue: "主机名" })}
                         hint={t("launch.hostnameHint", {
                           defaultValue: "可选；留空由后端自动生成 vm-xxxxxx",
@@ -277,6 +309,8 @@ function LaunchPage() {
                           balance={balance}
                           balanceCurrency={product?.currency}
                           insufficient={balanceInsufficient}
+                          period={period}
+                          unitPrice={unitPrice}
                         />
 
                         {error ? (

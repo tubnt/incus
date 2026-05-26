@@ -621,6 +621,23 @@
       "expireTitle": "Expire order",
       "expireMessage": "Mark order #{{orderId}} as expired?"
     },
+    "subscriptions": {
+      "title": "Subscriptions",
+      "description": "All user subscriptions. Suspended rows can be reactivated manually (paid_until reset).",
+      "empty": "No subscriptions yet",
+      "filterStatus": "Status",
+      "filterUser": "User",
+      "colUser": "User",
+      "colProduct": "Product",
+      "colPeriod": "Period",
+      "colRate": "Rate",
+      "colStatus": "Status",
+      "colPaidUntil": "Paid until",
+      "reactivate": "Reactivate",
+      "reactivateTitle": "Reactivate subscription",
+      "reactivateMessage": "Reactivate subscription #{{id}}? paid_until will reset to NOW + period.",
+      "reactivateOk": "Subscription #{{id}} reactivated"
+    },
     "alerts": {
       "imbalanceTitle": "Cluster {{cluster}} persistent imbalance",
       "imbalanceStats": "mem stddev {{stddev}}% · {{ticks}} ticks",
@@ -675,7 +692,10 @@
       "7d": "7 days",
       "30d": "30 days",
       "90dMax": "90 days (max)"
-    }
+    },
+    "cloudGatewayTitle": "AI gateway (cloud-gateway)",
+    "cloudGatewayDescription": "Use API tokens to call /v1/* against incus-admin. Per-period billing with elastic suspension. TTL ≥ 7 days recommended for long-running tasks.",
+    "cloudGatewayDocsLink": "Read cloud-gateway docs →"
   },
   "batchToolbar": {
     "clear": "Clear selection",
@@ -708,6 +728,7 @@
     "saveCredentialsHint": "Save the credentials below — password is shown once and cannot be retrieved later.",
     "status": "Status",
     "title": "Billing",
+    "runwayHint": "At current burn rate this lasts ~{{n}} days",
     "topupHint": "Self-serve top-up is not available yet. Submit a ticket to request a top-up.",
     "topupViaTicket": "Top up via ticket",
     "vmCreatedTitle": "VM created",
@@ -755,6 +776,7 @@
   },
   "common": {
     "actions": "Actions",
+    "all": "All",
     "back": "Back",
     "balance": "Balance",
     "cancel": "Cancel",
@@ -1023,6 +1045,7 @@
     "orders": "Orders",
     "osTemplates": "OS Images",
     "products": "Products",
+    "subscriptions": "Subscriptions",
     "settings": "Settings",
     "sshKeys": "SSH Keys",
     "storage": "Storage",
@@ -1184,6 +1207,37 @@
     "weight": "Weight",
     "writeIops": "Write IOPS",
     "writeThroughput": "Write Throughput"
+  },
+  "subscription": {
+    "tabTitle": "Subscriptions",
+    "emptyTitle": "No subscriptions yet",
+    "emptyDescription": "Newly created VMs will appear here automatically.",
+    "colVm": "VM",
+    "colPeriod": "Period",
+    "colRate": "Rate",
+    "colStatus": "Status",
+    "colPaidUntil": "Paid until",
+    "colRunway": "Days left",
+    "daysValue": "{{n}} d",
+    "perDay": "/ day",
+    "perMonth": "/ mo",
+    "periodDaily": "Daily",
+    "periodMonthly": "Monthly",
+    "statusActive": "Active",
+    "statusSuspended": "Suspended",
+    "statusCancelled": "Cancelled",
+    "suspendedTooltip": "Suspended due to low balance — please top up.",
+    "suspendedTooltipWithGrace": "Suspended due to low balance — grace until {{time}}"
+  },
+  "period": {
+    "title": "Billing period",
+    "hint": "Monthly: 30-day prepay, no refund on stop. Daily: charged at UTC 00:00 each day.",
+    "monthlyLabel": "Monthly",
+    "dailyLabel": "Daily",
+    "monthlyHint": "Pre-pay 30 days; stopping does not refund.",
+    "dailyHint": "Charged 1 day at UTC 00:00; suspended on insufficient balance.",
+    "perDay": "/ day",
+    "unsupportedTooltip": "This plan does not support the selected billing period."
   },
   "ticket": {
     "alreadyClosed": "This ticket is closed and cannot accept replies.",

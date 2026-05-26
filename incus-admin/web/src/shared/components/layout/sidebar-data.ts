@@ -69,6 +69,7 @@ export const adminSidebar: NavGroup[] = [
       { key: "nav.products", to: "/admin/products", icon: "Package" },
       { key: "nav.osTemplates", to: "/admin/os-templates", icon: "Disc3" },
       { key: "nav.orders", to: "/admin/orders", icon: "ShoppingCart" },
+      { key: "nav.subscriptions", to: "/admin/subscriptions", icon: "CreditCard" },
       { key: "nav.invoices", to: "/admin/invoices", icon: "FileText" },
     ],
   },

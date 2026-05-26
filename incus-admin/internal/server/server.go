@@ -73,6 +73,11 @@ type Handlers struct {
 		AdminRouteRegistrar
 		PortalRouteRegistrar
 	}
+	// Subscriptions PLAN-054 L3-I：vm_subscriptions 列表 + admin 手动恢复。
+	Subscriptions interface {
+		AdminRouteRegistrar
+		PortalRouteRegistrar
+	}
 	Audit      AdminRouteRegistrar
 	APITokens  RouteRegistrar
 	ClusterMgmt AdminRouteRegistrar
@@ -299,6 +304,9 @@ func New(cfg *config.Config, userLookup func(ctx context.Context, email string) 
 			if h.Orders != nil {
 				h.Orders.PortalRoutes(r)
 			}
+			if h.Subscriptions != nil {
+				h.Subscriptions.PortalRoutes(r)
+			}
 			if h.Snaps != nil {
 				h.Snaps.PortalRoutes(r)
 			}
@@ -377,6 +385,9 @@ func New(cfg *config.Config, userLookup func(ctx context.Context, email string) 
 			}
 			if h.Orders != nil {
 				h.Orders.AdminRoutes(r)
+			}
+			if h.Subscriptions != nil {
+				h.Subscriptions.AdminRoutes(r)
 			}
 			if h.Audit != nil {
 				h.Audit.AdminRoutes(r)

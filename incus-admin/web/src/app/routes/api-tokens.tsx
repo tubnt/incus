@@ -1,6 +1,6 @@
 import type {APIToken} from "@/features/api-tokens/api";
 import { createFileRoute } from "@tanstack/react-router";
-import { KeyRound, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { Cloud, KeyRound, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
@@ -96,6 +96,8 @@ function APITokensPage() {
         }
       />
       <PageContent>
+        <CloudGatewayBanner />
+
         {revealedToken ? (
           <Card className="border-status-success/30 bg-status-success/8">
             <CardContent className="p-4 space-y-3">
@@ -330,6 +332,46 @@ function TokenCard({
             <Trash2 size={12} aria-hidden="true" />
             {t("common.delete")}
           </Button>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+// CloudGatewayBanner —— PLAN-053 / INFRA-012 提示用户 API token 可直接接 cloud-gateway。
+// 不动现有 CRUD，纯增量；建议 TTL ≥ 7 天，与 cloud-gateway 长跑场景对齐。
+function CloudGatewayBanner() {
+  const { t } = useTranslation();
+  return (
+    <Card className="border-accent/30 bg-accent/8">
+      <CardContent className="p-4 flex items-start gap-3">
+        <Cloud
+          size={18}
+          aria-hidden="true"
+          className="text-accent shrink-0 mt-0.5"
+        />
+        <div className="flex-1 space-y-1">
+          <div className="font-emphasis text-sm">
+            {t("apiToken.cloudGatewayTitle", {
+              defaultValue: "AI 网关（cloud-gateway）",
+            })}
+          </div>
+          <div className="text-caption text-text-secondary">
+            {t("apiToken.cloudGatewayDescription", {
+              defaultValue:
+                "用 API token 调 /v1/* 接 incus-admin，按周期付费、可弹性挂起。建议 TTL ≥ 7 天，避免长跑任务断连。",
+            })}
+          </div>
+          <a
+            href="#"
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center gap-1 text-caption font-emphasis text-accent hover:text-accent-hover"
+          >
+            {t("apiToken.cloudGatewayDocsLink", {
+              defaultValue: "查看 cloud-gateway 文档 →",
+            })}
+          </a>
         </div>
       </CardContent>
     </Card>

@@ -13,6 +13,11 @@ export interface Product {
   disk_gb: number;
   bandwidth_tb: number;
   price_monthly: number;
+  // PLAN-054 / INFRA-013：daily 单价 + 周期白名单。
+  // price_daily=null 表示不支持 daily 周期；period_supported 至少含一项
+  // （DB 层 DEFAULT ['monthly']），可为 ['monthly'] / ['daily'] / 两者。
+  price_daily?: number | null;
+  period_supported?: string[];
   currency?: string;
   access: string;
   active: boolean;

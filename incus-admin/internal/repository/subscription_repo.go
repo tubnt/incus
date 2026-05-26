@@ -217,3 +217,64 @@ func (r *SubscriptionRepo) ReactivateByVM(ctx context.Context, vmID int64, paidU
 	}
 	return res.RowsAffected()
 }
+
+// GetByID 按主键取一行；不存在返 (nil, nil)。admin reactivate / 单条详情用。
+func (r *SubscriptionRepo) GetByID(ctx context.Context, id int64) (*model.VMSubscription, error) {
+	var s model.VMSubscription
+	row := r.db.QueryRowContext(ctx,
+		`SELECT `+subSelectCols+` FROM vm_subscriptions WHERE id = $1`, id)
+	err := scanSubscription(row, &s)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &s, nil
+}
+
+// ListAll admin 视角列全部订阅，按 id DESC（最新优先）。
+// status="" 表示不过滤；否则按指定状态过滤。
+// 早期数量级与 VM 一致，不分页；数据涨上去再加 ListAllPaged。
+func (r *SubscriptionRepo) ListAll(ctx context.Context, status string) ([]model.VMSubscription, error) {
+	query := `SELECT ` + subSelectCols + ` FROM vm_subscriptions`
+	args := []any{}
+	if status != "" {
+		query += ` WHERE status = $1`
+		args = append(args, status)
+	}
+	query += ` ORDER BY id DESC`
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list all subscriptions: %w", err)
+	}
+	defer rows.Close()
+	out := make([]model.VMSubscription, 0)
+	for rows.Next() {
+		var s model.VMSubscription
+		if err := scanSubscription(rows, &s); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+// AdminReactivate 是管理员手动恢复入口：无论 suspended / cancelled 一律切回
+// active，paid_until 重置为传入值，并清空 suspended_at / grace_until。
+// 与 ReactivateByVM（VM restore 触发，只动 cancelled）正交，本路径走 sub_id
+// 直接定位行，不限制原状态（已 active 走 handler 层幂等短路）。
+func (r *SubscriptionRepo) AdminReactivate(ctx context.Context, id int64, paidUntil time.Time) error {
+	_, err := r.db.ExecContext(ctx,
+		`UPDATE vm_subscriptions
+		 SET status = 'active',
+		     paid_until = $1,
+		     suspended_at = NULL,
+		     grace_until = NULL,
+		     updated_at = NOW()
+		 WHERE id = $2`, paidUntil, id)
+	if err != nil {
+		return fmt.Errorf("admin reactivate subscription: %w", err)
+	}
+	return nil
+}

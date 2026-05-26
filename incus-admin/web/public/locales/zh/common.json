@@ -623,6 +623,23 @@
       "expireTitle": "作废订单",
       "expireMessage": "确认将订单 #{{orderId}} 标为已过期？"
     },
+    "subscriptions": {
+      "title": "订阅管理",
+      "description": "所有用户的计费订阅。suspended 行可手动恢复（paid_until 重置）。",
+      "empty": "暂无订阅记录",
+      "filterStatus": "状态",
+      "filterUser": "用户",
+      "colUser": "用户",
+      "colProduct": "套餐",
+      "colPeriod": "周期",
+      "colRate": "单价",
+      "colStatus": "状态",
+      "colPaidUntil": "已付至",
+      "reactivate": "恢复",
+      "reactivateTitle": "恢复订阅",
+      "reactivateMessage": "确认手动恢复订阅 #{{id}}？paid_until 将重置为 NOW + 周期。",
+      "reactivateOk": "订阅 #{{id}} 已恢复"
+    },
     "alerts": {
       "imbalanceTitle": "集群 {{cluster}} 持续不均衡",
       "imbalanceStats": "mem stddev {{stddev}}% · 持续 {{ticks}} 次",
@@ -677,7 +694,10 @@
       "7d": "7 天",
       "30d": "30 天",
       "90dMax": "90 天（最长）"
-    }
+    },
+    "cloudGatewayTitle": "AI 网关（cloud-gateway）",
+    "cloudGatewayDescription": "用 API token 调 /v1/* 接 incus-admin，按周期付费、可弹性挂起。建议 TTL ≥ 7 天，避免长跑任务断连。",
+    "cloudGatewayDocsLink": "查看 cloud-gateway 文档 →"
   },
   "batchToolbar": {
     "clear": "取消选择",
@@ -710,6 +730,7 @@
     "saveCredentialsHint": "请保存以下凭据 —— 密码仅显示一次，关闭后无法再次查看。",
     "status": "状态",
     "title": "账单中心",
+    "runwayHint": "按当前消费速率可跑 ~{{n}} 天",
     "topupHint": "当前尚未开放自助充值。如需充值请提交工单联系管理员。",
     "topupViaTicket": "提工单充值",
     "vmCreatedTitle": "VM 创建成功",
@@ -757,6 +778,7 @@
   },
   "common": {
     "actions": "操作",
+    "all": "全部",
     "back": "返回",
     "balance": "余额",
     "cancel": "取消",
@@ -1007,6 +1029,7 @@
     "auditLogs": "审计",
     "billing": "账单",
     "clusters": "集群",
+    "subscriptions": "订阅",
     "createVm": "云主机",
     "dashboard": "仪表盘",
     "firewall": "防火墙",
@@ -1186,6 +1209,37 @@
     "weight": "权重",
     "writeIops": "写 IOPS",
     "writeThroughput": "写吞吐"
+  },
+  "subscription": {
+    "tabTitle": "订阅",
+    "emptyTitle": "暂无订阅",
+    "emptyDescription": "新创建的云主机会自动出现在这里。",
+    "colVm": "VM",
+    "colPeriod": "周期",
+    "colRate": "单价",
+    "colStatus": "状态",
+    "colPaidUntil": "已付至",
+    "colRunway": "剩余天数",
+    "daysValue": "{{n}} 天",
+    "perDay": "/ 天",
+    "perMonth": "/ 月",
+    "periodDaily": "按日",
+    "periodMonthly": "按月",
+    "statusActive": "活跃",
+    "statusSuspended": "已挂起",
+    "statusCancelled": "已取消",
+    "suspendedTooltip": "余额不足已挂起，请尽快充值",
+    "suspendedTooltipWithGrace": "余额不足已挂起，宽限至 {{time}}"
+  },
+  "period": {
+    "title": "计费周期",
+    "hint": "按月：一次扣 30 天，停机不退；按日：每天 UTC 00:00 扣 1 天。",
+    "monthlyLabel": "按月",
+    "dailyLabel": "按日",
+    "monthlyHint": "一次扣 30 天费用，期间随时停机不退。",
+    "dailyHint": "每天 UTC 00:00 自动扣 1 天，余额不足挂起。",
+    "perDay": "/ 天",
+    "unsupportedTooltip": "当前套餐不支持该计费周期。"
   },
   "ticket": {
     "alreadyClosed": "工单已关闭,无法继续回复",

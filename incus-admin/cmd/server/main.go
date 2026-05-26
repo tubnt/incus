@@ -502,6 +502,7 @@ func runServer() {
 		Tickets:   portal.NewTicketHandler(ticketRepo),
 		Products:  portal.NewProductHandler(productRepo),
 		Orders:    orderHandler,
+		Subscriptions: portal.NewSubscriptionHandler(subRepo),
 		Audit:     portal.NewAuditHandler(auditRepo),
 		APITokens: portal.NewAPITokenHandler(apiTokenRepo),
 		Invoices:    portal.NewInvoiceHandler(invoiceRepo),
