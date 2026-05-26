@@ -32,14 +32,14 @@ func (h *Handler) Routes(r chi.Router) {
 	r.NotFound(h.notFound)
 	r.MethodNotAllowed(h.methodNotAllowed)
 
-	// Phase B：read-only
-	r.Get("/account", h.notImplemented)
-	r.Get("/instances", h.notImplemented)
-	r.Get("/instances/{id}", h.notImplemented)
-	r.Get("/types", h.notImplemented)
-	r.Get("/regions", h.notImplemented)
-	r.Get("/images", h.notImplemented)
-	r.Get("/ssh-keys", h.notImplemented)
+	// Phase B：read-only（已接真实业务，见 readonly.go）
+	r.Get("/account", h.Account)
+	r.Get("/instances", h.Instances)
+	r.Get("/instances/{id}", h.InstanceByID)
+	r.Get("/types", h.Types)
+	r.Get("/regions", h.Regions)
+	r.Get("/images", h.Images)
+	r.Get("/ssh-keys", h.SSHKeys)
 
 	// Phase D/E：write
 	r.Post("/instances", h.notImplemented)

@@ -87,7 +87,7 @@ func TestWriteErrs_EmptyFallsBackToUnknown(t *testing.T) {
 }
 
 func TestNotImplemented_Placeholder(t *testing.T) {
-	h := New()
+	h := New(Deps{})
 	req := httptest.NewRequest(http.MethodGet, "/v1/account", nil)
 	rr := httptest.NewRecorder()
 	h.notImplemented(rr, req)
