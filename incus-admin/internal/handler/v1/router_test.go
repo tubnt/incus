@@ -9,34 +9,26 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
-// TestRoutes_AllReturn501：把 11 个端点全部挂载，逐个验证返 501 + StructuredError，
-// 模拟启动后 curl /v1/account 的验收路径（与 server.go 实际挂载一致）。
-func TestRoutes_AllReturn501(t *testing.T) {
+// TestRoutes_WriteEndpointsStill501：Phase B 只接 read-only；POST/DELETE/actions
+// 5 个端点继续返 501 + reason=not_implemented，等 Phase D/E 替换。
+func TestRoutes_WriteEndpointsStill501(t *testing.T) {
 	r := chi.NewRouter()
-	r.Route("/v1", New().Routes)
+	r.Route("/v1", New(Deps{}).Routes)
 
 	cases := []struct {
 		method string
 		path   string
 	}{
-		// read-only
-		{http.MethodGet, "/v1/account"},
-		{http.MethodGet, "/v1/instances"},
-		{http.MethodGet, "/v1/instances/vm-aabb"},
-		{http.MethodGet, "/v1/types"},
-		{http.MethodGet, "/v1/regions"},
-		{http.MethodGet, "/v1/images"},
-		{http.MethodGet, "/v1/ssh-keys"},
-		// write
 		{http.MethodPost, "/v1/instances"},
-		{http.MethodDelete, "/v1/instances/vm-aabb"},
-		{http.MethodPost, "/v1/instances/vm-aabb/reboot"},
-		{http.MethodPost, "/v1/instances/vm-aabb/shutdown"},
-		{http.MethodPost, "/v1/instances/vm-aabb/boot"},
+		{http.MethodDelete, "/v1/instances/123"},
+		{http.MethodPost, "/v1/instances/123/reboot"},
+		{http.MethodPost, "/v1/instances/123/shutdown"},
+		{http.MethodPost, "/v1/instances/123/boot"},
 	}
 
-	if got := len(cases); got != EndpointCount {
-		t.Fatalf("test cases = %d, EndpointCount = %d (sync table)", got, EndpointCount)
+	// Phase A 7 read-only + Phase B 5 write = EndpointCount
+	if got := len(cases) + 7; got != EndpointCount {
+		t.Fatalf("test cases + read-only = %d, EndpointCount = %d (sync table)", got, EndpointCount)
 	}
 
 	for _, c := range cases {
@@ -70,7 +62,7 @@ func TestRoutes_AllReturn501(t *testing.T) {
 // 必须返 404 + StructuredError。
 func TestRoutes_UnknownPathStructuredError(t *testing.T) {
 	r := chi.NewRouter()
-	r.Route("/v1", New().Routes)
+	r.Route("/v1", New(Deps{}).Routes)
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/does-not-exist", nil)
 	rr := httptest.NewRecorder()
@@ -96,7 +88,7 @@ func TestRoutes_UnknownPathStructuredError(t *testing.T) {
 // TestRoutes_MethodNotAllowed：已知路径用错方法 → 405 + StructuredError。
 func TestRoutes_MethodNotAllowed(t *testing.T) {
 	r := chi.NewRouter()
-	r.Route("/v1", New().Routes)
+	r.Route("/v1", New(Deps{}).Routes)
 
 	// /v1/account 只有 GET；POST 应该 405
 	req := httptest.NewRequest(http.MethodPost, "/v1/account", nil)

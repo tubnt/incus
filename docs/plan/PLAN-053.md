@@ -143,7 +143,7 @@ scope 是 **二选一**（见 INFRA-012 task），等用户拍板。
 | Phase | 状态 | 落地点 |
 | ----- | --- | ------ |
 | A 骨架 | ✅ 完成（L3-A 2hvsynkt） | `internal/handler/v1/` 12 占位端点 + StructuredError + 分页 helper + 双桶限流 + RequireBearer + 22 单测 |
-| B read-only | ⏳ 待 L3-D | /v1/account /v1/instances /v1/types /v1/regions /v1/images /v1/ssh-keys |
+| B read-only | ✅ 完成（L3-D 06w1ajv9） | 7 endpoint 接真实 repo + DTO mapper + 19 单测；新增 VMRepo.ListByUserPaged / SSHKeyRepo.ListByUserPaged |
 | C cluster region migration | ✅ 完成（L3-B q21mhhyk） | `db/migrations/027_cluster_region_metadata.sql` + model.Cluster Country/City/RegionStatus/Capabilities + cluster_repo 4 SELECT 路径回填 |
 | D POST /v1/instances | ⏳ 待 L3-G | 复用 OrderService + Idempotency-Key 接入 |
 | E DELETE + Idempotency schema | ✅ schema 完成（L3-C 640vr0dt） | `db/migrations/029_idempotency_keys.sql` + `model.IdempotencyKey` + `repository.IdempotencyRepo` skeleton（middleware 留给 L3-H） |
@@ -212,6 +212,55 @@ scope 是 **二选一**（见 INFRA-012 task），等用户拍板。
 - admin UI 编辑 country/city/region_status（后续单独 task）
 - pre-existing：cluster_repo 对 display_name 不做 COALESCE（schema 允许 NULL）；
   非本 phase 引入，建议后续单 issue 处理
+
+### Phase B read-only endpoints（2026-05-26 完成 · L3-D 06w1ajv9）
+
+- ✅ `internal/handler/v1/handler.go` 重写 `Handler` + `Deps`：注入
+  Users / VMs / Products / Clusters / OSTemplates / SSHKeys / Orders 7 个
+  read-only repo 接口；任一缺失时该端点显式 500 + `slog.Error`，避免
+  nil-deref panic（test 用 sqlmock 不必关心，直接传 `Deps{}` 也能跑）
+- ✅ `internal/handler/v1/dto.go`：6 个 DTO（Account / Instance / Type /
+  Region / Image / SSHKey）+ `toXxxDTO` mapper；Type 拆出 `PricesDTO`
+  方便 INFRA-013 daily 价补字段；Image 用 `parseSourceOSVersion` 把
+  `ubuntu/24.04/cloud` 拆成 `os=ubuntu, version=24.04`；ip6 / tags 预留空
+  以兼容 cloud-gateway schema
+- ✅ `internal/handler/v1/readonly.go` 实装 7 个端点：
+  - `GET /v1/account` → `UserRepo.GetByID(ctx.UserID)` + 余额 + USD
+  - `GET /v1/instances` → `VMRepo.ListByUserPaged` + 一次 `ClusterRepo.List`
+    建 `cluster_id→name` 反查表 + 每行 `OrderRepo.GetByID` 解析 product_id；
+    支持 `?page=&page_size=`；过滤 deleted/gone/trashed 与 portal 口径一致
+  - `GET /v1/instances/{id}` → `VMRepo.GetByID` + ownership 校验：非本人 /
+    trashed / deleted / gone 一律 404（不区分 403 / 404，防资源存在性泄露）
+  - `GET /v1/types` → `ProductRepo.ListActive` + 内存分页（products N<50）
+  - `GET /v1/regions` → `ClusterRepo.List` + 内存分页；capabilities nil → 兜底 ["instances"]
+  - `GET /v1/images` → `OSTemplateRepo.ListEnabled` + source 拆 os/version
+  - `GET /v1/ssh-keys` → `SSHKeyRepo.ListByUserPaged`，限当前 user
+- ✅ `internal/repository/vm.go` +`ListByUserPaged(userID, limit, offset)`：
+  过滤逻辑与 ListByUser 对齐（deleted/gone/trashed 全排），limit<=0 不分页；
+  返回前确保 slice 非 nil（JSON 输出 `[]` 不是 `null`）
+- ✅ `internal/repository/sshkey.go` +`ListByUserPaged(userID, limit, offset)`：
+  同上语义，slice 初始即 `make(..., 0)` 避免 nil
+- ✅ `internal/handler/v1/router.go`：7 个 read-only 路由从 `notImplemented`
+  切到真实 handler；POST/DELETE/actions 5 个 write 端点保留 501 占位
+- ✅ `cmd/server/main.go`：`v1handler.New(Deps{...})` 传齐 7 个 repo
+- ✅ 单测（`readonly_test.go` 19 个）：
+  - 各端点 happy path + 错误 path（用户不存在 404 / repo 错 500 /
+    分页越界空 / 非法 page_size 422）
+  - InstanceByID owner 校验 3 路径（本人 / 非本人 / trashed）+ 非整数 id → 404
+  - Instances cluster name 反查 + product_id 反查 + IP4 / Tags 字段映射
+  - 通用 unauthorized（缺 CtxUserID → 401）+ MissingDeps（空 Deps → 7 端点全 500）
+- ✅ `go build ./...` + `go test ./...` 全绿；
+  `golangci-lint run ./internal/handler/v1/...` 0 issues
+- ✅ `router_test.go` 拆出 `TestRoutes_WriteEndpointsStill501`：read-only 7 +
+  write 5 = EndpointCount=12 同步校验
+
+#### Phase B 范围内**未做**（按设计）
+
+- POST /v1/instances 创建（Phase D / L3-G 负责，复用 OrderService + Idempotency）
+- DELETE / reboot / shutdown / boot 写操作（Phase E / L3-H 负责）
+- OpenAPI yaml 增 `/v1/*` 段（Phase F / L3-J 负责）
+- pre-existing：repo 层 IP 字段单列 `ip`（VM 没有 ip6 列），DTO 暂 `ip6=""`；
+  独立 ipv6 列若要做需新 migration，非本 Phase 范围
 
 ### Phase E schema —— Idempotency-Key + billing （2026-05-26 完成 · L3-C 640vr0dt 与 PLAN-054 Phase F 同批落地）
 

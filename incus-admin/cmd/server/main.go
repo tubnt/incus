@@ -514,7 +514,15 @@ func runServer() {
 		// PLAN-042 / INFRA-010 OpenAPI spec + Swagger UI
 		OpenAPI: openapi.NewHandler(),
 		// PLAN-053 / INFRA-012 cloud-gateway /v1 适配层
-		V1: v1handler.New(),
+		V1: v1handler.New(v1handler.Deps{
+			Users:       userRepo,
+			VMs:         vmRepo,
+			Products:    productRepo,
+			Clusters:    clusterRepo,
+			OSTemplates: osTemplateRepo,
+			SSHKeys:     sshKeyRepo,
+			Orders:      orderRepo,
+		}),
 	})
 
 	runErr := srv.Run()

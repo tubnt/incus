@@ -123,6 +123,41 @@ func (r *VMRepo) ListByUser(ctx context.Context, userID int64) ([]model.VM, erro
 	return scanVMs(rows)
 }
 
+// ListByUserPaged 返回某用户的可见 VM 分页结果与过滤后总数（PLAN-053 Phase B /v1/instances 用）。
+// 过滤逻辑与 ListByUser 对齐：排除 deleted/gone + trashed，避免用户在 cloud-gateway
+// /v1/instances 里看到回收站 / 已删 VM。limit<=0 表示不限制。
+func (r *VMRepo) ListByUserPaged(ctx context.Context, userID int64, limit, offset int) ([]model.VM, int64, error) {
+	var total int64
+	if err := r.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM vms
+		 WHERE user_id = $1 AND status NOT IN ('deleted','gone') AND trashed_at IS NULL`,
+		userID,
+	).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count vms by user: %w", err)
+	}
+
+	query := `SELECT id, name, cluster_id, user_id, order_id, host(ip)::text, status, cpu, memory_mb, disk_gb, os_image, node, password, rescue_state, rescue_started_at, rescue_snapshot_name, trashed_at, trashed_prev_status, created_at, updated_at
+		 FROM vms WHERE user_id = $1 AND status NOT IN ('deleted','gone') AND trashed_at IS NULL ORDER BY id DESC`
+	args := []any{userID}
+	if limit > 0 {
+		query += ` LIMIT $2 OFFSET $3`
+		args = append(args, limit, offset)
+	}
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	vms, err := scanVMs(rows)
+	if err != nil {
+		return nil, 0, err
+	}
+	if vms == nil {
+		vms = []model.VM{}
+	}
+	return vms, total, nil
+}
+
 func (r *VMRepo) ListAll(ctx context.Context) ([]model.VM, error) {
 	vms, _, err := r.ListPaged(ctx, 0, 0)
 	return vms, err
