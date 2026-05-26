@@ -234,6 +234,104 @@ func TestProductRepo_NewColumnsScan(t *testing.T) {
 	}
 }
 
+// TestSubscriptionRepo_ListSuspendedExpired_ListSuspendedByUser 验证 PLAN-054
+// Phase H worker 用的两个新查询：
+//   - ListSuspendedExpired 只返 status='suspended' AND grace_until<asOf
+//   - ListSuspendedByUser 只返该用户的 suspended 行，按 grace_until ASC NULLS LAST
+func TestSubscriptionRepo_ListSuspendedExpired_ListSuspendedByUser(t *testing.T) {
+	db := testhelper.NewTestDB(t, "")
+	repo := repository.NewSubscriptionRepo(db)
+	userID, productID, _, _ := seedSubFixtures(t, db)
+
+	// 多造几条 VM + sub，覆盖三个分支
+	mkVM := func(name string) int64 {
+		var id int64
+		if err := db.QueryRow(`INSERT INTO vms (name, cluster_id, user_id, status, cpu, memory_mb, disk_gb, os_image, node)
+			VALUES ($1, 1, $2, 'running', 1, 1024, 10, 'noop', 'noop') RETURNING id`, name, userID).Scan(&id); err != nil {
+			t.Fatalf("seed vm %s: %v", name, err)
+		}
+		return id
+	}
+	vmA, vmB, vmC := mkVM("vm-a"), mkVM("vm-b"), mkVM("vm-c")
+
+	ctx := context.Background()
+	now := time.Now().UTC()
+	monthly := 10.0
+	subActive, _ := repo.Insert(ctx, &model.VMSubscription{VMID: vmA, ProductID: productID, UserID: userID,
+		Period: model.BillingPeriodMonthly, MonthlyRate: &monthly,
+		PaidUntil: now.Add(30 * 24 * time.Hour), Status: model.SubscriptionStatusActive})
+	subSuspendedExpired, _ := repo.Insert(ctx, &model.VMSubscription{VMID: vmB, ProductID: productID, UserID: userID,
+		Period: model.BillingPeriodMonthly, MonthlyRate: &monthly,
+		PaidUntil: now.Add(-72 * time.Hour), Status: model.SubscriptionStatusSuspended})
+	subSuspendedLive, _ := repo.Insert(ctx, &model.VMSubscription{VMID: vmC, ProductID: productID, UserID: userID,
+		Period: model.BillingPeriodMonthly, MonthlyRate: &monthly,
+		PaidUntil: now.Add(-1 * time.Hour), Status: model.SubscriptionStatusSuspended})
+	// 把 suspended 行的 grace_until 分别置为已过 / 未过
+	_ = repo.UpdateSuspension(ctx, subSuspendedExpired.ID, now.Add(-73*time.Hour), now.Add(-1*time.Hour))
+	_ = repo.UpdateSuspension(ctx, subSuspendedLive.ID, now.Add(-2*time.Hour), now.Add(70*time.Hour))
+
+	// ListSuspendedExpired 只挑 grace_until<now 的
+	expired, err := repo.ListSuspendedExpired(ctx, now, 0)
+	if err != nil {
+		t.Fatalf("ListSuspendedExpired: %v", err)
+	}
+	if len(expired) != 1 || expired[0].ID != subSuspendedExpired.ID {
+		t.Fatalf("expected only subSuspendedExpired, got %+v", expired)
+	}
+
+	// ListSuspendedByUser 返该用户全部 suspended（2 条）；active 不在其中
+	suspended, err := repo.ListSuspendedByUser(ctx, userID)
+	if err != nil {
+		t.Fatalf("ListSuspendedByUser: %v", err)
+	}
+	if len(suspended) != 2 {
+		t.Fatalf("expected 2 suspended for user, got %d", len(suspended))
+	}
+	// 顺序：grace_until ASC → expired 在前
+	if suspended[0].ID != subSuspendedExpired.ID || suspended[1].ID != subSuspendedLive.ID {
+		t.Fatalf("order wrong: %+v / %+v", suspended[0].ID, suspended[1].ID)
+	}
+	_ = subActive
+}
+
+// TestChargeRepo_UpdatePaid 验证翻 status + 写 transaction_id。
+func TestChargeRepo_UpdatePaid(t *testing.T) {
+	db := testhelper.NewTestDB(t, "")
+	subRepo := repository.NewSubscriptionRepo(db)
+	chargeRepo := repository.NewChargeRepo(db)
+	userID, productID, _, vmID := seedSubFixtures(t, db)
+
+	ctx := context.Background()
+	rate := 1.0
+	sub, _ := subRepo.Insert(ctx, &model.VMSubscription{
+		VMID: vmID, ProductID: productID, UserID: userID,
+		Period: model.BillingPeriodDaily, DailyRate: &rate,
+		PaidUntil: time.Now(), Status: model.SubscriptionStatusActive,
+	})
+	c, err := chargeRepo.Insert(ctx, &model.BillingCharge{
+		SubscriptionID: sub.ID, ChargeDate: time.Now().UTC().Truncate(24 * time.Hour),
+		Amount: 1.0, Status: model.BillingChargeInsufficient,
+	})
+	if err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	// 模拟 transactions 行（FK 兜底）
+	var txID int64
+	if err := db.QueryRow(`INSERT INTO transactions (user_id, amount, type, description)
+		VALUES ($1, $2, 'charge', 'test') RETURNING id`, userID, -1.0).Scan(&txID); err != nil {
+		t.Fatalf("insert tx: %v", err)
+	}
+
+	if err := chargeRepo.UpdatePaid(ctx, c.ID, txID); err != nil {
+		t.Fatalf("UpdatePaid: %v", err)
+	}
+	got, _ := chargeRepo.GetByDate(ctx, sub.ID, c.ChargeDate)
+	if got.Status != model.BillingChargePaid || got.TransactionID == nil || *got.TransactionID != txID {
+		t.Fatalf("UpdatePaid round-trip: %+v", got)
+	}
+}
+
 // TestSubscriptionRepo_CancelAndReactivateByVM 验证 PLAN-054 Phase G 的 trash/
 // restore 联动：CancelByVM 只动 active 行，且 ReactivateByVM 把最新 cancelled
 // 行拉回 active 并写新 paid_until。

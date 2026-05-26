@@ -140,7 +140,7 @@ PLAN-053 一期可在不依赖本 PLAN 的情况下上线（按 monthly 接 clou
 | ----- | --- | ------ |
 | F schema | ✅ 完成（L3-C 640vr0dt 2026-05-26） | `db/migrations/028_billing_subscriptions.sql` + products.price_daily/period_supported + orders.period + vm_subscriptions + billing_charges UNIQUE(sub,date) + 3 索引 + model 常量 + repo skeleton（subscription/charge/idempotency） |
 | G 订单流 hook | ✅ 完成（L3-E z071x2iz 2026-05-26） | `POST /portal/orders` 接 period + 校验 product.period_supported / rate 不为 null；pay 成功 + vm row 写入后 INSERT vm_subscriptions（sub 失败回滚整单）；VM trash → sub cancelled；VM restore → sub active + paid_until 重置 |
-| H worker | ⏳ 待 L3-F | `worker/billing_daily_charger.go` + `billing_grace_expire.go` |
+| H worker | ✅ 完成（L3-F q8xd9rpn 2026-05-26） | `service/billing/service.go`（ChargeDue/ExpireGrace/ReactivateOnTopUp）+ `worker/billing_daily_charger.go` + `worker/billing_grace_expire.go` + topup hook + BillingConfig + main.go 注入 |
 | I UI | ✅ 完成（L3-I snuahzue 2026-05-26） | portal `/billing` Tabs + subscription tab + runway 余额预估 + /launch 按月/按日切换 + admin `/admin/subscriptions` 手动恢复 + `/api-tokens` cloud-gateway banner |
 | J audit + cloud-gateway | ⏳ 待 L3-J | /v1/types prices.daily + /v1/account estimated_runway_days |
 
@@ -241,3 +241,58 @@ PLAN-053 一期可在不依赖本 PLAN 的情况下上线（按 monthly 接 clou
 - `/v1/account` 加 `estimated_runway_days` 字段（L3-J 后端补 + 前端读）
 - 审计页加 `subscription_*` 事件展示（cosmetic，下期）
 - Playwright E2E（L3-J 收尾时跑）
+
+### Phase H worker（2026-05-26 完成 · L3-F q8xd9rpn）
+
+- ✅ `internal/service/billing/service.go`：单一 `Service` 聚合三条工作流，
+  全部走单事务 + UNIQUE(sub,date) 防重扣
+  - `ChargeDue(ctx)`：扫 paid_until<=NOW 的 active 订阅，逐个原子扣费
+    （INSERT charge 占位 → SELECT balance FOR UPDATE → 够扣 → 扣 + 交易流水
+    + UpdatePaid + paid_until += period；不够 → 维持 insufficient + suspended +
+    grace_until=NOW+72h）。catchup safe（UNIQUE 让重跑变 skipped）。
+  - `ExpireGrace(ctx)`：扫 grace_until<NOW 的 suspended → VMRepo.MarkTrashed +
+    sub status=cancelled + audit（trash 失败仍 cancel 以避免无限重试）。
+  - `ReactivateOnTopUp(ctx, userID)`：列用户全部 suspended → 按 grace_until ASC
+    逐个尝试补扣 + ClearSuspension + paid_until=NOW+period；余额不够留 suspended。
+  - 可注入时钟 `WithClock` + 宽限期 `WithGraceDuration` + 批量上限 `WithListLimit`。
+- ✅ `internal/worker/billing_daily_charger.go`：启动 catchup + tick（默认 1h）
+- ✅ `internal/worker/billing_grace_expire.go`：firstDelay 15min 错开 charger，
+  避免同秒锁 users.balance；tick 默认 1h
+- ✅ `internal/handler/portal/user.go`：TopUpBalance 成功后异步触发 `ReactivateOnTopUp`
+  （独立 30s ctx，不阻塞响应；reactivator==nil 时跳过）
+- ✅ `internal/config/config.go`：`BillingConfig.Enabled / ChargerInterval /
+  GraceInterval / GraceDuration` + `parseBoolOr` helper；env 变量
+  `INCUS_ADMIN_BILLING_{ENABLED,CHARGER_INTERVAL,GRACE_INTERVAL,GRACE_DURATION}`
+- ✅ `cmd/server/main.go`：billingSvc 注入 + 两个 worker spawn + UserHandler
+  reactivator wire + 5 个 thin adapter（VMTrasher/AuditWriter/Charger/Gracer/
+  Reactivator）；Enabled=false 时全跳过
+- ✅ Repo 补：`SubscriptionRepo.ListSuspendedExpired/ListSuspendedByUser` +
+  `ChargeRepo.UpdatePaid`
+- ✅ 测试：worker 单测（启动 catchup / firstDelay / 错误不停 / nil-charger）
+  + service 集成测试 9 个（daily paid / monthly insufficient → suspended /
+  catchup-safe / 缺 rate / grace expire 三态 / reactivate 三态 / 30 天时间线）
+
+#### Phase H 时区与时钟
+
+- 全 UTC（service.clock() 默认 `time.Now().UTC()`）。charge_date 是 PG DATE，
+  worker 写入前 `Truncate(24h)` 落到当天 00:00。
+- 没引入 cron 库：tick 间隔由 catchup 兜底，与精确 cron `0 0 * * *` 行为等价。
+- worker 启动立即跑一次 catchup（错过整点 / 进程重启场景），后续按 tick。
+- charger 与 grace_expire 错开 15min 起跑，避免同时锁 users.balance。
+
+#### Phase H 自审 CR 关键修复
+
+- **P0**：charger 与 reactivate hook 并发可能在同一 (sub, today) 双扣 ——
+  两路均在事务开头 `SELECT vm_subscriptions FOR UPDATE` 串行；reactivate 找不
+  到 insufficient charge 时直接让位（不再 INSERT-ON-CONFLICT 覆写 charger 已
+  写的 paid 行）。回归测试 `TestService_ConcurrentChargeAndReactivateNoDoubleCharge`
+  连跑 8 轮校验「至多 1 笔 transactions 流水 + 1 笔 billing_charges 行」。
+- **P1**：多日 backlog 不再让 paid_until 永远卡过去 —— charge 后 `paid_until =
+  max(old + period, now + period)`。一次 catchup tick 把 paid_until 抬到当下
+  cadence；用户白得 N 天服务（业务取舍：catchup 不补扣老账，避免一次性大额
+  扣款抢用户余额）。
+- **P2**：grace expire 时 `MarkTrashed` 失败 → 不 cancel sub，下个 tick 重试；
+  否则 Incus 长时间不可用会导致 sub cancelled + VM 永久在跑无人付费。回归
+  测试模拟「先 trash 失败 → 修好 → 下个 tick 成功 cancel」。
+- **P3 / 工程**：`isUniqueViolation` 用标准 `strings.Contains`；`listLimit`
+  默认 1000，避免一次 ChargeDue 锁 users 全表。

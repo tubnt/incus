@@ -31,6 +31,7 @@ import (
 	"github.com/incuscloud/incus-admin/internal/server"
 	"github.com/incuscloud/incus-admin/internal/service"
 	"github.com/incuscloud/incus-admin/internal/service/aiassist"
+	"github.com/incuscloud/incus-admin/internal/service/billing"
 	"github.com/incuscloud/incus-admin/internal/service/jobs"
 	"github.com/incuscloud/incus-admin/internal/service/notify"
 	"github.com/incuscloud/incus-admin/internal/worker"
@@ -170,6 +171,8 @@ func runServer() {
 	orderRepo := repository.NewOrderRepo(db)
 	// PLAN-054 / INFRA-013：vm_subscriptions 记账。订单流写入 + VM trash/restore 联动。
 	subRepo := repository.NewSubscriptionRepo(db)
+	// PLAN-054 / INFRA-013 H：billing_charges 记账（charger worker + reactivate hook 共用）。
+	chargeRepo := repository.NewChargeRepo(db)
 	auditRepo := repository.NewAuditRepo(db)
 	apiTokenRepo := repository.NewAPITokenRepo(db)
 	nodeCredRepo := repository.NewNodeCredentialRepo(db)
@@ -424,6 +427,40 @@ func runServer() {
 		})
 	}
 
+	// PLAN-054 / INFRA-013 Phase H：billing 计费引擎 —— charger + grace_expire
+	// 两个 worker + topup reactivate hook 共用一个 service.Service。
+	// Enabled=false 时全跳过（charger 不 spawn，UserHandler 不注入 reactivator）。
+	var billingSvc *billing.Service
+	if cfg.Billing.Enabled {
+		billingSvc = billing.NewService(
+			db, subRepo, chargeRepo,
+			billingVMTrasher{repo: vmRepo},
+			billingAuditAdapter{repo: auditRepo},
+			billing.WithGraceDuration(cfg.Billing.GraceDuration),
+		)
+		// charger 从启动立即跑一次 catchup，之后每 ChargerInterval tick。
+		go worker.RunBillingDailyCharger(
+			workerCtx,
+			billingChargerAdapter{svc: billingSvc},
+			cfg.Billing.ChargerInterval,
+		)
+		// grace_expire 错开 15min 起跑（charger 已先扫一遍可能触发的 suspended），
+		// 之后每 GraceInterval tick。避免与 charger 在同一秒抢 users.balance 锁。
+		go worker.RunBillingGraceExpire(
+			workerCtx,
+			billingGracerAdapter{svc: billingSvc},
+			cfg.Billing.GraceInterval,
+			15*time.Minute,
+		)
+		slog.Info("billing engine enabled",
+			"charger_interval", cfg.Billing.ChargerInterval,
+			"grace_interval", cfg.Billing.GraceInterval,
+			"grace_duration", cfg.Billing.GraceDuration,
+		)
+	} else {
+		slog.Info("billing engine disabled (INCUS_ADMIN_BILLING_ENABLED=false)")
+	}
+
 	// PLAN-025 / INFRA-007 异步 provisioning runtime。clusterMgr 为 nil 时
 	// （DB-only 测试 / 配置缺失）跳过启动；handler 走兜底同步路径。
 	// jobRepo 已在上文提前创建（PLAN-041 evaluator 共用）。
@@ -493,7 +530,7 @@ func runServer() {
 	srv := server.New(cfg, userLookup, roleLookup, balanceLookup, stepUpLookup, auditWriter, server.Handlers{
 		Admin:     adminVMHandler,
 		Portal:    portalVMHandler,
-		Users:     portal.NewUserHandler(userRepo),
+		Users:     userHandlerWithBilling(portal.NewUserHandler(userRepo), billingSvc),
 		IPPools:   portal.NewIPPoolHandler(clusterMgr),
 		Console:   portal.NewConsoleHandler(clusterMgr, vmRepo),
 		Snaps:     portal.NewSnapshotHandler(clusterMgr, vmRepo),
@@ -1038,4 +1075,66 @@ func (a offlineNodeAdapter) ListOfflineNodes(_ context.Context) (map[string][]st
 		out[c.Name] = offline
 	}
 	return out, nil
+}
+
+// ============================================================================
+// PLAN-054 / INFRA-013 billing 适配器（main 端 thin shims）
+// ============================================================================
+
+// billingVMTrasher 让 billing.Service 不直接 import repository。MarkTrashed
+// 在 grace_expire 路径触发 —— 落 trashed_at / trashed_prev_status，由后续
+// VMTrashPurger 真正 hard-delete。
+type billingVMTrasher struct{ repo *repository.VMRepo }
+
+func (a billingVMTrasher) MarkTrashed(ctx context.Context, vmID int64) (bool, error) {
+	if a.repo == nil {
+		return false, nil
+	}
+	return a.repo.MarkTrashed(ctx, vmID)
+}
+
+// billingAuditAdapter 让 billing.Service 共用 AuditRepo.Log。与
+// auditAdapter (jobs) 同形态。
+type billingAuditAdapter struct{ repo *repository.AuditRepo }
+
+func (a billingAuditAdapter) Log(ctx context.Context, userID *int64, action, targetType string, targetID int64, details map[string]any, ip string) {
+	if a.repo == nil {
+		return
+	}
+	a.repo.Log(ctx, userID, action, targetType, targetID, details, ip)
+}
+
+// billingChargerAdapter 把 billing.Service.ChargeDue 转成 worker.BillingCharger。
+// 两边 stats 字段同形态，直接 struct conversion。
+type billingChargerAdapter struct{ svc *billing.Service }
+
+func (a billingChargerAdapter) ChargeDue(ctx context.Context) (worker.BillingChargeStats, error) {
+	s, err := a.svc.ChargeDue(ctx)
+	return worker.BillingChargeStats(s), err
+}
+
+// billingGracerAdapter 把 billing.Service.ExpireGrace 转成 worker.BillingGracer。
+type billingGracerAdapter struct{ svc *billing.Service }
+
+func (a billingGracerAdapter) ExpireGrace(ctx context.Context) (worker.BillingGraceStats, error) {
+	s, err := a.svc.ExpireGrace(ctx)
+	return worker.BillingGraceStats(s), err
+}
+
+// billingReactivatorAdapter 把 billing.Service.ReactivateOnTopUp 转成
+// portal.BillingReactivator（handler 只关心 err，不消费 stats）。
+type billingReactivatorAdapter struct{ svc *billing.Service }
+
+func (a billingReactivatorAdapter) ReactivateOnTopUp(ctx context.Context, userID int64) error {
+	_, err := a.svc.ReactivateOnTopUp(ctx, userID)
+	return err
+}
+
+// userHandlerWithBilling 在 billing 未启用时直接返回原 handler，避免给 nil
+// adapter 让 handler 误以为已注入。
+func userHandlerWithBilling(h *portal.UserHandler, svc *billing.Service) *portal.UserHandler {
+	if svc == nil {
+		return h
+	}
+	return h.WithBillingReactivator(billingReactivatorAdapter{svc: svc})
 }

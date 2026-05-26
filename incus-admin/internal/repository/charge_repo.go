@@ -83,6 +83,17 @@ func (r *ChargeRepo) ListBySubscription(ctx context.Context, subID int64, limit 
 	return out, rows.Err()
 }
 
+// UpdatePaid 把一条已存在的 charge 行翻成 paid + 关联 transactions.id。worker
+// 走"先 INSERT (status=insufficient) → 试扣 → 成功后 UpdatePaid"路径，让
+// UNIQUE(sub, date) 在事务最早阶段就守住重扣。失败时调用方应 rollback 事务，
+// 整条 charge 行随之回滚（不会留下 (sub, date) 占位）。
+func (r *ChargeRepo) UpdatePaid(ctx context.Context, id int64, txID int64) error {
+	_, err := r.db.ExecContext(ctx,
+		`UPDATE billing_charges SET status = $1, transaction_id = $2 WHERE id = $3`,
+		model.BillingChargePaid, txID, id)
+	return err
+}
+
 // GetByDate 查 (sub_id, date) 是否已有记账。worker 在 INSERT 前可选地用它做
 // 预探测，但 INSERT 的 UNIQUE 冲突已是兜底，本方法主要给 admin 排错。
 func (r *ChargeRepo) GetByDate(ctx context.Context, subID int64, date time.Time) (*model.BillingCharge, error) {

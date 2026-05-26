@@ -157,6 +157,58 @@ func (r *SubscriptionRepo) UpdateStatus(ctx context.Context, id int64, status st
 	return err
 }
 
+// ListSuspendedExpired worker 用：grace_expire 扫所有 status='suspended' 且
+// grace_until < asOf 的订阅。limit<=0 不限制。order by grace_until ASC 让最早
+// 过期的先处理。
+func (r *SubscriptionRepo) ListSuspendedExpired(ctx context.Context, asOf time.Time, limit int) ([]model.VMSubscription, error) {
+	query := `SELECT ` + subSelectCols + `
+		FROM vm_subscriptions
+		WHERE status = 'suspended' AND grace_until IS NOT NULL AND grace_until < $1
+		ORDER BY grace_until ASC`
+	args := []any{asOf}
+	if limit > 0 {
+		query += ` LIMIT $2`
+		args = append(args, limit)
+	}
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list suspended expired: %w", err)
+	}
+	defer rows.Close()
+	out := make([]model.VMSubscription, 0)
+	for rows.Next() {
+		var s model.VMSubscription
+		if err := scanSubscription(rows, &s); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+// ListSuspendedByUser 列某用户所有 suspended 订阅。topup hook 用：余额回升后
+// 尝试逐个补扣 + 解挂。顺序按 grace_until ASC（最快要 trash 的先恢复）。
+func (r *SubscriptionRepo) ListSuspendedByUser(ctx context.Context, userID int64) ([]model.VMSubscription, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT `+subSelectCols+`
+		 FROM vm_subscriptions
+		 WHERE user_id = $1 AND status = 'suspended'
+		 ORDER BY grace_until ASC NULLS LAST, id ASC`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("list suspended by user: %w", err)
+	}
+	defer rows.Close()
+	out := make([]model.VMSubscription, 0)
+	for rows.Next() {
+		var s model.VMSubscription
+		if err := scanSubscription(rows, &s); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
 // UpdatePaidUntil 扣费成功后推进 paid_until；worker 内部使用。
 func (r *SubscriptionRepo) UpdatePaidUntil(ctx context.Context, id int64, paidUntil time.Time) error {
 	_, err := r.db.ExecContext(ctx,

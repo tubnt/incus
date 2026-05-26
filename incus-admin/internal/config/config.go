@@ -143,6 +143,18 @@ type IPPoolConfig struct {
 type BillingConfig struct {
 	StripeKey string `json:"stripe_key"`
 	Currency  string `json:"currency"`
+	// PLAN-054 / INFRA-013 计费引擎 toggle + 周期参数。
+	// Enabled=false 时启动跳过 charger / grace_expire worker（topup hook 也跳）。
+	// 默认 true：生产 + 测试都开。
+	Enabled bool `json:"enabled"`
+	// ChargerInterval 计费 worker 扫描周期。原始设计是 cron 0 0 * * *（每日
+	// 00:00 UTC）；catchup-safe 让我们退化为 hourly tick。默认 1h。
+	ChargerInterval time.Duration `json:"charger_interval"`
+	// GraceInterval suspended grace 过期 trash 周期。默认 1h，比 charger 错开
+	// 15min 跑避免同时锁 users.balance。
+	GraceInterval time.Duration `json:"grace_interval"`
+	// GraceDuration 余额不足 → suspended 后多久 trash。PLAN-054 §2 默认 72h。
+	GraceDuration time.Duration `json:"grace_duration"`
 }
 
 type MonitorConfig struct {
@@ -184,7 +196,11 @@ func Load() (*Config, error) {
 			PasswordEncryptionKey: envOr("PASSWORD_ENCRYPTION_KEY", ""),
 		},
 		Billing: BillingConfig{
-			Currency: envOr("BILLING_CURRENCY", "USD"),
+			Currency:        envOr("BILLING_CURRENCY", "USD"),
+			Enabled:         parseBoolOr("INCUS_ADMIN_BILLING_ENABLED", true),
+			ChargerInterval: parseDurationOr("INCUS_ADMIN_BILLING_CHARGER_INTERVAL", time.Hour),
+			GraceInterval:   parseDurationOr("INCUS_ADMIN_BILLING_GRACE_INTERVAL", time.Hour),
+			GraceDuration:   parseDurationOr("INCUS_ADMIN_BILLING_GRACE_DURATION", 72*time.Hour),
 		},
 		Monitor: MonitorConfig{
 			PrometheusURL:     envOr("PROMETHEUS_URL", ""),
@@ -256,6 +272,24 @@ func parseIntOr(key string, fallback int) int {
 		return fallback
 	}
 	return n
+}
+
+// parseBoolOr 解析布尔型 env。空 → fallback。识别 1/true/yes/on（不分大小写）
+// 为 true，0/false/no/off 为 false；其它 → fallback + stderr warn。
+func parseBoolOr(key string, fallback bool) bool {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		fmt.Fprintf(os.Stderr, "invalid bool for %s=%q; using default %v\n", key, v, fallback)
+		return fallback
+	}
 }
 
 func parseDurationOr(key string, fallback time.Duration) time.Duration {
