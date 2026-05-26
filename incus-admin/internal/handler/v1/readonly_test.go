@@ -79,6 +79,21 @@ func (f *fakeProductRepo) ListActive(_ context.Context) ([]model.Product, error)
 	return f.products, nil
 }
 
+// GetByID is exercised by POST /v1/instances; read-only suite passes a fake with
+// products already loaded—linear scan keeps this dep-free for tests.
+func (f *fakeProductRepo) GetByID(_ context.Context, id int64) (*model.Product, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	for i := range f.products {
+		if f.products[i].ID == id {
+			p := f.products[i]
+			return &p, nil
+		}
+	}
+	return nil, nil
+}
+
 type fakeClusterRepo struct {
 	clusters []model.Cluster
 	byID     map[int64]*model.Cluster

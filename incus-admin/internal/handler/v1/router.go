@@ -42,11 +42,11 @@ func (h *Handler) Routes(r chi.Router) {
 	r.Get("/ssh-keys", h.SSHKeys)
 
 	// Phase D/E：write
-	r.Post("/instances", h.notImplemented)
-	r.Delete("/instances/{id}", h.notImplemented)
-	r.Post("/instances/{id}/reboot", h.notImplemented)
-	r.Post("/instances/{id}/shutdown", h.notImplemented)
-	r.Post("/instances/{id}/boot", h.notImplemented)
+	r.Post("/instances", h.CreateInstance)
+	r.Delete("/instances/{id}", h.DeleteInstance)
+	r.Post("/instances/{id}/reboot", h.ActionInstance("reboot"))
+	r.Post("/instances/{id}/shutdown", h.ActionInstance("shutdown"))
+	r.Post("/instances/{id}/boot", h.ActionInstance("boot"))
 }
 
 // EndpointCount 暴露给 server.go 用于启动日志（"v1 routes registered endpoints=12"）。

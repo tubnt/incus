@@ -9,9 +9,10 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
-// TestRoutes_WriteEndpointsStill501：Phase B 只接 read-only；POST/DELETE/actions
-// 5 个端点继续返 501 + reason=not_implemented，等 Phase D/E 替换。
-func TestRoutes_WriteEndpointsStill501(t *testing.T) {
+// TestRoutes_WriteEndpoints_NoBearer：Phase D/E 实装后，POST/DELETE/actions
+// 5 个端点 + 缺 user_id（即未经过 RequireBearer middleware）→ 401 + StructuredError。
+// 路由层保证不 fall through 到 SPA，且不暴露依赖细节。
+func TestRoutes_WriteEndpoints_NoBearer(t *testing.T) {
 	r := chi.NewRouter()
 	r.Route("/v1", New(Deps{}).Routes)
 
@@ -26,7 +27,7 @@ func TestRoutes_WriteEndpointsStill501(t *testing.T) {
 		{http.MethodPost, "/v1/instances/123/boot"},
 	}
 
-	// Phase A 7 read-only + Phase B 5 write = EndpointCount
+	// Phase A 7 read-only + Phase D/E 5 write = EndpointCount
 	if got := len(cases) + 7; got != EndpointCount {
 		t.Fatalf("test cases + read-only = %d, EndpointCount = %d (sync table)", got, EndpointCount)
 	}
@@ -36,8 +37,8 @@ func TestRoutes_WriteEndpointsStill501(t *testing.T) {
 		rr := httptest.NewRecorder()
 		r.ServeHTTP(rr, req)
 
-		if rr.Code != http.StatusNotImplemented {
-			t.Errorf("%s %s: status = %d, want 501 (body=%s)",
+		if rr.Code != http.StatusUnauthorized {
+			t.Errorf("%s %s: status = %d, want 401 (body=%s)",
 				c.method, c.path, rr.Code, rr.Body.String())
 			continue
 		}
@@ -51,8 +52,8 @@ func TestRoutes_WriteEndpointsStill501(t *testing.T) {
 			t.Errorf("%s %s: body decode: %v (raw=%s)", c.method, c.path, err, rr.Body.String())
 			continue
 		}
-		if len(body.Errors) != 1 || body.Errors[0].Reason != "not_implemented" {
-			t.Errorf("%s %s: body errors = %+v, want [{reason:not_implemented}]",
+		if len(body.Errors) != 1 || body.Errors[0].Reason != "unauthorized" {
+			t.Errorf("%s %s: body errors = %+v, want [{reason:unauthorized}]",
 				c.method, c.path, body.Errors)
 		}
 	}

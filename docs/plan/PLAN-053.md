@@ -145,9 +145,10 @@ scope 是 **二选一**（见 INFRA-012 task），等用户拍板。
 | A 骨架 | ✅ 完成（L3-A 2hvsynkt） | `internal/handler/v1/` 12 占位端点 + StructuredError + 分页 helper + 双桶限流 + RequireBearer + 22 单测 |
 | B read-only | ✅ 完成（L3-D 06w1ajv9） | 7 endpoint 接真实 repo + DTO mapper + 19 单测；新增 VMRepo.ListByUserPaged / SSHKeyRepo.ListByUserPaged |
 | C cluster region migration | ✅ 完成（L3-B q21mhhyk） | `db/migrations/027_cluster_region_metadata.sql` + model.Cluster Country/City/RegionStatus/Capabilities + cluster_repo 4 SELECT 路径回填 |
-| D POST /v1/instances | ⏳ 待 L3-G | 复用 OrderService + Idempotency-Key 接入 |
-| E DELETE + Idempotency schema | ✅ schema 完成（L3-C 640vr0dt） | `db/migrations/029_idempotency_keys.sql` + `model.IdempotencyKey` + `repository.IdempotencyRepo` skeleton |
-| E Idempotency middleware | ✅ 完成（L3-H z2dtqjmt） | `middleware.Idempotency` + `IdempotencyStore` 接口 + `worker.RunIdempotencyCleanup` (24h TTL/每小时第7分) + repo Put/Get(uid) 业务化 + 18 单测；DELETE 业务实装由 L3-G/L3-I 接 endpoint 时挂中间件即生效 |
+| D POST /v1/instances | ✅ 完成（L3-G dfen0y7p） | `internal/handler/v1/instances_write.go` 一步购买 + `portal/order_v1.go` `OrderHandler.CreatePayProvision`（复用现有 rollbackPayment / createSubscriptionForOrder / cancelSubscriptionForRollback / allocateIP / attachIPToVM / quota check，不重复订单流）；source=api 写入 audit |
+| E DELETE + actions | ✅ 完成（L3-G dfen0y7p） | `internal/handler/v1/instances_write.go` DELETE（trash + 30s undo）+ POST /{reboot,shutdown,boot}；`portal/order_v1.go` `VMHandler.V1TrashByID` / `V1ActionByID`（owner 失败一律 404 防资源存在性泄露）；20 个新单测 |
+| E Idempotency schema | ✅ schema 完成（L3-C 640vr0dt） | `db/migrations/029_idempotency_keys.sql` + `model.IdempotencyKey` + `repository.IdempotencyRepo` skeleton |
+| E Idempotency middleware | ✅ 完成（L3-H z2dtqjmt） | `middleware.Idempotency` + `IdempotencyStore` 接口 + `worker.RunIdempotencyCleanup` (24h TTL/每小时第7分) + repo Put/Get(uid) 业务化 + 18 单测；自动挂在 /v1 POST/DELETE 写端点之上 |
 | F OpenAPI + 单测 + 文档 | ⏳ 待 L3-J | openapi.yaml 增 /v1/* + curl example |
 
 ### Phase A 骨架（2026-05-26 完成 · campaign cloud-gateway-20260526202415）
@@ -340,3 +341,68 @@ scope 是 **二选一**（见 INFRA-012 task），等用户拍板。
 - 把 middleware 接到 `POST /v1/instances` / `DELETE /v1/instances/{id}` 业务端点（L3-G / L3-I）
 - OpenAPI 描述 `Idempotency-Key` header + `Idempotent-Replay` 响应头（Phase F / L3-J）
 - 端点级豁免名单（一期对所有 /v1 写端点统一启用；client 不传 key 即 no-op）
+
+### Phase D + E DELETE/actions 完成（2026-05-26 · L3-G dfen0y7p）
+
+- ✅ `internal/handler/portal/order_v1.go`：
+  - `OrderHandler.CreatePayProvision(r, V1ProvisionRequest) (*V1ProvisionResult, *V1ProvisionError)`
+    把 Create + Pay 合一：复用 `orders.CreateWithPeriod` / `PayWithBalance` /
+    `UpdateStatus`、包级 `allocateIP` / `attachIPToVM`、handler 自身的
+    `checkQuota` / `rollbackPayment` / `createSubscriptionForOrder` /
+    `cancelSubscriptionForRollback`，避免与 portal `/orders/{id}/pay` 路径
+    产生第二份订单流逻辑；
+  - 余额预检查（读 users.balance）兜底 PayWithBalance 的中文错误字符串匹配，
+    明确返 402 reason=insufficient_balance；
+  - source=api 进 audit 元数据；
+  - `VMHandler.V1TrashByID(r, userID, vmID) *V1ProvisionError`：复用 portal TrashService
+    主路径（vmSvc.Trash + vmRepo.MarkTrashed + cancelSubscriptionOnTrash），
+    owner 失败 / trashed / deleted / gone 一律 404 防泄露；
+  - `VMHandler.V1ActionByID(r, userID, vmID, action) *V1ProvisionError`：
+    boot/reboot/shutdown 映射到 Incus start/restart/stop，复用 vmSvc.ChangeState +
+    vmRepo.UpdateStatus；
+  - 共用 `V1ProvisionError{Status, Field, Reason, Msg}` 让 v1 handler 走
+    StructuredError 包装，不复制 HTTP 响应。
+- ✅ `internal/handler/v1/handler.go`：Deps 加 8 字段 ——
+  ClustersByName / OSTemplatesBySlug / ProductsBySlug / SSHKeysOwner +
+  OrderProvision / VMTrash / VMAction（接口注入，便于测试 fake）；
+  productReader 接口加 GetByID 给 POST 流 type 解析；
+- ✅ `internal/handler/v1/instances_write.go`：
+  - `POST /v1/instances` 校验顺序与 PLAN-053 §1 一致 ——
+    region → type → period → image → ssh_keys → label，任一失败立即 422；
+    region 不存在或非 available 都返 reason=region_unavailable（防泄露）；
+    type 支持 numeric id / 数字字符串 / slug 三种形态；
+    ssh_keys 支持 [int] / ["str"] 两种 JSON 形态；
+  - 委托 `OrderProvision.CreatePayProvision` 走订单流；
+    成功返 201 + `Location: /v1/instances/{id}` header + body 含 InstanceDTO
+    （status=pending）+ order_id + job_id；
+  - DELETE /v1/instances/{id} 走 `VMTrash.V1TrashByID` → 202 +
+    `{id, status:"deleting"}`；不开 ?force=true；
+  - POST /v1/instances/{id}/{boot,reboot,shutdown} 走 `VMAction.V1ActionByID`
+    → 202 + `{id, status:"<action>ing"}`；
+  - 响应写入走标准 ResponseWriter（不 hijack），给 L3-H Idempotency-Key
+    middleware 零侵入接入预留空间。
+- ✅ `internal/handler/v1/router.go`：5 个 write 端点从 `notImplemented` 切到
+  真实 handler；EndpointCount=12 仍保持（同步校验仍在 router_test.go）。
+- ✅ `cmd/server/main.go`：v1handler.New(Deps{}) 注入 8 个新依赖
+  （clusterRepo / osTemplateRepo / productRepo / sshKeyRepo / orderHandler /
+  portalVMHandler）。
+- ✅ 单测（`instances_write_test.go` 20 个）：
+  - POST happy path / numeric type / 字符串 ssh_keys id / 余额不足（fake
+    OrderProvision 返 V1ProvisionError） / region not_found / region maintenance /
+    period not supported / type not_found / image disabled / ssh_keys 越权 /
+    缺字段 region/type/image / label 非法 / 缺 user_id 401 / 缺 Deps 500 /
+    cluster DB 错；
+  - DELETE happy / 非自己 404 / 非整数 id / 缺 Deps；
+  - actions reboot+shutdown+boot 三个 happy + owner fail；
+  - 单元测试覆盖 parseInstanceID 边界 + validateInstanceLabel 字符集；
+- ✅ `go build ./...` + `go test ./...` 全绿；
+  `golangci-lint run ./internal/handler/v1/... ./internal/middleware/...
+  ./internal/server/...` 0 issues；
+  portal pkg 的 8 个 pre-existing 警告均与本 PR 无关（metrics/vm/clustermgmt/jobs
+  历史遗留）。
+
+#### Phase D + E DELETE/actions 范围内**未做**（按设计）
+
+- Idempotency-Key middleware（L3-H 负责）
+- OpenAPI yaml /v1/* 段（L3-J 负责）
+- /v1/instances POST 后 cloud-gateway UI（L3-I 负责）
