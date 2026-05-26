@@ -23,6 +23,7 @@ import (
 	"github.com/incuscloud/incus-admin/internal/handler/openapi"
 	"github.com/incuscloud/incus-admin/internal/handler/portal"
 	"github.com/incuscloud/incus-admin/internal/handler/promexport"
+	v1handler "github.com/incuscloud/incus-admin/internal/handler/v1"
 	"github.com/incuscloud/incus-admin/internal/middleware"
 	"github.com/incuscloud/incus-admin/internal/model"
 	"github.com/incuscloud/incus-admin/internal/observability"
@@ -512,6 +513,8 @@ func runServer() {
 		PromExport:     promExportHandler,
 		// PLAN-042 / INFRA-010 OpenAPI spec + Swagger UI
 		OpenAPI: openapi.NewHandler(),
+		// PLAN-053 / INFRA-012 cloud-gateway /v1 适配层
+		V1: v1handler.New(),
 	})
 
 	runErr := srv.Run()

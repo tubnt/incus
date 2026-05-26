@@ -21,6 +21,7 @@ import (
 	chimw "github.com/go-chi/chi/v5/middleware"
 
 	"github.com/incuscloud/incus-admin/internal/config"
+	v1handler "github.com/incuscloud/incus-admin/internal/handler/v1"
 	"github.com/incuscloud/incus-admin/internal/middleware"
 )
 
@@ -145,6 +146,10 @@ type Handlers struct {
 	// PLAN-042 / INFRA-010 OpenAPI spec 暴露 + Swagger UI。
 	// /api/openapi.yaml + /api/openapi.json + /api/docs。无鉴权（spec 是公开契约）。
 	OpenAPI OpenAPIHandler
+	// V1 (PLAN-053 / INFRA-012) registers the cloud-gateway-standard
+	// /v1/* adapter routes. Mounted outside the ProxyAuth group with
+	// Bearer-only auth + dedicated token-bucket rate limit.
+	V1 RouteRegistrar
 }
 
 // OpenAPIHandler 把 openapi handler 的两个端点单独标出来，
@@ -241,6 +246,18 @@ func New(cfg *config.Config, userLookup func(ctx context.Context, email string) 
 	// the callback would be intercepted before reaching incus-admin.
 	if h.Auth != nil {
 		r.Get("/api/auth/stepup-callback", h.Auth.Callback)
+	}
+
+	// PLAN-053 Phase A: cloud-gateway 标准 /v1/* 适配层。Bearer-only 鉴权
+	// 替代 ProxyAuth，所以挂在 ProxyAuth Group 之外；限流走独立 token-bucket
+	// 桶，与 portal 共享桶隔离开。
+	if h.V1 != nil {
+		r.Route("/v1", func(r chi.Router) {
+			r.Use(middleware.RequireBearer)
+			r.Use(middleware.RateLimitV1FromEnv())
+			h.V1.Routes(r)
+		})
+		slog.Info("v1 routes registered", "endpoints", v1handler.EndpointCount)
 	}
 
 	r.Group(func(r chi.Router) {

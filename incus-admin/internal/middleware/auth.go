@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -211,6 +212,56 @@ func ProxyAuth(next http.Handler) http.Handler {
 		ctx := context.WithValue(r.Context(), CtxUserEmail, strings.ToLower(strings.TrimSpace(email)))
 		ctx = context.WithValue(ctx, CtxAuthMethod, "proxy")
 		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+// RequireBearer 为 /v1/* 提供 Bearer-only 鉴权。与 ProxyAuth 的区别：
+//
+//   - 不接受 oauth2-proxy header / shadow cookie / emergency cookie
+//   - 只接受 Authorization: Bearer ica_xxx
+//   - 失败时返 401 + StructuredError (`{"errors":[{"field":"","reason":"unauthorized"}]}`)
+//
+// 通过后写入 CtxUserID + CtxAuthMethod="api_token"，与 ProxyAuth 的 Bearer 分支
+// 保持一致，下游 handler 可继续用 CtxUserID 取用户。
+func RequireBearer(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if tokenValidator == nil {
+			slog.Error("RequireBearer used but tokenValidator unset — refusing all v1 requests")
+			writeBearerErr(w, http.StatusServiceUnavailable, "token_validator_unset")
+			return
+		}
+		auth := r.Header.Get("Authorization")
+		if !strings.HasPrefix(auth, "Bearer ") {
+			writeBearerErr(w, http.StatusUnauthorized, "missing_bearer")
+			return
+		}
+		token := strings.TrimPrefix(auth, "Bearer ")
+		if !strings.HasPrefix(token, "ica_") {
+			writeBearerErr(w, http.StatusUnauthorized, "invalid_token")
+			return
+		}
+		userID, err := tokenValidator(r.Context(), token)
+		if err != nil || userID <= 0 {
+			slog.Warn("v1 bearer auth failed", "error", err, "path", r.URL.Path)
+			writeBearerErr(w, http.StatusUnauthorized, "invalid_token")
+			return
+		}
+		ctx := context.WithValue(r.Context(), CtxUserID, userID)
+		ctx = context.WithValue(ctx, CtxAuthMethod, "api_token")
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+// writeBearerErr 写入与 v1 包一致的 StructuredError 响应体。
+// 不引用 v1 包以避免 middleware → v1 的反向依赖；用 encoding/json 而非
+// 字符串拼接，避免后续新增 reason 含特殊字符时被 JSON 注入。
+func writeBearerErr(w http.ResponseWriter, status int, reason string) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"errors": []map[string]string{
+			{"field": "", "reason": reason},
+		},
 	})
 }
 
