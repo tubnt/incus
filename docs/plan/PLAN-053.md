@@ -58,12 +58,12 @@ AI 通过 MCP 工具调度自己账下 VM；不动 portal/admin 现有 API，只
 
 ### Phase C：clusters 表 region metadata migration（~0.5 天）
 
-- 新 migration `022_cluster_region_metadata.sql`：
-  - `ALTER TABLE clusters ADD COLUMN country TEXT`
-  - `ALTER TABLE clusters ADD COLUMN city TEXT`
-  - `ALTER TABLE clusters ADD COLUMN region_status TEXT DEFAULT 'available'`
-  - `ALTER TABLE clusters ADD COLUMN capabilities JSONB DEFAULT '["instances"]'`
-- 默认值回填脚本（生产 5 个 cluster 手动填）
+- 新 migration `027_cluster_region_metadata.sql`（PLAN-053 原文写 022，但仓库实际占用至 026；落地用 027）：
+  - `ALTER TABLE clusters ADD COLUMN country TEXT` （nullable，待运维填）
+  - `ALTER TABLE clusters ADD COLUMN city TEXT` （nullable，待运维填）
+  - `ALTER TABLE clusters ADD COLUMN region_status TEXT NOT NULL DEFAULT 'available'` + CHECK (available|unavailable|maintenance)
+  - `ALTER TABLE clusters ADD COLUMN capabilities JSONB NOT NULL DEFAULT '["instances"]'`
+- 默认值 cover 所有现状（country/city NULL = 待填，region_status='available'，capabilities=["instances"]），不写回填 SQL
 - 仍走 sqlx，**不要手写 migration**（按 PMA 规则 #10 用 ORM 工具生成）
 
 ### Phase D：POST /v1/instances 一键创建（~1 天）
@@ -142,14 +142,12 @@ scope 是 **二选一**（见 INFRA-012 task），等用户拍板。
 
 | Phase | 状态 | 落地点 |
 | ----- | --- | ------ |
-| A 骨架 | ⏳ 待 L3-A | `internal/handler/v1/` + middleware.RateLimitV1 |
-| B read-only | ⏳ 待 L3-B | /v1/account /v1/instances /v1/types /v1/regions /v1/images /v1/ssh-keys |
-| C cluster region migration | ⏳ 待 L3-B（用 027） | `db/migrations/027_cluster_region_metadata.sql`（编号已预留） |
-| D POST /v1/instances | ⏳ 待 L3-D | 复用 OrderService + Idempotency-Key 接入 |
-| E DELETE + Idempotency schema | ✅ schema 已完成（L3 cloud-gateway 第一批） | `db/migrations/029_idempotency_keys.sql` + `model.IdempotencyKey` + `repository.IdempotencyRepo` skeleton（middleware 留给 L3-H） |
-| F OpenAPI + 单测 + 文档 | ⏳ 待 L3-F | openapi.yaml 增 /v1/* + curl example |
-
-## 8. 实施进度
+| A 骨架 | ✅ 完成（L3-A 2hvsynkt） | `internal/handler/v1/` 12 占位端点 + StructuredError + 分页 helper + 双桶限流 + RequireBearer + 22 单测 |
+| B read-only | ⏳ 待 L3-D | /v1/account /v1/instances /v1/types /v1/regions /v1/images /v1/ssh-keys |
+| C cluster region migration | ✅ 完成（L3-B q21mhhyk） | `db/migrations/027_cluster_region_metadata.sql` + model.Cluster Country/City/RegionStatus/Capabilities + cluster_repo 4 SELECT 路径回填 |
+| D POST /v1/instances | ⏳ 待 L3-G | 复用 OrderService + Idempotency-Key 接入 |
+| E DELETE + Idempotency schema | ✅ schema 完成（L3-C 640vr0dt） | `db/migrations/029_idempotency_keys.sql` + `model.IdempotencyKey` + `repository.IdempotencyRepo` skeleton（middleware 留给 L3-H） |
+| F OpenAPI + 单测 + 文档 | ⏳ 待 L3-J | openapi.yaml 增 /v1/* + curl example |
 
 ### Phase A 骨架（2026-05-26 完成 · campaign cloud-gateway-20260526202415）
 
@@ -191,3 +189,44 @@ scope 是 **二选一**（见 INFRA-012 task），等用户拍板。
 - Idempotency-Key middleware（Phase E）
 - OpenAPI yaml 更新（Phase F）
 - region metadata migration（Phase C）
+
+### Phase C clusters region metadata（2026-05-26 完成 · L3-B q21mhhyk）
+
+- ✅ `db/migrations/027_cluster_region_metadata.sql`：4 列 ADD COLUMN IF NOT EXISTS；
+  region_status NOT NULL DEFAULT 'available' + CHECK；
+  capabilities NOT NULL DEFAULT '["instances"]'::jsonb；
+  不写回填 SQL（默认值 cover 现状）
+- ✅ `model.Cluster`：Country/City（json omitempty, nullable）+
+  RegionStatus + CapabilitiesJSON([]byte) + Capabilities([]string) 拆字段，
+  与现有 IPPoolsJSON 模式对齐
+- ✅ `model` 加 3 个 RegionStatus 常量 + `DefaultClusterCapabilities = ["instances"]`
+- ✅ `repository/cluster.go`：抽 `clusterBaseColumns` / `scanBase` / `finalizeRegion`；
+  GetByName/GetByID/List/ListFull 4 条 SELECT 全部 COALESCE 兜底；CreateFull 不写新列
+- ✅ 集成测试：docker postgres:16 真连验证 4 条 SELECT 路径 + CHECK 拒绝 bogus；
+  本地 testcontainers 因 sandbox 网络限制 skip（与 ci_pitfalls 一致，CI 不受影响）
+- ✅ `go build ./...` + 全量 `go test ./...` 全绿
+
+#### Phase C 范围内**未做**（按设计）
+
+- /v1/regions endpoint 本体（Phase B / L3-D 负责）
+- admin UI 编辑 country/city/region_status（后续单独 task）
+- pre-existing：cluster_repo 对 display_name 不做 COALESCE（schema 允许 NULL）；
+  非本 phase 引入，建议后续单 issue 处理
+
+### Phase E schema —— Idempotency-Key + billing （2026-05-26 完成 · L3-C 640vr0dt 与 PLAN-054 Phase F 同批落地）
+
+- ✅ `db/migrations/028_billing_subscriptions.sql`：products 加 price_daily + period_supported；
+  orders 加 period（CHECK daily|monthly）；新表 vm_subscriptions + billing_charges +
+  UNIQUE(sub_id, charge_date) 防重扣 + 3 索引
+- ✅ `db/migrations/029_idempotency_keys.sql`：key PRIMARY KEY + 24h cleanup index +
+  request_hash 列（同 key 异 payload 检测）
+- ✅ `model`：Product +PriceDaily/PeriodSupported；Order +Period；
+  新结构 VMSubscription / BillingCharge / IdempotencyKey + 常量集
+- ✅ `repository`：subscription_repo / charge_repo / idempotency_repo skeleton；
+  product / order repo SELECT 列 helper 抽出避免后续漂移
+
+#### Phase E schema 范围内**未做**（按设计）
+
+- Idempotency-Key middleware 本体（L3-H 负责）
+- 订单流 period hook + sub 行写入（L3-E 负责）
+- billing worker（L3-F 负责）

@@ -133,3 +133,35 @@ PLAN-053 一期可在不依赖本 PLAN 的情况下上线（按 monthly 接 clou
 - 单测：worker idempotent + 余额不足 + grace 自动恢复
 - 集成测试：完整 1 月时间线 mock（freeze time + 跑 30 个 daily tick）
 - E2E：开测试账号 → 充 ¥10 → 创 daily VM（¥1/day）→ 第 11 天看 suspended → 充值看恢复
+
+## 7. 实施进度
+
+| Phase | 状态 | 落地点 |
+| ----- | --- | ------ |
+| F schema | ✅ 完成（L3-C 640vr0dt 2026-05-26） | `db/migrations/028_billing_subscriptions.sql` + products.price_daily/period_supported + orders.period + vm_subscriptions + billing_charges UNIQUE(sub,date) + 3 索引 + model 常量 + repo skeleton（subscription/charge/idempotency） |
+| G 订单流 hook | ⏳ 待 L3-E | 订单流 period 透传 + sub 行写入（schema 已就绪） |
+| H worker | ⏳ 待 L3-F | `worker/billing_daily_charger.go` + `billing_grace_expire.go` |
+| I UI | ⏳ 待 L3-I | portal `/billing` subscription tab + runway 估算 + admin 手动恢复 |
+| J audit + cloud-gateway | ⏳ 待 L3-J | /v1/types prices.daily + /v1/account estimated_runway_days |
+
+### Phase F schema（2026-05-26 完成 · L3-C 640vr0dt · 与 PLAN-053 Phase E 同批）
+
+- ✅ migration `028_billing_subscriptions.sql`：products 加 price_daily(NUMERIC(10,4)) +
+  period_supported(TEXT[] DEFAULT ['monthly'])；orders 加 period NOT NULL DEFAULT 'monthly'
+  + CHECK；新表 vm_subscriptions 三态 status + suspended_at/grace_until +
+  3 索引（user_status / paid_until partial / vm_id）；新表 billing_charges 三态 status +
+  UNIQUE(sub_id, charge_date) 防重扣
+- ✅ migration `029_idempotency_keys.sql`：24h cleanup 索引 + request_hash 列（同 key
+  异 payload 检测）
+- ✅ `model`：Product +PriceDaily/PeriodSupported；Order +Period；
+  新结构 VMSubscription / BillingCharge / IdempotencyKey + 常量集
+- ✅ `repository`：抽 `productSelectCols / orderSelectCols` 集中所有 SELECT 列，
+  避免后续漂移（参考 d6aee02 firewall.ListBindingsByVM 列数错教训）；
+  subscription / charge / idempotency repo skeleton 接口签名定型
+
+#### Phase F 范围内**未做**（按设计）
+
+- 订单流 period hook（L3-E）
+- 计费 worker（L3-F）
+- Idempotency middleware 本体（L3-H）
+- UI（L3-I）+ audit + cloud-gateway 集成（L3-J）
