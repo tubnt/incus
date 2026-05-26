@@ -220,6 +220,72 @@ func TestProductRepo_NewColumnsScan(t *testing.T) {
 	}
 }
 
+// TestSubscriptionRepo_CancelAndReactivateByVM 验证 PLAN-054 Phase G 的 trash/
+// restore 联动：CancelByVM 只动 active 行，且 ReactivateByVM 把最新 cancelled
+// 行拉回 active 并写新 paid_until。
+func TestSubscriptionRepo_CancelAndReactivateByVM(t *testing.T) {
+	db := testhelper.NewTestDB(t, "")
+	repo := repository.NewSubscriptionRepo(db)
+	userID, productID, _, vmID := seedSubFixtures(t, db)
+
+	ctx := context.Background()
+	monthly := 10.0
+	now := time.Now()
+	sub, err := repo.Insert(ctx, &model.VMSubscription{
+		VMID: vmID, ProductID: productID, UserID: userID,
+		Period: model.BillingPeriodMonthly, MonthlyRate: &monthly,
+		PaidUntil: now.Add(30 * 24 * time.Hour),
+		Status:    model.SubscriptionStatusActive,
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+
+	// trash 联动：CancelByVM 把 active → cancelled
+	n, err := repo.CancelByVM(ctx, vmID)
+	if err != nil || n != 1 {
+		t.Fatalf("CancelByVM rows=%d err=%v", n, err)
+	}
+	got, err := repo.GetLatestByVM(ctx, vmID)
+	if err != nil || got == nil || got.Status != model.SubscriptionStatusCancelled {
+		t.Fatalf("after cancel: %+v err=%v", got, err)
+	}
+	// GetByVM (active only) 应返 nil
+	active, _ := repo.GetByVM(ctx, vmID)
+	if active != nil {
+		t.Fatalf("GetByVM after cancel should be nil, got %+v", active)
+	}
+
+	// 二次 cancel 应是 no-op（0 rows）
+	n2, err := repo.CancelByVM(ctx, vmID)
+	if err != nil || n2 != 0 {
+		t.Fatalf("idempotent CancelByVM rows=%d err=%v", n2, err)
+	}
+
+	// restore 联动：ReactivateByVM 拉回 active + 写新 paid_until
+	newPaidUntil := now.Add(48 * time.Hour)
+	n3, err := repo.ReactivateByVM(ctx, vmID, newPaidUntil)
+	if err != nil || n3 != 1 {
+		t.Fatalf("ReactivateByVM rows=%d err=%v", n3, err)
+	}
+	got2, err := repo.GetByVM(ctx, vmID)
+	if err != nil || got2 == nil || got2.Status != model.SubscriptionStatusActive {
+		t.Fatalf("after reactivate: %+v err=%v", got2, err)
+	}
+	if !got2.PaidUntil.Round(time.Second).Equal(newPaidUntil.Round(time.Second)) {
+		t.Fatalf("paid_until not updated: got %v want %v", got2.PaidUntil, newPaidUntil)
+	}
+	if got2.ID != sub.ID {
+		t.Fatalf("reactivated different row: got %d want %d", got2.ID, sub.ID)
+	}
+
+	// 二次 reactivate 应是 no-op（无 cancelled 行了）
+	n4, err := repo.ReactivateByVM(ctx, vmID, newPaidUntil)
+	if err != nil || n4 != 0 {
+		t.Fatalf("idempotent ReactivateByVM rows=%d err=%v", n4, err)
+	}
+}
+
 // TestOrderRepo_PeriodDefault 回归测试：orders 加 period 后 Create 走默认
 // 'monthly'；新 CreateWithPeriod 能显式写 'daily'。SELECT 列扫描错位会让
 // ExpiresAt 错位到 period 字段（string→*time.Time scan 会报错）。

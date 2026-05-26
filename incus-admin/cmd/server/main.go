@@ -168,6 +168,8 @@ func runServer() {
 	ticketRepo := repository.NewTicketRepo(db)
 	productRepo := repository.NewProductRepo(db)
 	orderRepo := repository.NewOrderRepo(db)
+	// PLAN-054 / INFRA-013：vm_subscriptions 记账。订单流写入 + VM trash/restore 联动。
+	subRepo := repository.NewSubscriptionRepo(db)
 	auditRepo := repository.NewAuditRepo(db)
 	apiTokenRepo := repository.NewAPITokenRepo(db)
 	nodeCredRepo := repository.NewNodeCredentialRepo(db)
@@ -445,10 +447,13 @@ func runServer() {
 			"default_login_user", cfg.Provisioning.DefaultLoginUser)
 	}
 
-	adminVMHandler := portal.NewAdminVMHandler(vmSvc, vmRepo, sshKeyRepo, clusterMgr, scheduler)
-	portalVMHandler := portal.NewVMHandler(vmSvc, vmRepo, sshKeyRepo, clusterMgr)
+	adminVMHandler := portal.NewAdminVMHandler(vmSvc, vmRepo, sshKeyRepo, clusterMgr, scheduler).
+		WithSubscriptions(subRepo) // PLAN-054 trash/restore 联动
+	portalVMHandler := portal.NewVMHandler(vmSvc, vmRepo, sshKeyRepo, clusterMgr).
+		WithSubscriptions(subRepo) // PLAN-054 trash/restore 联动
 	orderHandler := portal.NewOrderHandler(orderRepo, productRepo, vmSvc, vmRepo, sshKeyRepo, clusterMgr).
-		WithQuotas(quotaRepo) // OPS-021：购买前 quota 强制
+		WithQuotas(quotaRepo).         // OPS-021：购买前 quota 强制
+		WithSubscriptions(subRepo)     // PLAN-054：订单 pay → vm_subscriptions 行写入
 	// PLAN-038 / OPS-041 Phase B/C：AI provider —— anthropic / disabled 二选一。
 	// AIConfig.Provider == "disabled"（默认）→ disabledProvider，所有 AI endpoint
 	// 返 503，前端按需隐藏入口。生产没买 API key 也能正常跑。

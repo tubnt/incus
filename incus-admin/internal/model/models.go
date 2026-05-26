@@ -435,3 +435,18 @@ const (
 	// + 详情 detail，可手动重试或删 VM 重开。
 	StepStatusWarning = "warning"
 )
+
+// BillingPeriodDuration 返回一个完整周期对应的 time.Duration。
+// daily → 24h，monthly → 30d。worker 续费推 paid_until 与 restore 重置
+// paid_until 共用此函数，避免两处硬编码漂移。未知 period 返 0（调用方应
+// 已在 handler 层用 oneof 校验拦下，进到这里属逻辑错误）。
+func BillingPeriodDuration(period string) time.Duration {
+	switch period {
+	case BillingPeriodDaily:
+		return 24 * time.Hour
+	case BillingPeriodMonthly:
+		return 30 * 24 * time.Hour
+	default:
+		return 0
+	}
+}

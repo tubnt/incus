@@ -74,6 +74,25 @@ func (r *SubscriptionRepo) GetByVM(ctx context.Context, vmID int64) (*model.VMSu
 	return &s, nil
 }
 
+// GetLatestByVM 按 vm_id 查最新一条订阅（任意状态）。restore 流程用：先拿
+// period 信息再算新的 paid_until。无任何订阅返 (nil, nil)。
+func (r *SubscriptionRepo) GetLatestByVM(ctx context.Context, vmID int64) (*model.VMSubscription, error) {
+	var s model.VMSubscription
+	row := r.db.QueryRowContext(ctx,
+		`SELECT `+subSelectCols+`
+		 FROM vm_subscriptions
+		 WHERE vm_id = $1
+		 ORDER BY id DESC LIMIT 1`, vmID)
+	err := scanSubscription(row, &s)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &s, nil
+}
+
 // ListByUser 列某用户全部订阅，按 created DESC（最新优先）。
 // status="" 表示不过滤；否则按指定状态过滤。
 func (r *SubscriptionRepo) ListByUser(ctx context.Context, userID int64, status string) ([]model.VMSubscription, error) {
@@ -164,4 +183,37 @@ func (r *SubscriptionRepo) ClearSuspension(ctx context.Context, id int64) error 
 		 SET status = 'active', suspended_at = NULL, grace_until = NULL, updated_at = NOW()
 		 WHERE id = $1`, id)
 	return err
+}
+
+// CancelByVM 把指定 VM 名下所有 active 订阅切到 cancelled。VM trash 时调，
+// 只动 active 行（避免误把 suspended/已 cancelled 行重写）。返回受影响行数。
+// paid_until 不动 —— 用户已付到的时段保留显示，cancelled 仅表示停扣。
+func (r *SubscriptionRepo) CancelByVM(ctx context.Context, vmID int64) (int64, error) {
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE vm_subscriptions
+		 SET status = 'cancelled', updated_at = NOW()
+		 WHERE vm_id = $1 AND status = 'active'`, vmID)
+	if err != nil {
+		return 0, fmt.Errorf("cancel subscription by vm: %w", err)
+	}
+	return res.RowsAffected()
+}
+
+// ReactivateByVM VM restore 时把最新一条 cancelled 订阅恢复成 active，并把
+// paid_until 重置为传入值（重新算一个完整周期，免费"恢复"语义）。返回受
+// 影响行数；0 表示该 VM 无 cancelled 订阅（例：旧数据 / 异常路径），调用方
+// 自行决定是否记 warning。suspended 行不在此处理 —— 它走 worker 余额恢复路径。
+func (r *SubscriptionRepo) ReactivateByVM(ctx context.Context, vmID int64, paidUntil time.Time) (int64, error) {
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE vm_subscriptions
+		 SET status = 'active', paid_until = $2, updated_at = NOW()
+		 WHERE id = (
+		   SELECT id FROM vm_subscriptions
+		   WHERE vm_id = $1 AND status = 'cancelled'
+		   ORDER BY id DESC LIMIT 1
+		 )`, vmID, paidUntil)
+	if err != nil {
+		return 0, fmt.Errorf("reactivate subscription by vm: %w", err)
+	}
+	return res.RowsAffected()
 }

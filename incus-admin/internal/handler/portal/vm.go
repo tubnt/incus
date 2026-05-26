@@ -32,6 +32,9 @@ type VMHandler struct {
 	// PLAN-025：异步 reinstall 入口
 	jobs    *jobs.Runtime
 	jobRepo *repository.ProvisioningJobRepo
+	// PLAN-054 / INFRA-013：vm_subscriptions repo。trash/restore 时联动切状态。
+	// nil 时跳过（兼容尚未注入的部署），与生产 main 注入保持一致。
+	subs *repository.SubscriptionRepo
 }
 
 func NewVMHandler(vmSvc *service.VMService, vmRepo *repository.VMRepo, sshKeys *repository.SSHKeyRepo, clusters *cluster.Manager) *VMHandler {
@@ -43,6 +46,12 @@ func NewVMHandler(vmSvc *service.VMService, vmRepo *repository.VMRepo, sshKeys *
 func (h *VMHandler) WithJobs(rt *jobs.Runtime, jobRepo *repository.ProvisioningJobRepo) *VMHandler {
 	h.jobs = rt
 	h.jobRepo = jobRepo
+	return h
+}
+
+// WithSubscriptions 注入 vm_subscriptions repo，启用 PLAN-054 trash/restore 联动。
+func (h *VMHandler) WithSubscriptions(s *repository.SubscriptionRepo) *VMHandler {
+	h.subs = s
 	return h
 }
 
@@ -93,6 +102,7 @@ func (h *VMHandler) TrashService(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]any{"error": "vm already trashed or deleted"})
 		return
 	}
+	cancelSubscriptionOnTrash(r.Context(), r, h.subs, vm.ID)
 	audit(r.Context(), r, "vm.trash", "vm", vm.ID, map[string]any{"name": vm.Name, "self": true})
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":     "trashed",
@@ -129,6 +139,7 @@ func (h *VMHandler) RestoreService(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]any{"error": "vm not in trash (race)"})
 		return
 	}
+	reactivateSubscriptionOnRestore(r.Context(), r, h.subs, vm.ID)
 	prev := ""
 	if vm.TrashedPrevStatus != nil {
 		prev = *vm.TrashedPrevStatus
@@ -503,6 +514,8 @@ type AdminVMHandler struct {
 	scheduler *cluster.Scheduler
 	jobs      *jobs.Runtime
 	jobRepo   *repository.ProvisioningJobRepo
+	// PLAN-054 / INFRA-013：admin trash/restore 也联动 vm_subscriptions。
+	subs *repository.SubscriptionRepo
 }
 
 func NewAdminVMHandler(vmSvc *service.VMService, vmRepo *repository.VMRepo, sshKeys *repository.SSHKeyRepo, clusters *cluster.Manager, scheduler *cluster.Scheduler) *AdminVMHandler {
@@ -513,6 +526,12 @@ func NewAdminVMHandler(vmSvc *service.VMService, vmRepo *repository.VMRepo, sshK
 func (h *AdminVMHandler) WithJobs(rt *jobs.Runtime, jobRepo *repository.ProvisioningJobRepo) *AdminVMHandler {
 	h.jobs = rt
 	h.jobRepo = jobRepo
+	return h
+}
+
+// WithSubscriptions 注入 vm_subscriptions repo，启用 PLAN-054 trash/restore 联动。
+func (h *AdminVMHandler) WithSubscriptions(s *repository.SubscriptionRepo) *AdminVMHandler {
+	h.subs = s
 	return h
 }
 
@@ -1419,6 +1438,7 @@ func (h *AdminVMHandler) DeleteVM(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]any{"error": "vm already trashed or deleted"})
 		return
 	}
+	cancelSubscriptionOnTrash(r.Context(), r, h.subs, dbVM.ID)
 	slog.Info("vm trashed", "vm", vmName, "window_s", model.VMTrashWindowSeconds)
 	audit(r.Context(), r, "vm.trash", "vm", dbVM.ID, map[string]any{"name": vmName, "window_s": model.VMTrashWindowSeconds})
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -1453,6 +1473,7 @@ func (h *AdminVMHandler) RestoreVM(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]any{"error": "vm not in trash (race)"})
 		return
 	}
+	reactivateSubscriptionOnRestore(r.Context(), r, h.subs, dbVM.ID)
 	prev := ""
 	if dbVM.TrashedPrevStatus != nil {
 		prev = *dbVM.TrashedPrevStatus
