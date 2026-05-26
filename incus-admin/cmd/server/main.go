@@ -572,6 +572,7 @@ func runServer() {
 			OSTemplates:       osTemplateRepo,
 			SSHKeys:           sshKeyRepo,
 			Orders:            orderRepo,
+			Subscriptions:     subRepo,
 			ClustersByName:    clusterRepo,
 			OSTemplatesBySlug: osTemplateRepo,
 			ProductsBySlug:    productRepo,

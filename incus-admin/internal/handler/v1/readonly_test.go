@@ -160,6 +160,29 @@ func (f *fakeOrderRepo) GetByID(_ context.Context, id int64) (*model.Order, erro
 	return f.orders[id], nil
 }
 
+// fakeSubRepo PLAN-054 Phase J：注入 active sub 列表给 /v1/account runway 计算。
+type fakeSubRepo struct {
+	byUser map[int64][]model.VMSubscription
+	err    error
+}
+
+func (f *fakeSubRepo) ListByUser(_ context.Context, userID int64, status string) ([]model.VMSubscription, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	all := f.byUser[userID]
+	if status == "" {
+		return append([]model.VMSubscription{}, all...), nil
+	}
+	out := make([]model.VMSubscription, 0, len(all))
+	for _, s := range all {
+		if s.Status == status {
+			out = append(out, s)
+		}
+	}
+	return out, nil
+}
+
 // newRouterWithUser 把 handler 挂到 chi router 并注入 ctx user_id，
 // 模拟 RequireBearer 通过后的环境。userID=0 表示不注入（测未授权路径）。
 func newRouterWithUser(h *Handler, userID int64) http.Handler {
@@ -248,6 +271,178 @@ func TestAccount_RepoError(t *testing.T) {
 	if rr.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 500", rr.Code)
 	}
+}
+
+// --- /v1/account estimated_runway_days (PLAN-054 Phase J) ---
+
+func ptrFloat64(v float64) *float64 { return &v }
+
+func TestAccount_RunwayDays_DailyOnly(t *testing.T) {
+	h := New(Deps{
+		Users: &fakeUserRepo{users: map[int64]*model.User{
+			1: {ID: 1, Email: "u1@example.com", Balance: 30.0},
+		}},
+		Subscriptions: &fakeSubRepo{byUser: map[int64][]model.VMSubscription{
+			1: {
+				{ID: 1, Status: model.SubscriptionStatusActive, Period: model.BillingPeriodDaily, DailyRate: ptrFloat64(1.0)},
+				{ID: 2, Status: model.SubscriptionStatusActive, Period: model.BillingPeriodDaily, DailyRate: ptrFloat64(2.0)},
+			},
+		}},
+	})
+	rr := httptest.NewRecorder()
+	newRouterWithUser(h, 1).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/v1/account", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rr.Code, rr.Body.String())
+	}
+	var dto AccountDTO
+	if err := json.Unmarshal(rr.Body.Bytes(), &dto); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	// balance=30, daily burn=3 → 10 天
+	if dto.EstimatedRunwayDays == nil || *dto.EstimatedRunwayDays != 10.0 {
+		t.Fatalf("runway = %v, want 10.0", dto.EstimatedRunwayDays)
+	}
+}
+
+func TestAccount_RunwayDays_MonthlyMixed(t *testing.T) {
+	h := New(Deps{
+		Users: &fakeUserRepo{users: map[int64]*model.User{
+			1: {ID: 1, Email: "u1@example.com", Balance: 60.0},
+		}},
+		Subscriptions: &fakeSubRepo{byUser: map[int64][]model.VMSubscription{
+			1: {
+				{ID: 1, Status: model.SubscriptionStatusActive, Period: model.BillingPeriodMonthly, MonthlyRate: ptrFloat64(30.0)}, // 1.0/day
+				{ID: 2, Status: model.SubscriptionStatusActive, Period: model.BillingPeriodDaily, DailyRate: ptrFloat64(1.0)},      // 1.0/day
+				{ID: 3, Status: model.SubscriptionStatusCancelled, Period: model.BillingPeriodDaily, DailyRate: ptrFloat64(100.0)}, // 不计
+				{ID: 4, Status: model.SubscriptionStatusSuspended, Period: model.BillingPeriodDaily, DailyRate: ptrFloat64(100.0)}, // 不计
+			},
+		}},
+	})
+	rr := httptest.NewRecorder()
+	newRouterWithUser(h, 1).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/v1/account", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d", rr.Code)
+	}
+	var dto AccountDTO
+	if err := json.Unmarshal(rr.Body.Bytes(), &dto); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	// balance=60, daily burn=2 → 30 天
+	if dto.EstimatedRunwayDays == nil || *dto.EstimatedRunwayDays != 30.0 {
+		t.Fatalf("runway = %v, want 30.0", dto.EstimatedRunwayDays)
+	}
+}
+
+func TestAccount_RunwayDays_NoActiveSubs(t *testing.T) {
+	h := New(Deps{
+		Users: &fakeUserRepo{users: map[int64]*model.User{
+			1: {ID: 1, Email: "u1@example.com", Balance: 50.0},
+		}},
+		Subscriptions: &fakeSubRepo{byUser: map[int64][]model.VMSubscription{}},
+	})
+	rr := httptest.NewRecorder()
+	newRouterWithUser(h, 1).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/v1/account", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d", rr.Code)
+	}
+	// 无 active sub → 不输出字段。raw body 也不应含 estimated_runway_days
+	if got := rr.Body.String(); contains(got, "estimated_runway_days") {
+		t.Fatalf("body should omit runway field: %s", got)
+	}
+}
+
+func TestAccount_RunwayDays_BalanceZero(t *testing.T) {
+	h := New(Deps{
+		Users: &fakeUserRepo{users: map[int64]*model.User{
+			1: {ID: 1, Email: "u1@example.com", Balance: 0},
+		}},
+		Subscriptions: &fakeSubRepo{byUser: map[int64][]model.VMSubscription{
+			1: {{ID: 1, Status: model.SubscriptionStatusActive, Period: model.BillingPeriodDaily, DailyRate: ptrFloat64(1.0)}},
+		}},
+	})
+	rr := httptest.NewRecorder()
+	newRouterWithUser(h, 1).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/v1/account", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d", rr.Code)
+	}
+	var dto AccountDTO
+	if err := json.Unmarshal(rr.Body.Bytes(), &dto); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if dto.EstimatedRunwayDays != nil {
+		t.Fatalf("runway should be nil when balance=0, got %v", *dto.EstimatedRunwayDays)
+	}
+}
+
+func TestAccount_RunwayDays_RateNil(t *testing.T) {
+	h := New(Deps{
+		Users: &fakeUserRepo{users: map[int64]*model.User{
+			1: {ID: 1, Email: "u1@example.com", Balance: 50.0},
+		}},
+		Subscriptions: &fakeSubRepo{byUser: map[int64][]model.VMSubscription{
+			1: {
+				// 有 active 但 rate 缺失 → 跳过；其它无 active 行
+				{ID: 1, Status: model.SubscriptionStatusActive, Period: model.BillingPeriodDaily, DailyRate: nil},
+				{ID: 2, Status: model.SubscriptionStatusActive, Period: model.BillingPeriodMonthly, MonthlyRate: nil},
+			},
+		}},
+	})
+	rr := httptest.NewRecorder()
+	newRouterWithUser(h, 1).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/v1/account", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d", rr.Code)
+	}
+	var dto AccountDTO
+	if err := json.Unmarshal(rr.Body.Bytes(), &dto); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if dto.EstimatedRunwayDays != nil {
+		t.Fatalf("runway should be nil when all rates missing, got %v", *dto.EstimatedRunwayDays)
+	}
+}
+
+func TestAccount_RunwayDays_SubsRepoError_NotFatal(t *testing.T) {
+	// sub list 出错只 log warn，account 仍 200，runway 字段不输出
+	h := New(Deps{
+		Users: &fakeUserRepo{users: map[int64]*model.User{
+			1: {ID: 1, Email: "u1@example.com", Balance: 50.0},
+		}},
+		Subscriptions: &fakeSubRepo{err: errors.New("db down")},
+	})
+	rr := httptest.NewRecorder()
+	newRouterWithUser(h, 1).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/v1/account", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rr.Code, rr.Body.String())
+	}
+	if got := rr.Body.String(); contains(got, "estimated_runway_days") {
+		t.Fatalf("body should omit runway field on sub repo err: %s", got)
+	}
+}
+
+func TestAccount_RunwayDays_NilSubsDep_NotFatal(t *testing.T) {
+	// 不注入 Subscriptions 时 /v1/account 仍正常工作（向后兼容）
+	h := New(Deps{
+		Users: &fakeUserRepo{users: map[int64]*model.User{
+			1: {ID: 1, Email: "u1@example.com", Balance: 50.0},
+		}},
+	})
+	rr := httptest.NewRecorder()
+	newRouterWithUser(h, 1).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/v1/account", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d", rr.Code)
+	}
+	if got := rr.Body.String(); contains(got, "estimated_runway_days") {
+		t.Fatalf("body should omit runway field when no Subscriptions dep: %s", got)
+	}
+}
+
+func contains(s, substr string) bool {
+	for i := 0; i+len(substr) <= len(s); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
 }
 
 // --- /v1/instances list ---

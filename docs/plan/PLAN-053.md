@@ -149,7 +149,7 @@ scope 是 **二选一**（见 INFRA-012 task），等用户拍板。
 | E DELETE + actions | ✅ 完成（L3-G dfen0y7p） | `internal/handler/v1/instances_write.go` DELETE（trash + 30s undo）+ POST /{reboot,shutdown,boot}；`portal/order_v1.go` `VMHandler.V1TrashByID` / `V1ActionByID`（owner 失败一律 404 防资源存在性泄露）；20 个新单测 |
 | E Idempotency schema | ✅ schema 完成（L3-C 640vr0dt） | `db/migrations/029_idempotency_keys.sql` + `model.IdempotencyKey` + `repository.IdempotencyRepo` skeleton |
 | E Idempotency middleware | ✅ 完成（L3-H z2dtqjmt） | `middleware.Idempotency` + `IdempotencyStore` 接口 + `worker.RunIdempotencyCleanup` (24h TTL/每小时第7分) + repo Put/Get(uid) 业务化 + 18 单测；自动挂在 /v1 POST/DELETE 写端点之上 |
-| F OpenAPI + 单测 + 文档 | ⏳ 待 L3-J | openapi.yaml 增 /v1/* + curl example |
+| F OpenAPI + 单测 + 文档 | ✅ 完成（L3-J wm5iv91f 2026-05-26） | openapi.yaml 增 12 /v1 operation + 4 共享 schemas + 9 v1 components；`docs/cloud-gateway.md` + `scripts/e2e-cloud-gateway.sh`；/v1/account + estimated_runway_days；openapi_test.go 2 个断言 |
 
 ### Phase A 骨架（2026-05-26 完成 · campaign cloud-gateway-20260526202415）
 
@@ -406,3 +406,72 @@ scope 是 **二选一**（见 INFRA-012 task），等用户拍板。
 - Idempotency-Key middleware（L3-H 负责）
 - OpenAPI yaml /v1/* 段（L3-J 负责）
 - /v1/instances POST 后 cloud-gateway UI（L3-I 负责）
+
+### Phase F OpenAPI + 文档 + E2E（2026-05-26 完成 · L3-J wm5iv91f · 与 PLAN-054 Phase J 同批落地）
+
+- ✅ `internal/handler/openapi/openapi.yaml`：
+  - 顶层加 `cloud-gateway` tag（描述 Bearer 鉴权 / 限流 / 错误 / 分页 / Idempotency / 异步语义）
+  - 新增 12 个 `/v1` operation（10 path）：account / instances(list+create) /
+    instances/{id}(get+delete) / instances/{id}/{boot,reboot,shutdown} /
+    types / regions / images / ssh-keys；所有写端点接 `V1IdempotencyKey` 参数
+    + `Idempotent-Replay` 响应头
+  - components.parameters 新增 `V1InstanceID` / `V1Page` / `V1PageSize` /
+    `V1IdempotencyKey`
+  - components.responses 新增 `V1Unauthorized` / `V1Forbidden` / `V1NotFound` /
+    `V1PaymentRequired` / `V1Unprocessable` / `V1RateLimited` / `V1Internal`
+    （带 IETF RateLimit + Retry-After 头）
+  - components.schemas 新增 9 个：`StructuredError` / `PaginatedResponse` /
+    `AccountDTO` / `InstanceDTO` / `TypeDTO` / `RegionDTO` / `ImageDTO` /
+    `SSHKeyDTO` / `InstanceCreateRequest` / `InstanceActionResponse` —— 与
+    handler/v1/dto.go 字段名 1:1
+  - `docs/openapi/openapi.yaml` 与 handler 内嵌版同源 (cp 同步) —— 外部读
+    docs 副本即可拿到完整 spec，免启动 server
+- ✅ `internal/handler/openapi/openapi_test.go`：
+  - `TestSpec_ContainsCloudGatewayEndpoints` —— 24 条 grep-level 断言
+    （10 path + 9 schema + 2 header + tag + runway 字段）
+  - `TestSpec_V1OperationCount` —— 解析 yaml 缩进结构验 10 path + 12 op
+    （避免引 yaml lib 依赖）
+- ✅ `/v1/account` 加 `estimated_runway_days`（PLAN-054 Phase J 后端落地）：
+  - `dto.go` AccountDTO +EstimatedRunwayDays *float64 (omitempty)
+  - `dto.go` computeRunwayDays(balance, subs) 与前端
+    `web/src/features/billing/subscriptions-api.ts` 同算法：daily 累加 rate /
+    monthly 累加 rate/30，balance/dailyBurn；balance<=0 / 无 active sub /
+    burn==0 / rate 全空 → nil（不输出字段）
+  - `handler.go` Deps +Subscriptions subscriptionReader（nil 容忍：端点正常
+    工作只是不返字段，向后兼容）
+  - `readonly.go` Account 路径在拿到 user 后 ListByUser(uid, active) 折算
+    runway；sub 取错只 slog.Warn 不阻断响应（让 portal 余额查询不依赖 sub
+    表健康度）
+  - `cmd/server/main.go` Deps 接 subRepo
+  - `readonly_test.go` +7 个 case：daily-only / monthly-mixed / no-active /
+    balance-zero / rate-nil / sub-repo-err 不致命 / nil-dep 不致命；含 raw
+    body grep 防字段意外输出
+- ✅ `docs/cloud-gateway.md` 新建（incus-admin 无 README.md，按任务"按现状选"）：
+  - 12 端点表 + OpenAPI spec 链接
+  - token 生成步骤（/api-tokens 页）
+  - 鉴权 / 限流 / 错误 reason 表 / 分页 / Idempotency 规范
+  - 12 端点完整 curl example + 4 错误路径（余额 / region / period / idem）
+  - POST /v1/instances 请求 + 201 响应 schema
+  - 计费周期 + runway 字段说明
+  - cloud-gateway provider 契约要点（4 条）
+  - 本地启动跑通指引
+- ✅ `scripts/e2e-cloud-gateway.sh` 新建：
+  - 12 端点 + 5 错误路径 + Idempotency replay + 限流（手动开关）的可重跑脚本
+  - `INCUSADMIN_E2E_CREATE=1` 才走真创建链路；默认只读路径，可在 CI/无沙箱
+    DB 的环境跑
+  - `INCUSADMIN_E2E_RATELIMIT=1` 才打满限流（150 次 burst，CI 默认跳过）
+  - `INCUSADMIN_REGION` / `INCUSADMIN_TYPE_SLUG` / `INCUSADMIN_IMAGE_SLUG`
+    覆盖自动选择；jq 不存在时降级到 grep 解 JSON，无外部依赖
+  - 输出对齐过往脚本风格（`step` / `ok` / `ko` + 退出码 0/1/2）
+- ✅ `go build ./...` + `go test ./...` 全绿；
+  `golangci-lint run ./internal/handler/v1/... ./internal/handler/openapi/...`
+  0 issues（main.go 8 个 pre-existing 警告均与本 phase 无关）
+
+#### Phase F 范围内**未做**（按设计）
+
+- cloud-gateway provider 实现（外部 repo，按本 spec 接入）
+- /api/openapi.json runtime yaml→json 转换（继续维持 zero-dep；
+  client gen 用 `yq -o=json` 或直接吃 yaml）
+- Playwright E2E（任务明确不强制；e2e-cloud-gateway.sh 可手动跑）
+- 限流 / Idempotency 跨 server 重启的持久化测试（已有 worker cleanup + repo
+  单测覆盖，留给 OPS 后续 chaos test）
