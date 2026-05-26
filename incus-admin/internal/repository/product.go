@@ -16,9 +16,32 @@ func NewProductRepo(db *sql.DB) *ProductRepo {
 	return &ProductRepo{db: db}
 }
 
+// 列定义集中维护：所有 SELECT 必须用 productSelectCols，避免 PLAN-054 给
+// products 加 price_daily / period_supported 后某个 query 漏写、导致 sqlx 扫描
+// 错位（参见 d6aee02 commit 的教训）。Scan 顺序也由 scanProductRow 兜底。
+const productSelectCols = `id, name, slug, cpu, memory_mb, disk_gb, bandwidth_tb,
+	price_monthly, price_daily, period_supported,
+	COALESCE(currency, 'USD'), access, active, sort_order`
+
+// scanProductRow 把一行 productSelectCols 顺序的列扫到 model.Product。
+// period_supported 走 pgTextSlice 适配，再转成 []string。
+func scanProductRow(row interface{ Scan(...any) error }, p *model.Product) error {
+	var periodSupported pgTextSlice
+	err := row.Scan(
+		&p.ID, &p.Name, &p.Slug, &p.CPU, &p.MemoryMB, &p.DiskGB, &p.BandwidthTB,
+		&p.PriceMonthly, &p.PriceDaily, &periodSupported,
+		&p.Currency, &p.Access, &p.Active, &p.SortOrder,
+	)
+	if err != nil {
+		return err
+	}
+	p.PeriodSupported = []string(periodSupported)
+	return nil
+}
+
 func (r *ProductRepo) ListActive(ctx context.Context) ([]model.Product, error) {
 	rows, err := r.db.QueryContext(ctx,
-		`SELECT id, name, slug, cpu, memory_mb, disk_gb, bandwidth_tb, price_monthly, COALESCE(currency, 'USD'), access, active, sort_order
+		`SELECT `+productSelectCols+`
 		 FROM products WHERE active = true ORDER BY sort_order ASC, id ASC`)
 	if err != nil {
 		return nil, err
@@ -28,7 +51,7 @@ func (r *ProductRepo) ListActive(ctx context.Context) ([]model.Product, error) {
 	var products []model.Product
 	for rows.Next() {
 		var p model.Product
-		if err := rows.Scan(&p.ID, &p.Name, &p.Slug, &p.CPU, &p.MemoryMB, &p.DiskGB, &p.BandwidthTB, &p.PriceMonthly, &p.Currency, &p.Access, &p.Active, &p.SortOrder); err != nil {
+		if err := scanProductRow(rows, &p); err != nil {
 			return nil, err
 		}
 		products = append(products, p)
@@ -48,7 +71,7 @@ func (r *ProductRepo) ListPaged(ctx context.Context, limit, offset int) ([]model
 		return nil, 0, fmt.Errorf("count products: %w", err)
 	}
 
-	query := `SELECT id, name, slug, cpu, memory_mb, disk_gb, bandwidth_tb, price_monthly, COALESCE(currency, 'USD'), access, active, sort_order
+	query := `SELECT ` + productSelectCols + `
 		 FROM products ORDER BY sort_order ASC, id ASC`
 	args := []any{}
 	if limit > 0 {
@@ -65,7 +88,7 @@ func (r *ProductRepo) ListPaged(ctx context.Context, limit, offset int) ([]model
 	products := make([]model.Product, 0)
 	for rows.Next() {
 		var p model.Product
-		if err := rows.Scan(&p.ID, &p.Name, &p.Slug, &p.CPU, &p.MemoryMB, &p.DiskGB, &p.BandwidthTB, &p.PriceMonthly, &p.Currency, &p.Access, &p.Active, &p.SortOrder); err != nil {
+		if err := scanProductRow(rows, &p); err != nil {
 			return nil, 0, err
 		}
 		products = append(products, p)
@@ -75,10 +98,10 @@ func (r *ProductRepo) ListPaged(ctx context.Context, limit, offset int) ([]model
 
 func (r *ProductRepo) GetByID(ctx context.Context, id int64) (*model.Product, error) {
 	var p model.Product
-	err := r.db.QueryRowContext(ctx,
-		`SELECT id, name, slug, cpu, memory_mb, disk_gb, bandwidth_tb, price_monthly, COALESCE(currency, 'USD'), access, active, sort_order
-		 FROM products WHERE id = $1`, id,
-	).Scan(&p.ID, &p.Name, &p.Slug, &p.CPU, &p.MemoryMB, &p.DiskGB, &p.BandwidthTB, &p.PriceMonthly, &p.Currency, &p.Access, &p.Active, &p.SortOrder)
+	row := r.db.QueryRowContext(ctx,
+		`SELECT `+productSelectCols+`
+		 FROM products WHERE id = $1`, id)
+	err := scanProductRow(row, &p)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -93,14 +116,24 @@ func (r *ProductRepo) Create(ctx context.Context, p *model.Product) (*model.Prod
 	if currency == "" {
 		currency = "USD"
 	}
+	// period_supported NOT NULL：nil 时退到 DB 默认 ARRAY['monthly']，
+	// 显式传 [] 也合法但语义模糊，handler 层应当至少传 ['monthly']。
+	periods := pgTextArray(p.PeriodSupported)
+	if p.PeriodSupported == nil {
+		periods = pgTextArray{model.BillingPeriodMonthly}
+	}
 	var out model.Product
-	err := r.db.QueryRowContext(ctx,
-		`INSERT INTO products (name, slug, cpu, memory_mb, disk_gb, bandwidth_tb, price_monthly, currency, access, active, sort_order)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-		 RETURNING id, name, slug, cpu, memory_mb, disk_gb, bandwidth_tb, price_monthly, COALESCE(currency, 'USD'), access, active, sort_order`,
-		p.Name, p.Slug, p.CPU, p.MemoryMB, p.DiskGB, p.BandwidthTB, p.PriceMonthly, currency, p.Access, p.Active, p.SortOrder,
-	).Scan(&out.ID, &out.Name, &out.Slug, &out.CPU, &out.MemoryMB, &out.DiskGB, &out.BandwidthTB, &out.PriceMonthly, &out.Currency, &out.Access, &out.Active, &out.SortOrder)
-	if err != nil {
+	row := r.db.QueryRowContext(ctx,
+		`INSERT INTO products (name, slug, cpu, memory_mb, disk_gb, bandwidth_tb,
+			price_monthly, price_daily, period_supported,
+			currency, access, active, sort_order)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+		 RETURNING `+productSelectCols,
+		p.Name, p.Slug, p.CPU, p.MemoryMB, p.DiskGB, p.BandwidthTB,
+		p.PriceMonthly, p.PriceDaily, periods,
+		currency, p.Access, p.Active, p.SortOrder,
+	)
+	if err := scanProductRow(row, &out); err != nil {
 		return nil, fmt.Errorf("create product: %w", err)
 	}
 	return &out, nil
@@ -111,8 +144,18 @@ func (r *ProductRepo) Update(ctx context.Context, p *model.Product) error {
 	if currency == "" {
 		currency = "USD"
 	}
+	periods := pgTextArray(p.PeriodSupported)
+	if p.PeriodSupported == nil {
+		periods = pgTextArray{model.BillingPeriodMonthly}
+	}
 	_, err := r.db.ExecContext(ctx,
-		`UPDATE products SET name=$1, slug=$2, cpu=$3, memory_mb=$4, disk_gb=$5, bandwidth_tb=$6, price_monthly=$7, currency=$8, access=$9, active=$10, sort_order=$11, updated_at=NOW() WHERE id=$12`,
-		p.Name, p.Slug, p.CPU, p.MemoryMB, p.DiskGB, p.BandwidthTB, p.PriceMonthly, currency, p.Access, p.Active, p.SortOrder, p.ID)
+		`UPDATE products SET name=$1, slug=$2, cpu=$3, memory_mb=$4, disk_gb=$5,
+			bandwidth_tb=$6, price_monthly=$7, price_daily=$8, period_supported=$9,
+			currency=$10, access=$11, active=$12, sort_order=$13, updated_at=NOW()
+		 WHERE id=$14`,
+		p.Name, p.Slug, p.CPU, p.MemoryMB, p.DiskGB, p.BandwidthTB,
+		p.PriceMonthly, p.PriceDaily, periods,
+		currency, p.Access, p.Active, p.SortOrder, p.ID,
+	)
 	return err
 }

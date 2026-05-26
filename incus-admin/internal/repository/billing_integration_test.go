@@ -1,0 +1,257 @@
+//go:build integration
+
+package repository_test
+
+import (
+	"bytes"
+	"context"
+	"database/sql"
+	"errors"
+	"testing"
+	"time"
+
+	"github.com/incuscloud/incus-admin/internal/model"
+	"github.com/incuscloud/incus-admin/internal/repository"
+	"github.com/incuscloud/incus-admin/internal/testhelper"
+)
+
+// PLAN-054 / INFRA-013 + PLAN-053 / INFRA-012 skeleton 阶段 schema 验证测试：
+//
+// 业务流（订单 hook / billing worker / idempotency middleware）由 L3-E / L3-F /
+// L3-H 接入；本组测试只验证 028 / 029 migration 真的落了表 + 约束 + 索引，
+// 与 repo skeleton 的接口签名能跑通。
+
+// seedSubFixtures 准备一组 user / cluster / product / vm，返回 ID 让订阅测试用。
+func seedSubFixtures(t *testing.T, db *sql.DB) (userID, productID, clusterID, vmID int64) {
+	t.Helper()
+	ctx := context.Background()
+	if err := db.QueryRowContext(ctx,
+		`INSERT INTO users (email, name, role, balance) VALUES ($1,$2,'customer',100) RETURNING id`,
+		"sub@test", "sub").Scan(&userID); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	if err := db.QueryRowContext(ctx,
+		`INSERT INTO clusters (name, api_url) VALUES ('c-sub','https://x') RETURNING id`).Scan(&clusterID); err != nil {
+		t.Fatalf("seed cluster: %v", err)
+	}
+	if err := db.QueryRowContext(ctx,
+		`INSERT INTO products (name, price_monthly, cpu, memory_mb, disk_gb) VALUES ('p-sub',10,1,1024,10) RETURNING id`).Scan(&productID); err != nil {
+		t.Fatalf("seed product: %v", err)
+	}
+	if err := db.QueryRowContext(ctx,
+		`INSERT INTO vms (name, cluster_id, user_id, status, cpu, memory_mb, disk_gb, os_image, node)
+		 VALUES ('vm-sub', $1, $2, 'running', 1, 1024, 10, 'noop', 'noop') RETURNING id`,
+		clusterID, userID).Scan(&vmID); err != nil {
+		t.Fatalf("seed vm: %v", err)
+	}
+	return
+}
+
+// TestSubscriptionRepo_InsertGet 验证 vm_subscriptions 表能写入 + 查询，
+// 且 period 字段 + status 默认值都按 CHECK 落到 'monthly' / 'active'。
+func TestSubscriptionRepo_InsertGet(t *testing.T) {
+	db := testhelper.NewTestDB(t, "")
+	repo := repository.NewSubscriptionRepo(db)
+	userID, productID, _, vmID := seedSubFixtures(t, db)
+
+	monthly := 10.0
+	in := &model.VMSubscription{
+		VMID:        vmID,
+		ProductID:   productID,
+		UserID:      userID,
+		Period:      model.BillingPeriodMonthly,
+		MonthlyRate: &monthly,
+		PaidUntil:   time.Now().Add(30 * 24 * time.Hour),
+		Status:      model.SubscriptionStatusActive,
+	}
+	out, err := repo.Insert(context.Background(), in)
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if out.ID == 0 || out.Status != model.SubscriptionStatusActive || out.Period != model.BillingPeriodMonthly {
+		t.Fatalf("returned row not normalized: %+v", out)
+	}
+
+	got, err := repo.GetByVM(context.Background(), vmID)
+	if err != nil {
+		t.Fatalf("GetByVM: %v", err)
+	}
+	if got == nil || got.ID != out.ID {
+		t.Fatalf("GetByVM mismatch: %+v", got)
+	}
+}
+
+// TestChargeRepo_UniqueGuard 验证 billing_charges UNIQUE(subscription_id, charge_date)
+// 真的把 worker 重扣防御落到 DB 层；第二次 INSERT 同 (sub_id, date) 必须返
+// ErrChargeDuplicate（worker 据此 idempotent 跳过）。
+func TestChargeRepo_UniqueGuard(t *testing.T) {
+	db := testhelper.NewTestDB(t, "")
+	subRepo := repository.NewSubscriptionRepo(db)
+	chargeRepo := repository.NewChargeRepo(db)
+	userID, productID, _, vmID := seedSubFixtures(t, db)
+
+	monthly := 10.0
+	sub, err := subRepo.Insert(context.Background(), &model.VMSubscription{
+		VMID:        vmID,
+		ProductID:   productID,
+		UserID:      userID,
+		Period:      model.BillingPeriodMonthly,
+		MonthlyRate: &monthly,
+		PaidUntil:   time.Now().Add(30 * 24 * time.Hour),
+		Status:      model.SubscriptionStatusActive,
+	})
+	if err != nil {
+		t.Fatalf("Insert sub: %v", err)
+	}
+
+	today := time.Now().UTC().Truncate(24 * time.Hour)
+	first, err := chargeRepo.Insert(context.Background(), &model.BillingCharge{
+		SubscriptionID: sub.ID,
+		ChargeDate:     today,
+		Amount:         10,
+		Status:         model.BillingChargePaid,
+	})
+	if err != nil {
+		t.Fatalf("first Insert: %v", err)
+	}
+	if first.ID == 0 {
+		t.Fatalf("expected returned id")
+	}
+
+	_, err = chargeRepo.Insert(context.Background(), &model.BillingCharge{
+		SubscriptionID: sub.ID,
+		ChargeDate:     today,
+		Amount:         10,
+		Status:         model.BillingChargePaid,
+	})
+	if !errors.Is(err, repository.ErrChargeDuplicate) {
+		t.Fatalf("expected ErrChargeDuplicate on duplicate (sub, date), got %v", err)
+	}
+}
+
+// TestIdempotencyRepo_RoundTrip 验证 idempotency_keys 表能写入 / 读回，且
+// BYTEA 字段（response_body）能 byte-for-byte 还原；middleware 重放靠这一点。
+func TestIdempotencyRepo_RoundTrip(t *testing.T) {
+	db := testhelper.NewTestDB(t, "")
+	repo := repository.NewIdempotencyRepo(db)
+	userID, _, _, _ := seedSubFixtures(t, db)
+
+	body := []byte(`{"id":1,"status":"pending"}`)
+	in := &model.IdempotencyKey{
+		Key:          "test-key-001",
+		UserID:       userID,
+		Method:       "POST",
+		Path:         "/v1/instances",
+		StatusCode:   201,
+		ResponseBody: body,
+		RequestHash:  "deadbeef",
+	}
+	if err := repo.Insert(context.Background(), in); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+
+	got, err := repo.Get(context.Background(), "test-key-001")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got == nil {
+		t.Fatalf("Get returned nil")
+	}
+	if !bytes.Equal(got.ResponseBody, body) {
+		t.Fatalf("response_body byte mismatch: got %q want %q", got.ResponseBody, body)
+	}
+	if got.StatusCode != 201 || got.Method != "POST" {
+		t.Fatalf("status/method mismatch: %+v", got)
+	}
+
+	// cleanup 也跑一遍，cutoff 是未来时间所以应该删掉这一行
+	n, err := repo.DeleteOlderThan(context.Background(), time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("DeleteOlderThan: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("expected 1 row deleted, got %d", n)
+	}
+}
+
+// TestProductRepo_NewColumnsScan 回归测试：products 加 price_daily +
+// period_supported 后 ListActive / GetByID 必须能完整扫描，扫描偏移错位的话
+// PriceMonthly 会读到 price_daily 的 NULL，整个 Scan 会失败。
+func TestProductRepo_NewColumnsScan(t *testing.T) {
+	db := testhelper.NewTestDB(t, "")
+	repo := repository.NewProductRepo(db)
+
+	ctx := context.Background()
+	// 直接 SQL 插入：测试 ALTER 加的字段 + DEFAULT 都正确生效
+	var id int64
+	if err := db.QueryRowContext(ctx,
+		`INSERT INTO products (name, price_monthly, cpu, memory_mb, disk_gb, active)
+		 VALUES ('p-default', 10, 1, 1024, 10, true) RETURNING id`).Scan(&id); err != nil {
+		t.Fatalf("seed product: %v", err)
+	}
+
+	got, err := repo.GetByID(ctx, id)
+	if err != nil || got == nil {
+		t.Fatalf("GetByID: %v / %+v", err, got)
+	}
+	if got.PriceMonthly != 10 {
+		t.Fatalf("scan offset issue: PriceMonthly=%v want 10", got.PriceMonthly)
+	}
+	if got.PriceDaily != nil {
+		t.Fatalf("PriceDaily should default to NULL, got %v", *got.PriceDaily)
+	}
+	if len(got.PeriodSupported) != 1 || got.PeriodSupported[0] != model.BillingPeriodMonthly {
+		t.Fatalf("period_supported default broken: %v", got.PeriodSupported)
+	}
+
+	// 走 Update 路径写 daily 套餐
+	daily := 0.5
+	got.PriceDaily = &daily
+	got.PeriodSupported = []string{model.BillingPeriodMonthly, model.BillingPeriodDaily}
+	if err := repo.Update(ctx, got); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	reread, _ := repo.GetByID(ctx, id)
+	if reread.PriceDaily == nil || *reread.PriceDaily != 0.5 {
+		t.Fatalf("PriceDaily round-trip broken: %+v", reread.PriceDaily)
+	}
+	if len(reread.PeriodSupported) != 2 {
+		t.Fatalf("PeriodSupported round-trip lost values: %v", reread.PeriodSupported)
+	}
+}
+
+// TestOrderRepo_PeriodDefault 回归测试：orders 加 period 后 Create 走默认
+// 'monthly'；新 CreateWithPeriod 能显式写 'daily'。SELECT 列扫描错位会让
+// ExpiresAt 错位到 period 字段（string→*time.Time scan 会报错）。
+func TestOrderRepo_PeriodDefault(t *testing.T) {
+	db := testhelper.NewTestDB(t, "")
+	repo := repository.NewOrderRepo(db)
+	userID, _ := seedPayable(t, db, 100, 50)
+
+	// 老签名 Create → period='monthly'
+	o, err := repo.Create(context.Background(), userID, 1, 1, 25, "USD")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if o.Period != model.BillingPeriodMonthly {
+		t.Fatalf("default period want monthly got %s", o.Period)
+	}
+
+	// 新签名 CreateWithPeriod → period='daily'
+	o2, err := repo.CreateWithPeriod(context.Background(), userID, 1, 1, 1, "USD", model.BillingPeriodDaily)
+	if err != nil {
+		t.Fatalf("CreateWithPeriod: %v", err)
+	}
+	if o2.Period != model.BillingPeriodDaily {
+		t.Fatalf("explicit period want daily got %s", o2.Period)
+	}
+
+	// GetByID 回读：也要能取到正确 period
+	got, err := repo.GetByID(context.Background(), o2.ID)
+	if err != nil || got == nil {
+		t.Fatalf("GetByID: %v / %+v", err, got)
+	}
+	if got.Period != model.BillingPeriodDaily {
+		t.Fatalf("GetByID period want daily got %s", got.Period)
+	}
+}
