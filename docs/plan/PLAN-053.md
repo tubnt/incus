@@ -84,9 +84,12 @@ AI 通过 MCP 工具调度自己账下 VM；不动 portal/admin 现有 API，只
 - `DELETE /v1/instances/{id}` → trash，status=`deleting`
 - `POST /v1/instances/{id}/reboot|shutdown|boot` → 复用 `vm.VMAction`
 - `Idempotency-Key` middleware：
-  - DB 表 `idempotency_keys (key TEXT PRIMARY KEY, user_id, response_body BYTEA, status_code INT, created_at)`
+  - DB 表 `idempotency_keys` —— migration `029_idempotency_keys.sql`（实际编号；
+    025/026 alert + 027 cluster region 占用，本表落在 028 billing 之后）
+    schema: `key TEXT PRIMARY KEY, user_id, method, path, status_code, response_body BYTEA, request_hash, created_at`
   - 24h TTL（cleanup worker 复用 audit_cleanup 套路）
-  - 命中 key → 直接返缓存响应；未命中 → 走业务，写入 key
+  - 命中 key → 比对 request_hash → 一致回放缓存响应，异 payload 返 422
+  - 未命中 → 走业务，写入 key + status_code + response_body
   - 只对 POST/DELETE 生效
 
 ### Phase F：OpenAPI spec + 单测 + 文档（~0.5–1 天）
@@ -134,3 +137,57 @@ scope 是 **二选一**（见 INFRA-012 task），等用户拍板。
 - 本地：`bun run typecheck && go test ./... && go build ./cmd/server`
 - E2E：起 incus-admin → 创 token → curl 跑完 11 端点（顺路给 cloud-gateway 团队的 curl example）
 - 灰度：先在测试 cluster 开 `/v1/*`，验证 1–2 周再开生产
+
+## 8. 实施进度
+
+| Phase | 状态 | 落地点 |
+| ----- | --- | ------ |
+| A 骨架 | ⏳ 待 L3-A | `internal/handler/v1/` + middleware.RateLimitV1 |
+| B read-only | ⏳ 待 L3-B | /v1/account /v1/instances /v1/types /v1/regions /v1/images /v1/ssh-keys |
+| C cluster region migration | ⏳ 待 L3-B（用 027） | `db/migrations/027_cluster_region_metadata.sql`（编号已预留） |
+| D POST /v1/instances | ⏳ 待 L3-D | 复用 OrderService + Idempotency-Key 接入 |
+| E DELETE + Idempotency schema | ✅ schema 已完成（L3 cloud-gateway 第一批） | `db/migrations/029_idempotency_keys.sql` + `model.IdempotencyKey` + `repository.IdempotencyRepo` skeleton（middleware 留给 L3-H） |
+| F OpenAPI + 单测 + 文档 | ⏳ 待 L3-F | openapi.yaml 增 /v1/* + curl example |
+
+## 8. 实施进度
+
+### Phase A 骨架（2026-05-26 完成 · campaign cloud-gateway-20260526202415）
+
+- ✅ `internal/handler/v1/` 包：
+  - `handler.go` — `Handler` 结构体 + `New()` 构造函数（Phase A 无依赖；后续阶段按需注入）
+  - `router.go` — `Routes(r chi.Router)` 挂载 11 个端点占位（7 read-only + 4 写，写端点拆出 reboot/shutdown/boot 共 5 个；EndpointCount=12）；占位统一返 `501` + `{"errors":[{"field":"","reason":"not_implemented"}]}`
+  - `errors.go` — `FieldError{Field,Reason}` + `writeErr/writeErrs`；空 errs 兜底为 `unknown`，避免空数组歧义
+  - `pagination.go` — `parsePagination` 默认 page=1 / page_size=25、上限 100；非法/越界返 `*paginationErr`；`writePage` 自动算 `pages = ceil(total/page_size)`，total<0 钳到 0
+- ✅ `internal/middleware/ratelimit_v1.go`：
+  - 自实现 token bucket（capacity=burst，refill=rpm/60）；
+    每 token 一桶 → 用户互不影响
+  - 写操作（POST/PUT/PATCH/DELETE）额外过独立 write 桶；
+    write 桶顶住时退回 main 桶 token，避免读写互相饿死
+  - 命中 429 时：IETF `RateLimit-Limit/Remaining/Reset` + `Retry-After` + StructuredError
+  - env：`INCUS_ADMIN_RATELIMIT_V1_RPM`（默认 100）+ `INCUS_ADMIN_RATELIMIT_V1_BURST`（默认 30）
+  - 10 分钟清理 idle 桶，防止 map 无限增长
+- ✅ `internal/middleware/auth.go` 新增 `RequireBearer`：Bearer-only 鉴权
+  （不接受 oauth2-proxy header / shadow cookie / emergency cookie），
+  失败返 401 StructuredError（reason: `missing_bearer` / `invalid_token`），
+  `tokenValidator` 未设置返 503（reason: `token_validator_unset`），
+  通过后写入 `CtxUserID + CtxAuthMethod=api_token`
+- ✅ `internal/server/server.go`：
+  - 新增 `Handlers.V1 RouteRegistrar`
+  - 在 ProxyAuth Group **之外** 挂载 `/v1`：
+    `r.Use(middleware.RequireBearer)` → `r.Use(middleware.RateLimitV1FromEnv())` → `h.V1.Routes(r)`
+  - 启动日志：`slog.Info("v1 routes registered", "endpoints", v1handler.EndpointCount)`
+- ✅ `cmd/server/main.go`：`Handlers.V1 = v1handler.New()`
+- ✅ 单测：
+  - `handler/v1/errors_test.go`：writeErr / writeErrs / 空数组兜底 / notImplemented
+  - `handler/v1/pagination_test.go`：缺省 / 边界 100 / >100 / 非整数 / 负值 / writePage 计算（0、101→5）
+  - `handler/v1/router_test.go`：11 端点全部 501 + Content-Type + StructuredError；与 EndpointCount 同步校验
+  - `middleware/ratelimit_v1_test.go`：burst 30 全放行 / 31 个 429 + headers / 多用户隔离 / 写桶独立 / env defaults
+  - `middleware/ratelimit_v1_test.go` 同文件覆盖 RequireBearer：tokenValidator nil / 缺 header / 非 ica_ / 合法 token
+- ✅ `go build ./...` 全绿；`go test ./...` 全绿；`golangci-lint run ./internal/handler/v1/... ./internal/middleware/... ./internal/server/...` 零警告（main.go 的 `rowserrcheck` 是 pre-existing 不在本 Phase 范围）
+
+#### Phase A 范围内**未做**（按设计）
+
+- 任何具体业务实现（DTO mapping → Phase B；POST /instances → Phase D；DELETE+actions → Phase E）
+- Idempotency-Key middleware（Phase E）
+- OpenAPI yaml 更新（Phase F）
+- region metadata migration（Phase C）
