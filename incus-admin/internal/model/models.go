@@ -30,10 +30,29 @@ type Cluster struct {
 	StoragePool    string `json:"storage_pool,omitempty" db:"storage_pool"`
 	Network        string `json:"network,omitempty" db:"network"`
 	// IPPoolsJSON 是 config.IPPoolConfig 数组的序列化形式；repo 层 unmarshal
-	IPPoolsJSON string    `json:"-" db:"ip_pools_json"`
-	CreatedAt   time.Time `json:"created_at" db:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at" db:"updated_at"`
+	IPPoolsJSON string `json:"-" db:"ip_pools_json"`
+	// PLAN-053 Phase C / INFRA-012：region metadata（cloud-gateway /v1/regions 必需）
+	// country / city 留空表示未填；region_status 与 status 解耦，仅用于对外开放下单口径。
+	// capabilities 一期固定 ["instances"]。
+	Country      string `json:"country,omitempty" db:"country"`
+	City         string `json:"city,omitempty" db:"city"`
+	RegionStatus string `json:"region_status" db:"region_status"`
+	// CapabilitiesJSON 是 capabilities JSONB 列的原始字节；repo 层负责 unmarshal 到 Capabilities。
+	CapabilitiesJSON []byte    `json:"-" db:"capabilities"`
+	Capabilities     []string  `json:"capabilities" db:"-"`
+	CreatedAt        time.Time `json:"created_at" db:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at" db:"updated_at"`
 }
+
+const (
+	RegionStatusAvailable   = "available"
+	RegionStatusUnavailable = "unavailable"
+	RegionStatusMaintenance = "maintenance"
+)
+
+// DefaultClusterCapabilities 与 migration 027 中 JSONB DEFAULT 对齐；
+// repo 层 unmarshal 失败 / 列为 NULL 时回退到这个值。
+var DefaultClusterCapabilities = []string{"instances"}
 
 type VM struct {
 	ID                  int64      `json:"id" db:"id"`

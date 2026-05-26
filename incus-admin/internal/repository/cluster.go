@@ -36,28 +36,76 @@ func (r *ClusterRepo) Upsert(ctx context.Context, name, displayName, apiURL stri
 	return id, nil
 }
 
+// 基础 SELECT 列集合（GetByName / GetByID / List 共用）。
+// 含 PLAN-053 Phase C 的 country/city/region_status/capabilities，
+// 由 scanBase + finalizeRegion 负责把 NULL → 默认值。
+const clusterBaseColumns = `id, name, display_name, api_url, status,
+	country, city,
+	COALESCE(region_status, 'available') AS region_status,
+	COALESCE(capabilities, '["instances"]'::jsonb) AS capabilities,
+	created_at, updated_at`
+
+// scanBase 把基础列填进 c，并把 capabilities 字节流 unmarshal 到 c.Capabilities。
+// country / city 用 sql.NullString 兜底 NULL，避免 Cluster.Country 拿到 "(null)".
+func (r *ClusterRepo) scanBase(rs interface{ Scan(...any) error }, c *model.Cluster) error {
+	var country, city sql.NullString
+	if err := rs.Scan(
+		&c.ID, &c.Name, &c.DisplayName, &c.APIURL, &c.Status,
+		&country, &city,
+		&c.RegionStatus,
+		&c.CapabilitiesJSON,
+		&c.CreatedAt, &c.UpdatedAt,
+	); err != nil {
+		return err
+	}
+	c.Country = country.String
+	c.City = city.String
+	finalizeRegion(c)
+	return nil
+}
+
+// finalizeRegion 把 CapabilitiesJSON 反序列化到 Capabilities，
+// 失败 / 空 / 非数组都回退到 DefaultClusterCapabilities 副本（避免别名共享）。
+func finalizeRegion(c *model.Cluster) {
+	if c.RegionStatus == "" {
+		c.RegionStatus = model.RegionStatusAvailable
+	}
+	c.Capabilities = nil
+	if len(c.CapabilitiesJSON) > 0 {
+		var caps []string
+		if err := json.Unmarshal(c.CapabilitiesJSON, &caps); err == nil && caps != nil {
+			c.Capabilities = caps
+		}
+	}
+	if c.Capabilities == nil {
+		c.Capabilities = append([]string{}, model.DefaultClusterCapabilities...)
+	}
+}
+
 func (r *ClusterRepo) GetByName(ctx context.Context, name string) (*model.Cluster, error) {
 	var c model.Cluster
-	err := r.db.QueryRowContext(ctx,
-		`SELECT id, name, display_name, api_url, status, created_at, updated_at
-		 FROM clusters WHERE name = $1`, name,
-	).Scan(&c.ID, &c.Name, &c.DisplayName, &c.APIURL, &c.Status, &c.CreatedAt, &c.UpdatedAt)
-	if err == sql.ErrNoRows {
-		return nil, nil
+	row := r.db.QueryRowContext(ctx,
+		`SELECT `+clusterBaseColumns+` FROM clusters WHERE name = $1`, name)
+	if err := r.scanBase(row, &c); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
 	}
-	return &c, err
+	return &c, nil
 }
 
 func (r *ClusterRepo) GetByID(ctx context.Context, id int64) (*model.Cluster, error) {
 	var c model.Cluster
-	err := r.db.QueryRowContext(ctx,
-		`SELECT id, name, display_name, api_url, status, created_at, updated_at
-		 FROM clusters WHERE id = $1`, id,
-	).Scan(&c.ID, &c.Name, &c.DisplayName, &c.APIURL, &c.Status, &c.CreatedAt, &c.UpdatedAt)
-	if err == sql.ErrNoRows {
-		return nil, nil
+	row := r.db.QueryRowContext(ctx,
+		`SELECT `+clusterBaseColumns+` FROM clusters WHERE id = $1`, id)
+	if err := r.scanBase(row, &c); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
 	}
-	return &c, err
+	return &c, nil
 }
 
 // GetTLSFingerprint reads the stored SPKI sha256 pin (hex) for a cluster.
@@ -92,8 +140,7 @@ func (r *ClusterRepo) SetTLSFingerprint(ctx context.Context, name, fingerprint s
 
 func (r *ClusterRepo) List(ctx context.Context) ([]model.Cluster, error) {
 	rows, err := r.db.QueryContext(ctx,
-		`SELECT id, name, display_name, api_url, status, created_at, updated_at
-		 FROM clusters ORDER BY id`)
+		`SELECT `+clusterBaseColumns+` FROM clusters ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -102,7 +149,7 @@ func (r *ClusterRepo) List(ctx context.Context) ([]model.Cluster, error) {
 	var out []model.Cluster
 	for rows.Next() {
 		var c model.Cluster
-		if err := rows.Scan(&c.ID, &c.Name, &c.DisplayName, &c.APIURL, &c.Status, &c.CreatedAt, &c.UpdatedAt); err != nil {
+		if err := r.scanBase(rows, &c); err != nil {
 			return nil, err
 		}
 		out = append(out, c)
@@ -112,8 +159,9 @@ func (r *ClusterRepo) List(ctx context.Context) ([]model.Cluster, error) {
 
 // PLAN-027 / INFRA-003：完整 cluster 配置 CRUD。
 
-// ListFull 返回所有 clusters 行的完整配置（含 cert/key/ca path、ip_pools_json、kind）。
-// main.go 启动时调用，把 DB 内容转 ClusterConfig 喂给 cluster.Manager。
+// ListFull 返回所有 clusters 行的完整配置（含 cert/key/ca path、ip_pools_json、kind、
+// PLAN-053 region metadata）。main.go 启动时调用，把 DB 内容转 ClusterConfig
+// 喂给 cluster.Manager。
 func (r *ClusterRepo) ListFull(ctx context.Context) ([]model.Cluster, error) {
 	rows, err := r.db.QueryContext(ctx,
 		`SELECT id, name, COALESCE(display_name,''), api_url, status,
@@ -121,6 +169,9 @@ func (r *ClusterRepo) ListFull(ctx context.Context) ([]model.Cluster, error) {
 		        COALESCE(cert_file,''), COALESCE(key_file,''), COALESCE(ca_file,''),
 		        COALESCE(default_project,''), COALESCE(storage_pool,''), COALESCE(network,''),
 		        COALESCE(ip_pools_json::text,''),
+		        country, city,
+		        COALESCE(region_status, 'available'),
+		        COALESCE(capabilities, '["instances"]'::jsonb),
 		        created_at, updated_at
 		 FROM clusters ORDER BY id`)
 	if err != nil {
@@ -131,16 +182,23 @@ func (r *ClusterRepo) ListFull(ctx context.Context) ([]model.Cluster, error) {
 	var out []model.Cluster
 	for rows.Next() {
 		var c model.Cluster
+		var country, city sql.NullString
 		if err := rows.Scan(
 			&c.ID, &c.Name, &c.DisplayName, &c.APIURL, &c.Status,
 			&c.Kind,
 			&c.CertFile, &c.KeyFile, &c.CAFile,
 			&c.DefaultProject, &c.StoragePool, &c.Network,
 			&c.IPPoolsJSON,
+			&country, &city,
+			&c.RegionStatus,
+			&c.CapabilitiesJSON,
 			&c.CreatedAt, &c.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
+		c.Country = country.String
+		c.City = city.String
+		finalizeRegion(&c)
 		out = append(out, c)
 	}
 	return out, rows.Err()
@@ -148,6 +206,11 @@ func (r *ClusterRepo) ListFull(ctx context.Context) ([]model.Cluster, error) {
 
 // CreateFull 持久化一个完整 cluster / standalone host 配置。kind 缺省 'cluster'。
 // ip_pools 为 nil 写 NULL；非 nil 序列化为 JSONB。
+//
+// 不在这里 SET region metadata（country/city/region_status/capabilities）——
+// 留给后续的 admin UI region 编辑入口（PLAN-053 后续 task）。新行的默认值
+// 由 migration 027 提供（country/city NULL, region_status='available',
+// capabilities='["instances"]'）。
 //
 // 与 Upsert 区别：CreateFull 走 INSERT ... ON CONFLICT UPDATE 写完整字段；
 // Upsert 仅更新基础字段（保留旧的 cert/kind 不变）—— Upsert 给 env bootstrap
