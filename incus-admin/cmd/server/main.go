@@ -520,13 +520,20 @@ func runServer() {
 		OpenAPI: openapi.NewHandler(),
 		// PLAN-053 / INFRA-012 cloud-gateway /v1 适配层
 		V1: v1handler.New(v1handler.Deps{
-			Users:       userRepo,
-			VMs:         vmRepo,
-			Products:    productRepo,
-			Clusters:    clusterRepo,
-			OSTemplates: osTemplateRepo,
-			SSHKeys:     sshKeyRepo,
-			Orders:      orderRepo,
+			Users:             userRepo,
+			VMs:               vmRepo,
+			Products:          productRepo,
+			Clusters:          clusterRepo,
+			OSTemplates:       osTemplateRepo,
+			SSHKeys:           sshKeyRepo,
+			Orders:            orderRepo,
+			ClustersByName:    clusterRepo,
+			OSTemplatesBySlug: osTemplateRepo,
+			ProductsBySlug:    productRepo,
+			SSHKeysOwner:      sshKeyRepo,
+			OrderProvision:    orderHandler,
+			VMTrash:           portalVMHandler,
+			VMAction:          portalVMHandler,
 		}),
 	})
 
