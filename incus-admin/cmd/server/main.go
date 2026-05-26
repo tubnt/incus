@@ -198,6 +198,9 @@ func runServer() {
 	osTemplateRepo := repository.NewOSTemplateRepo(db)
 	firewallRepo := repository.NewFirewallRepo(db)
 	floatingIPRepo := repository.NewFloatingIPRepo(db)
+	// PLAN-053 Phase E：cloud-gateway /v1 写操作幂等缓存。仓储 + middleware +
+	// 24h cleanup worker 协同工作；缺一不可。middleware 接入见下方 Handlers.Idempotency。
+	idempotencyRepo := repository.NewIdempotencyRepo(db)
 	portal.SetAuditRepo(auditRepo)
 	portal.SetIPAddrRepo(ipAddrRepo)
 	portal.SetUserRepo(userRepo)
@@ -308,6 +311,10 @@ func runServer() {
 	// API token cleanup: removes expired rows after a 30d grace period so
 	// audit cross-references survive short investigations.
 	go worker.RunAPITokenCleanup(workerCtx, apiTokenRepo, 30*24*time.Hour)
+
+	// PLAN-053 Phase E：idempotency_keys 24h TTL cleanup。每小时 (~第 7 分) 跑一次，
+	// 配合 middleware.Idempotency 共同实现 cloud-gateway 标准幂等。
+	go worker.RunIdempotencyCleanup(workerCtx, idempotencyRepo, time.Hour)
 
 	// PLAN-020 Phase A: VM state reverse-sync worker. Polls each Incus
 	// cluster every 60s, diffs against active `vms` rows, and flips rows
@@ -528,6 +535,9 @@ func runServer() {
 			SSHKeys:     sshKeyRepo,
 			Orders:      orderRepo,
 		}),
+		// PLAN-053 Phase E：/v1 POST/DELETE 幂等 middleware 依赖；server.go
+		// 在 RequireBearer + RateLimitV1 之后挂 middleware.Idempotency(idempotencyRepo)
+		Idempotency: idempotencyRepo,
 	})
 
 	runErr := srv.Run()

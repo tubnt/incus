@@ -146,11 +146,11 @@ func TestIdempotencyRepo_RoundTrip(t *testing.T) {
 		ResponseBody: body,
 		RequestHash:  "deadbeef",
 	}
-	if err := repo.Insert(context.Background(), in); err != nil {
-		t.Fatalf("Insert: %v", err)
+	if err := repo.Put(context.Background(), *in); err != nil {
+		t.Fatalf("Put: %v", err)
 	}
 
-	got, err := repo.Get(context.Background(), "test-key-001")
+	got, err := repo.Get(context.Background(), "test-key-001", userID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -162,6 +162,20 @@ func TestIdempotencyRepo_RoundTrip(t *testing.T) {
 	}
 	if got.StatusCode != 201 || got.Method != "POST" {
 		t.Fatalf("status/method mismatch: %+v", got)
+	}
+
+	// 跨用户读必须 miss——Get scoped by user_id 防 cross-user replay。
+	other, err := repo.Get(context.Background(), "test-key-001", userID+9999)
+	if err != nil {
+		t.Fatalf("cross-user Get: %v", err)
+	}
+	if other != nil {
+		t.Fatalf("cross-user Get should miss, got %+v", other)
+	}
+
+	// 再 Put 一次相同 key：ON CONFLICT DO NOTHING 不抛错。
+	if err := repo.Put(context.Background(), *in); err != nil {
+		t.Fatalf("Put on conflict (DO NOTHING) should not error: %v", err)
 	}
 
 	// cleanup 也跑一遍，cutoff 是未来时间所以应该删掉这一行

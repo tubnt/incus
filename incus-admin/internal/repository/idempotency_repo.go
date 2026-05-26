@@ -11,7 +11,9 @@ import (
 
 // IdempotencyRepo PLAN-053 / INFRA-012 idempotency_keys 表读写。
 //
-// skeleton：方法签名稳定，middleware 接入留给 L3-H。
+// 与 middleware.IdempotencyStore 接口签名对齐：Get/Put/DeleteOlderThan。
+// PRIMARY KEY (key) 已天然唯一，但 Get 仍把 user_id 进 WHERE，防止恶意用户
+// 通过预测 key 观察他人缓存响应（cross-user replay 防护）。
 type IdempotencyRepo struct {
 	db *sql.DB
 }
@@ -30,10 +32,14 @@ func scanIdempotency(row interface{ Scan(...any) error }, k *model.IdempotencyKe
 
 // Get 拉一条缓存。未命中返 (nil, nil)。命中后由 middleware 比对 request_hash
 // 决定是回放（hash 一致）还是返 422（同 key 异 payload）。
-func (r *IdempotencyRepo) Get(ctx context.Context, key string) (*model.IdempotencyKey, error) {
+//
+// userID 进 WHERE 是 cross-user 防护：A 用户的 key 在 B 用户 ctx 下查不到，
+// 也就无法观察到 A 的缓存响应体。
+func (r *IdempotencyRepo) Get(ctx context.Context, key string, userID int64) (*model.IdempotencyKey, error) {
 	var k model.IdempotencyKey
 	row := r.db.QueryRowContext(ctx,
-		`SELECT `+idempotencySelectCols+` FROM idempotency_keys WHERE key = $1`, key)
+		`SELECT `+idempotencySelectCols+` FROM idempotency_keys WHERE key = $1 AND user_id = $2`,
+		key, userID)
 	err := scanIdempotency(row, &k)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -44,16 +50,18 @@ func (r *IdempotencyRepo) Get(ctx context.Context, key string) (*model.Idempoten
 	return &k, nil
 }
 
-// Insert 写一条新缓存。并发命中会触发 PRIMARY KEY 冲突，调用方应当退回 Get
-// 拿现存记录（PLAN-053 risk #2 对策）。
-func (r *IdempotencyRepo) Insert(ctx context.Context, k *model.IdempotencyKey) error {
+// Put 写一条新缓存。ON CONFLICT (key) DO NOTHING 保证 race 场景下先到先得，
+// 第二个写入不抛错也不覆盖（PLAN-053 risk #2 对策）。调用方关心后续重放时
+// 是否读到自己写的那条，直接 Get 即可。
+func (r *IdempotencyRepo) Put(ctx context.Context, k model.IdempotencyKey) error {
 	_, err := r.db.ExecContext(ctx,
 		`INSERT INTO idempotency_keys (key, user_id, method, path, status_code, response_body, request_hash)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		 VALUES ($1, $2, $3, $4, $5, $6, $7)
+		 ON CONFLICT (key) DO NOTHING`,
 		k.Key, k.UserID, k.Method, k.Path, k.StatusCode, k.ResponseBody, k.RequestHash,
 	)
 	if err != nil {
-		return fmt.Errorf("insert idempotency: %w", err)
+		return fmt.Errorf("put idempotency: %w", err)
 	}
 	return nil
 }
