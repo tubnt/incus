@@ -70,3 +70,5 @@ Each plan is a single line linking to its detail file. All detailed information 
 - [x] [**PLAN-042 OpenAPI 规范 + Terraform Provider（INFRA-010）**](PLAN-042.md) `2026-05-09`
 - [x] [**PLAN-043 一键 Bootstrap CLI —— 5 分钟出私有云（INFRA-011）**](PLAN-043.md) `2026-05-09`
 - [~] [**PLAN-051 全平台收口包 —— Session-1/2/3 + QA-009 一次性闭环（71/74 项落地，余项→OPS-047）**](PLAN-051.md) `2026-05-09`
+- [ ] [**PLAN-053 cloud-gateway /v1 适配层（INFRA-012）**](PLAN-053.md) `2026-05-26`
+- [ ] [**PLAN-054 按天付费 billing engine（INFRA-013）**](PLAN-054.md) `2026-05-26`
