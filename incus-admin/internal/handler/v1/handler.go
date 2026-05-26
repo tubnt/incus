@@ -66,6 +66,13 @@ type orderReader interface {
 	GetByID(ctx context.Context, id int64) (*model.Order, error)
 }
 
+// subscriptionReader 抽象 SubscriptionRepo.ListByUser，用于 /v1/account 折算
+// estimated_runway_days。status="active" → 只列 active 行；nil 依赖时 Account
+// 返不带 runway 字段，不影响其它端点。
+type subscriptionReader interface {
+	ListByUser(ctx context.Context, userID int64, status string) ([]model.VMSubscription, error)
+}
+
 // orderProvisioner 抽象 portal.OrderHandler 的一步购买入口；接口允许测试注入 fake。
 // 实现见 portal/order_v1.go。
 type orderProvisioner interface {
@@ -93,6 +100,10 @@ type Deps struct {
 	OSTemplates osTemplateReader
 	SSHKeys     sshKeyReader
 	Orders      orderReader
+
+	// Subscriptions 给 /v1/account 折算 estimated_runway_days。nil 时端点正常工
+	// 作但不返该字段（与 PLAN-054 / cloud-gateway client 容忍 omitempty 一致）。
+	Subscriptions subscriptionReader
 
 	// Phase D/E 新增依赖：
 	// ClustersByName 用于校验 region 是 available；为空时 Phase D POST 拒绝（500）。

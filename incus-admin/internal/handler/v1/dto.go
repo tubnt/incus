@@ -9,12 +9,15 @@ import (
 
 // AccountDTO /v1/account 响应：当前 Bearer token 持有人的最小账户信息。
 // balance / currency 字段名固定，给 cloud-gateway 标准 client 用；email 不含 PII
-// 之外的字段。
+// 之外的字段。EstimatedRunwayDays 由 PLAN-054 active vm_subscriptions 折算（daily +
+// monthly/30 汇总日均消耗 → balance / dailyBurn）；无 active sub / burn=0 / balance<=0
+// 时 omitempty 不输出（与前端 computeRunwayDays 语义一致）。
 type AccountDTO struct {
-	ID       int64   `json:"id"`
-	Email    string  `json:"email"`
-	Balance  float64 `json:"balance"`
-	Currency string  `json:"currency"`
+	ID                  int64    `json:"id"`
+	Email               string   `json:"email"`
+	Balance             float64  `json:"balance"`
+	Currency            string   `json:"currency"`
+	EstimatedRunwayDays *float64 `json:"estimated_runway_days,omitempty"`
 }
 
 // InstanceDTO /v1/instances 单条。字段命名对齐 cloud-gateway 标准：
@@ -92,7 +95,8 @@ type SSHKeyDTO struct {
 
 // toAccountDTO 把 model.User 折成 cloud-gateway /v1/account 响应。
 // currency 一期固定 "USD"（products 表沿用同币种；后续多币种支持时改为读 product
-// 或新建 users.currency 列）。
+// 或新建 users.currency 列）。runway 字段由 caller 在拿到 sub list 后单独算填，
+// 与 user fetch 解耦避免读不到 sub 时阻塞响应。
 func toAccountDTO(u model.User) AccountDTO {
 	return AccountDTO{
 		ID:       u.ID,
@@ -100,6 +104,44 @@ func toAccountDTO(u model.User) AccountDTO {
 		Balance:  u.Balance,
 		Currency: "USD",
 	}
+}
+
+// computeRunwayDays 把 balance + active vm_subscriptions 折算成日均消耗下的剩余
+// 运行天数。算法与前端 web/src/features/billing/subscriptions-api.ts 的
+// computeRunwayDays 完全对齐：
+//   - balance <= 0 → nil（前端 null）
+//   - daily sub：dailyBurn += daily_rate（rate==nil 跳过）
+//   - monthly sub：dailyBurn += monthly_rate / 30
+//   - 非 active 状态全部跳过
+//   - 汇总 dailyBurn <= 0（无 active sub / rate 全空）→ nil
+//   - 否则返 *float64(balance / dailyBurn)
+//
+// 故意返指针：JSON omitempty 拿 nil 时不输出字段，与前端逻辑等价。
+func computeRunwayDays(balance float64, subs []model.VMSubscription) *float64 {
+	if balance <= 0 {
+		return nil
+	}
+	dailyBurn := 0.0
+	for _, s := range subs {
+		if s.Status != model.SubscriptionStatusActive {
+			continue
+		}
+		switch s.Period {
+		case model.BillingPeriodDaily:
+			if s.DailyRate != nil {
+				dailyBurn += *s.DailyRate
+			}
+		case model.BillingPeriodMonthly:
+			if s.MonthlyRate != nil {
+				dailyBurn += *s.MonthlyRate / 30.0
+			}
+		}
+	}
+	if dailyBurn <= 0 {
+		return nil
+	}
+	runway := balance / dailyBurn
+	return &runway
 }
 
 // toInstanceDTO 折出单条 InstanceDTO。

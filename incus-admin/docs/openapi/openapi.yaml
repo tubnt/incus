@@ -43,6 +43,17 @@ tags:
     description: PLAN-041 通知通道
   - name: metrics
     description: Prometheus exposition + 业务指标
+  - name: cloud-gateway
+    description: |
+      PLAN-053 / INFRA-012 cloud-gateway 标准 /v1 适配层。Bearer-only 鉴权，
+      独立 token-bucket（默认 100 rpm + burst 30，写操作单独再过 30 burst 桶）。
+      错误响应统一 `{"errors":[{"field","reason","message?"}]}`；分页统一
+      `?page=&page_size=` + `{"data":[],"page","page_size","pages","total"}`。
+      写端点（POST/DELETE/actions）可选 `Idempotency-Key`（16..255 字符，
+      `[A-Za-z0-9._-]`）；命中重放时响应头 `Idempotent-Replay: true`，5xx 不
+      缓存、2xx/4xx 缓存 24h。POST /v1/instances 返 201 + status=`pending`，
+      AI 端需轮询 GET /v1/instances/{id} 直到 status=`running`。DELETE 是
+      trash 语义（status=`deleting` + 30s 软删除），同名 GET 在 30s 内仍可见。
 paths:
   /health:
     get:
@@ -316,6 +327,291 @@ paths:
         '200': { description: ok }
         '401': { $ref: '#/components/responses/StepUpRequired' }
 
+  # ============ cloud-gateway /v1 适配层（PLAN-053 / INFRA-012） ============
+  /v1/account:
+    get:
+      summary: 获取当前 token 持有人账户
+      tags: [cloud-gateway]
+      security:
+        - bearer: []
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccountDTO' }
+        '401': { $ref: '#/components/responses/V1Unauthorized' }
+        '404': { $ref: '#/components/responses/V1NotFound' }
+        '429': { $ref: '#/components/responses/V1RateLimited' }
+        '500': { $ref: '#/components/responses/V1Internal' }
+
+  /v1/instances:
+    get:
+      summary: 列出当前用户 VM
+      description: trashed / deleted / gone 状态自动过滤；分页 `?page=&page_size=`（默认 25，上限 100）。
+      tags: [cloud-gateway]
+      security:
+        - bearer: []
+      parameters:
+        - { $ref: '#/components/parameters/V1Page' }
+        - { $ref: '#/components/parameters/V1PageSize' }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/InstanceDTO' }
+        '401': { $ref: '#/components/responses/V1Unauthorized' }
+        '422': { $ref: '#/components/responses/V1Unprocessable' }
+        '429': { $ref: '#/components/responses/V1RateLimited' }
+        '500': { $ref: '#/components/responses/V1Internal' }
+    post:
+      summary: 一键创建 VM（订单流 + auto pay + 异步 provisioning）
+      description: |
+        同步返 201 + `Location: /v1/instances/{id}`，body 含 InstanceDTO（status=`pending`）。
+        AI 端轮询 `GET /v1/instances/{id}` 直到 status=`running`。
+        余额不足 → 402 reason=`insufficient_balance`；region 不可用 → 422 reason=`region_unavailable`；
+        period 不在 product.period_supported → 422 reason=`unsupported`。
+      tags: [cloud-gateway]
+      security:
+        - bearer: []
+      parameters:
+        - { $ref: '#/components/parameters/V1IdempotencyKey' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/InstanceCreateRequest' }
+      responses:
+        '201':
+          description: 已创建（异步 provisioning，status=pending）
+          headers:
+            Location:
+              schema: { type: string }
+              description: 新 VM 的 GET 路径 `/v1/instances/{id}`
+            Idempotent-Replay:
+              schema: { type: boolean }
+              description: 该响应是否由 Idempotency-Key 命中缓存重放
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InstanceCreateResponse' }
+        '401': { $ref: '#/components/responses/V1Unauthorized' }
+        '402': { $ref: '#/components/responses/V1PaymentRequired' }
+        '422': { $ref: '#/components/responses/V1Unprocessable' }
+        '429': { $ref: '#/components/responses/V1RateLimited' }
+        '500': { $ref: '#/components/responses/V1Internal' }
+
+  /v1/instances/{id}:
+    parameters:
+      - { $ref: '#/components/parameters/V1InstanceID' }
+    get:
+      summary: 获取单台 VM
+      description: 非自己 / trashed / deleted / gone 一律 404（防资源存在性泄露）。
+      tags: [cloud-gateway]
+      security:
+        - bearer: []
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InstanceDTO' }
+        '401': { $ref: '#/components/responses/V1Unauthorized' }
+        '404': { $ref: '#/components/responses/V1NotFound' }
+        '429': { $ref: '#/components/responses/V1RateLimited' }
+    delete:
+      summary: trash VM（软删除 + 30s undo 窗口）
+      description: |
+        202 + status=`deleting`；不接 `?force=true`。30s 内 GET 仍可看到行（status=`deleting`），
+        过窗后变 trashed → ListByUser/InstanceByID 一律 404。
+      tags: [cloud-gateway]
+      security:
+        - bearer: []
+      parameters:
+        - { $ref: '#/components/parameters/V1IdempotencyKey' }
+      responses:
+        '202':
+          description: 已进入 trash 流程
+          headers:
+            Idempotent-Replay:
+              schema: { type: boolean }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InstanceActionResponse' }
+        '401': { $ref: '#/components/responses/V1Unauthorized' }
+        '404': { $ref: '#/components/responses/V1NotFound' }
+        '429': { $ref: '#/components/responses/V1RateLimited' }
+        '500': { $ref: '#/components/responses/V1Internal' }
+
+  /v1/instances/{id}/boot:
+    parameters:
+      - { $ref: '#/components/parameters/V1InstanceID' }
+      - { $ref: '#/components/parameters/V1IdempotencyKey' }
+    post:
+      summary: 启动 VM
+      tags: [cloud-gateway]
+      security:
+        - bearer: []
+      responses:
+        '202':
+          description: 启动请求已下发
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InstanceActionResponse' }
+        '401': { $ref: '#/components/responses/V1Unauthorized' }
+        '404': { $ref: '#/components/responses/V1NotFound' }
+        '422': { $ref: '#/components/responses/V1Unprocessable' }
+        '429': { $ref: '#/components/responses/V1RateLimited' }
+
+  /v1/instances/{id}/reboot:
+    parameters:
+      - { $ref: '#/components/parameters/V1InstanceID' }
+      - { $ref: '#/components/parameters/V1IdempotencyKey' }
+    post:
+      summary: 重启 VM
+      tags: [cloud-gateway]
+      security:
+        - bearer: []
+      responses:
+        '202':
+          description: 重启请求已下发
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InstanceActionResponse' }
+        '401': { $ref: '#/components/responses/V1Unauthorized' }
+        '404': { $ref: '#/components/responses/V1NotFound' }
+        '429': { $ref: '#/components/responses/V1RateLimited' }
+
+  /v1/instances/{id}/shutdown:
+    parameters:
+      - { $ref: '#/components/parameters/V1InstanceID' }
+      - { $ref: '#/components/parameters/V1IdempotencyKey' }
+    post:
+      summary: 关机 VM
+      tags: [cloud-gateway]
+      security:
+        - bearer: []
+      responses:
+        '202':
+          description: 关机请求已下发
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InstanceActionResponse' }
+        '401': { $ref: '#/components/responses/V1Unauthorized' }
+        '404': { $ref: '#/components/responses/V1NotFound' }
+        '429': { $ref: '#/components/responses/V1RateLimited' }
+
+  /v1/types:
+    get:
+      summary: 列出可购买套餐
+      description: 只返 active 产品；`prices.daily` 在 product.price_daily 非空时输出。
+      tags: [cloud-gateway]
+      security:
+        - bearer: []
+      parameters:
+        - { $ref: '#/components/parameters/V1Page' }
+        - { $ref: '#/components/parameters/V1PageSize' }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/TypeDTO' }
+        '401': { $ref: '#/components/responses/V1Unauthorized' }
+        '422': { $ref: '#/components/responses/V1Unprocessable' }
+        '429': { $ref: '#/components/responses/V1RateLimited' }
+
+  /v1/regions:
+    get:
+      summary: 列出可用 region
+      description: capabilities 默认 `["instances"]`；status=`available` / `unavailable` / `maintenance`。
+      tags: [cloud-gateway]
+      security:
+        - bearer: []
+      parameters:
+        - { $ref: '#/components/parameters/V1Page' }
+        - { $ref: '#/components/parameters/V1PageSize' }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/RegionDTO' }
+        '401': { $ref: '#/components/responses/V1Unauthorized' }
+        '429': { $ref: '#/components/responses/V1RateLimited' }
+
+  /v1/images:
+    get:
+      summary: 列出可用 OS 镜像
+      description: 只返 admin 启用的模板。
+      tags: [cloud-gateway]
+      security:
+        - bearer: []
+      parameters:
+        - { $ref: '#/components/parameters/V1Page' }
+        - { $ref: '#/components/parameters/V1PageSize' }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/ImageDTO' }
+        '401': { $ref: '#/components/responses/V1Unauthorized' }
+        '429': { $ref: '#/components/responses/V1RateLimited' }
+
+  /v1/ssh-keys:
+    get:
+      summary: 列出当前用户的 SSH key
+      tags: [cloud-gateway]
+      security:
+        - bearer: []
+      parameters:
+        - { $ref: '#/components/parameters/V1Page' }
+        - { $ref: '#/components/parameters/V1PageSize' }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/SSHKeyDTO' }
+        '401': { $ref: '#/components/responses/V1Unauthorized' }
+        '429': { $ref: '#/components/responses/V1RateLimited' }
+
 components:
   securitySchemes:
     cookie:
@@ -337,6 +633,35 @@ components:
       name: name
       required: true
       schema: { type: string, pattern: '^[a-zA-Z0-9-]+$' }
+    V1InstanceID:
+      in: path
+      name: id
+      required: true
+      schema: { type: integer, format: int64, minimum: 1 }
+      description: VM 数据库主键（与 /v1/instances 列表 item.id 对齐）
+    V1Page:
+      in: query
+      name: page
+      required: false
+      schema: { type: integer, minimum: 1, default: 1 }
+      description: 1-indexed 页码
+    V1PageSize:
+      in: query
+      name: page_size
+      required: false
+      schema: { type: integer, minimum: 1, maximum: 100, default: 25 }
+    V1IdempotencyKey:
+      in: header
+      name: Idempotency-Key
+      required: false
+      schema:
+        type: string
+        minLength: 16
+        maxLength: 255
+        pattern: '^[A-Za-z0-9._-]+$'
+      description: |
+        同 key 重放 24h 内的同 payload 请求时返缓存响应 + `Idempotent-Replay: true` 头。
+        同 key 异 payload → 422 reason=`mismatch`。5xx 不缓存（client 重试拿到恢复后的后端）。
   responses:
     Unauthorized:
       description: 未登录或 token 无效
@@ -367,6 +692,72 @@ components:
             properties:
               error: { type: string, enum: [step_up_required] }
               redirect: { type: string, format: uri }
+    V1Unauthorized:
+      description: Bearer token 缺失 / 无效 / 过期
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/StructuredError' }
+    V1Forbidden:
+      description: token 有效但无权访问该资源
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/StructuredError' }
+    V1NotFound:
+      description: 资源不存在（或不属于当前 token 持有人）
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/StructuredError' }
+    V1PaymentRequired:
+      description: 余额不足
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/StructuredError' }
+          example:
+            errors:
+              - field: balance
+                reason: insufficient_balance
+                message: balance not enough for daily charge
+    V1Unprocessable:
+      description: 请求字段校验失败（field/reason 见 body）
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/StructuredError' }
+          examples:
+            region_unavailable:
+              value:
+                errors:
+                  - field: region
+                    reason: region_unavailable
+            unsupported_period:
+              value:
+                errors:
+                  - field: period
+                    reason: unsupported
+            invalid_idempotency:
+              value:
+                errors:
+                  - field: Idempotency-Key
+                    reason: invalid
+    V1RateLimited:
+      description: 触发限流；带 `Retry-After` + IETF RateLimit 头
+      headers:
+        Retry-After:
+          schema: { type: integer, minimum: 1 }
+        RateLimit-Limit:
+          schema: { type: integer }
+        RateLimit-Remaining:
+          schema: { type: integer }
+        RateLimit-Reset:
+          schema: { type: integer }
+          description: 距下次配额刷新的秒数
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/StructuredError' }
+    V1Internal:
+      description: 服务端内部错误（已记 slog.Error）
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/StructuredError' }
   schemas:
     Error:
       type: object
@@ -460,3 +851,231 @@ components:
           type: array
           items: { type: integer, format: int64 }
         enabled: { type: boolean }
+
+    # ============ cloud-gateway /v1 schemas（PLAN-053 / INFRA-012） ============
+    StructuredError:
+      type: object
+      required: [errors]
+      properties:
+        errors:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            required: [reason]
+            properties:
+              field:
+                type: string
+                description: 出问题的字段名（顶层字段直接用 key，header 用 header 名；空串表示请求级错误）
+              reason:
+                type: string
+                description: 机器可读的错误代码（snake_case），见 README §错误格式
+              message:
+                type: string
+                description: 给人看的描述（可选；运维 / DEBUG 用，不要在 UI 直接显示）
+    PaginatedResponse:
+      type: object
+      required: [data, page, page_size, pages, total]
+      properties:
+        data:
+          type: array
+          description: 当前页数据；具体 item schema 由各端点定义
+          items: { }
+        page:
+          type: integer
+          minimum: 1
+          description: 当前页码（1-indexed）
+        page_size:
+          type: integer
+          minimum: 1
+          maximum: 100
+        pages:
+          type: integer
+          minimum: 0
+          description: 总页数（ceil(total / page_size)；total=0 时为 0）
+        total:
+          type: integer
+          minimum: 0
+    AccountDTO:
+      type: object
+      required: [id, email, balance, currency]
+      properties:
+        id: { type: integer, format: int64 }
+        email: { type: string, format: email }
+        balance:
+          type: number
+          format: double
+          description: 当前账户余额；单位 currency（一期固定 USD）
+        currency:
+          type: string
+          enum: [USD]
+        estimated_runway_days:
+          type: number
+          format: double
+          nullable: true
+          description: |
+            按当前 active vm_subscriptions 的日均消耗推算的剩余运行天数。
+            算法：daily sub 累加 daily_rate；monthly sub 累加 monthly_rate/30；
+            balance / dailyBurn。无 active sub / burn=0 / balance<=0 时省略字段。
+    InstanceDTO:
+      type: object
+      required: [id, label, type, region, image, status, created_at, tags]
+      properties:
+        id: { type: integer, format: int64 }
+        label:
+          type: string
+          description: 用户可见的 VM 名（对应内部 vms.name）
+        type:
+          type: integer
+          format: int64
+          description: 套餐 id（对应 /v1/types 的 id）
+        region:
+          type: string
+          description: cluster 名（对应 /v1/regions 的 id）
+        image:
+          type: string
+          description: OS 镜像 source（如 `ubuntu/24.04/cloud`）
+        status:
+          type: string
+          enum: [pending, creating, running, stopped, rebooting, suspended, deleting, error]
+        ip4: { type: string }
+        ip6: { type: string }
+        created_at: { type: string, format: date-time }
+        tags:
+          type: array
+          items: { type: string }
+    TypeDTO:
+      type: object
+      required: [id, label, slug, vcpus, memory_mb, disk_gb, bandwidth_tb, prices]
+      properties:
+        id: { type: integer, format: int64 }
+        label: { type: string }
+        slug:
+          type: string
+          description: 稳定 slug；跨环境复用比 numeric id 更可靠
+        vcpus: { type: integer, minimum: 1 }
+        memory_mb: { type: integer, minimum: 1 }
+        disk_gb: { type: integer, minimum: 1 }
+        bandwidth_tb: { type: integer, minimum: 0 }
+        prices:
+          type: object
+          required: [monthly]
+          properties:
+            monthly:
+              type: number
+              format: double
+              description: 月单价（USD/月）
+            daily:
+              type: number
+              format: double
+              nullable: true
+              description: 日单价（USD/天）；PLAN-054 落地后非空 product 才输出
+    RegionDTO:
+      type: object
+      required: [id, country, city, status, capabilities]
+      properties:
+        id:
+          type: string
+          description: cluster 名（稳定 slug），创建 instance 时填到 `region` 字段
+        country:
+          type: string
+          description: 国家（cluster 表 country 列；未填时空串）
+        city:
+          type: string
+        status:
+          type: string
+          enum: [available, unavailable, maintenance]
+        capabilities:
+          type: array
+          description: 该 region 支持的能力（一期固定 `["instances"]`）
+          items: { type: string }
+    ImageDTO:
+      type: object
+      required: [id, label, os, version, arch]
+      properties:
+        id:
+          type: string
+          description: os_template.slug；创建 instance 时填到 `image` 字段
+        label: { type: string }
+        os:
+          type: string
+          description: 操作系统名（从 source `ubuntu/24.04/cloud` 拆出 `ubuntu`）
+        version: { type: string }
+        arch:
+          type: string
+          enum: [amd64]
+    SSHKeyDTO:
+      type: object
+      required: [id, label, fingerprint, public_key]
+      properties:
+        id: { type: integer, format: int64 }
+        label: { type: string }
+        fingerprint:
+          type: string
+          description: DB 存储的指纹（通常 `SHA256:xxxx`）
+        public_key:
+          type: string
+          description: 完整公钥字符串（如 `ssh-rsa AAAA... user@host`）
+    InstanceCreateRequest:
+      type: object
+      required: [region, type, image]
+      properties:
+        region:
+          type: string
+          description: cluster 名（来自 /v1/regions item.id；必须 status=`available`）
+        type:
+          oneOf:
+            - { type: integer, format: int64, description: 套餐 id }
+            - { type: string, description: 套餐 slug 或数字字符串 }
+          description: 套餐 id 或 slug
+        image:
+          type: string
+          description: os_template.slug（来自 /v1/images item.id）
+        label:
+          type: string
+          maxLength: 63
+          description: VM 名（缺省服务端生成 `vm-<short-uuid>`），字符集 `[a-z0-9-]`
+        root_pass:
+          type: string
+          minLength: 8
+          description: root 密码（不传则随机生成并通过 DonePanel 暴露）
+        ssh_keys:
+          type: array
+          description: ssh_keys[]：accept int id 或 string id（两种形态都校验属本人）
+          items:
+            oneOf:
+              - { type: integer, format: int64 }
+              - { type: string }
+        tags:
+          type: array
+          items: { type: string }
+        user_data:
+          type: string
+          description: 用户自定义 cloud-init user-data（已 redact 日志输出）
+        period:
+          type: string
+          enum: [daily, monthly]
+          default: monthly
+          description: 计费周期；必须在 product.period_supported 内。一期 monthly 全产品支持，daily 见 /v1/types prices.daily 非空判断。
+    InstanceCreateResponse:
+      allOf:
+        - $ref: '#/components/schemas/InstanceDTO'
+        - type: object
+          properties:
+            order_id:
+              type: integer
+              format: int64
+              description: 内部订单 id（同步审计用，对 cloud-gateway 不必读）
+            job_id:
+              type: integer
+              format: int64
+              description: 异步 provisioning job id；可用 /portal/jobs/{id}/events SSE 跟流
+    InstanceActionResponse:
+      type: object
+      required: [id, status]
+      properties:
+        id: { type: integer, format: int64 }
+        status:
+          type: string
+          enum: [pending, creating, deleting, bootting, rebooting, shutdowning, running, stopped]
+          description: 动作下发后立即返回的状态（trash→deleting，boot→bootting 等）；最终态需轮询

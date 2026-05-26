@@ -142,7 +142,7 @@ PLAN-053 一期可在不依赖本 PLAN 的情况下上线（按 monthly 接 clou
 | G 订单流 hook | ✅ 完成（L3-E z071x2iz 2026-05-26） | `POST /portal/orders` 接 period + 校验 product.period_supported / rate 不为 null；pay 成功 + vm row 写入后 INSERT vm_subscriptions（sub 失败回滚整单）；VM trash → sub cancelled；VM restore → sub active + paid_until 重置 |
 | H worker | ✅ 完成（L3-F q8xd9rpn 2026-05-26） | `service/billing/service.go`（ChargeDue/ExpireGrace/ReactivateOnTopUp）+ `worker/billing_daily_charger.go` + `worker/billing_grace_expire.go` + topup hook + BillingConfig + main.go 注入 |
 | I UI | ✅ 完成（L3-I snuahzue 2026-05-26） | portal `/billing` Tabs + subscription tab + runway 余额预估 + /launch 按月/按日切换 + admin `/admin/subscriptions` 手动恢复 + `/api-tokens` cloud-gateway banner |
-| J audit + cloud-gateway | ⏳ 待 L3-J | /v1/types prices.daily + /v1/account estimated_runway_days |
+| J audit + cloud-gateway | ✅ 完成（L3-J wm5iv91f 2026-05-26） | /v1/account 加 estimated_runway_days（与 PLAN-053 Phase F 同批落地）；/v1/types prices.daily 已在 PLAN-053 Phase B mapper 接通（product.PriceDaily *float64 → PricesDTO.Daily omitempty）；/v1/instances 接 period（已在 PLAN-053 Phase D 落地） |
 
 ### Phase F schema（2026-05-26 完成 · L3-C 640vr0dt · 与 PLAN-053 Phase E 同批）
 
@@ -296,3 +296,53 @@ PLAN-053 一期可在不依赖本 PLAN 的情况下上线（按 monthly 接 clou
   测试模拟「先 trash 失败 → 修好 → 下个 tick 成功 cancel」。
 - **P3 / 工程**：`isUniqueViolation` 用标准 `strings.Contains`；`listLimit`
   默认 1000，避免一次 ChargeDue 锁 users 全表。
+
+### Phase J cloud-gateway 集成（2026-05-26 完成 · L3-J wm5iv91f · 与 PLAN-053 Phase F 同批）
+
+PLAN-054 §2 Phase J 列了 3 件事 —— alert / audit / cloud-gateway。
+其中 cloud-gateway 三项（/v1/types prices.daily, /v1/instances period,
+/v1/account estimated_runway_days）由本 phase 收尾；audit `subscription_*` 事件
+已在 Phase G 落地（trash → cancelled、restore → active），alert rule for
+billing/suspended 归 INFRA-009 monitoring 范畴（PLAN-041 / PLAN-053 §"不在
+范围"），不在本 phase。
+
+- ✅ `/v1/types` 响应 `prices.daily`：在 PLAN-053 Phase B `toTypeDTO` 已经
+  把 `product.PriceDaily *float64` 映射到 `PricesDTO.Daily *float64`
+  （`omitempty` 让 nil 不输出）；本 phase **验证**该路径仍生效，并写入
+  `openapi.yaml` `TypeDTO.prices.daily` 字段 spec。`TestTypes_Happy` 单测
+  覆盖 nil 与非 nil 两条路径。
+- ✅ `POST /v1/instances` `period` 字段：PLAN-053 Phase D 已经接受
+  `period: "daily" | "monthly"`，并在 `instances_write.go` 校验
+  `product.PeriodSupported`、对应 rate 非空。本 phase 把 enum/默认值
+  写入 `openapi.yaml` `InstanceCreateRequest.period`。
+- ✅ `/v1/account` 加 `estimated_runway_days`（本 phase 新增）：
+  - 后端：`internal/handler/v1/dto.go` `AccountDTO` 加
+    `EstimatedRunwayDays *float64` (omitempty)；同文件加
+    `computeRunwayDays(balance, []model.VMSubscription)` —— 算法与前端
+    `web/src/features/billing/subscriptions-api.ts` `computeRunwayDays`
+    1:1 对齐：daily sub 累加 daily_rate，monthly sub 累加 monthly_rate/30，
+    `balance / dailyBurn`；balance<=0 / 无 active sub / burn==0 / rate
+    全空 → nil（JSON 不输出字段）
+  - Deps：`internal/handler/v1/handler.go` 加 `Subscriptions
+    subscriptionReader` 接口；`internal/handler/v1/readonly.go` Account 路径
+    nil 容忍（缺依赖不阻断响应，与既有"sub list 出错只 slog.Warn"对齐）
+  - wiring：`cmd/server/main.go` `Subscriptions: subRepo`（subRepo 在
+    Phase G 已注入）
+  - 单测：`readonly_test.go` +7 个 case 覆盖 daily-only / monthly-mixed /
+    no-active / balance-zero / rate-nil / sub-repo-err 不致命 / nil-dep
+    不致命；含 raw body grep 防字段意外输出
+  - OpenAPI：`AccountDTO.estimated_runway_days` 加 `nullable: true` + 算法
+    描述
+- ✅ 文档：`incus-admin/docs/cloud-gateway.md` 新建 —— 12 端点 + 鉴权 +
+  限流 + 错误 reason 表 + 分页 + Idempotency + curl example + 错误路径 +
+  POST schema + 计费 + provider 契约 + 本地启动指引
+- ✅ E2E：`incus-admin/scripts/e2e-cloud-gateway.sh` 新建 —— 12 端点 + 5
+  错误路径 + Idempotency replay + 限流（手动开关），可重跑
+
+#### Phase J 范围内**未做**（按设计）
+
+- alert rule for billing/suspended：归 INFRA-009 monitoring 范畴
+  （PLAN-041 已有 alert_rules 表 + dispatcher，后续 OPS 单独配规则）
+- audit 页前端展示 `subscription_*` 事件：cosmetic，PLAN-054 Phase I 已
+  备注下期
+- cloud-gateway provider 实现：外部 repo，按本 phase 的 openapi.yaml 接入

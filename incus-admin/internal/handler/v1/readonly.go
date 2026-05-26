@@ -51,7 +51,19 @@ func (h *Handler) Account(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "", "not_found")
 		return
 	}
-	writeJSON(w, http.StatusOK, toAccountDTO(*user))
+	dto := toAccountDTO(*user)
+	// PLAN-054 Phase J：active sub burn rate → estimated_runway_days。
+	// Subscriptions 缺依赖（main.go 未注入）或 list 出错 → 不阻断 account 响应，
+	// 仅记 warn 让运维察觉；前端能容忍字段缺失（omitempty）。
+	if h.deps.Subscriptions != nil {
+		subs, err := h.deps.Subscriptions.ListByUser(r.Context(), uid, model.SubscriptionStatusActive)
+		if err != nil {
+			slog.Warn("v1 Account: list active subs", "user_id", uid, "error", err)
+		} else {
+			dto.EstimatedRunwayDays = computeRunwayDays(dto.Balance, subs)
+		}
+	}
+	writeJSON(w, http.StatusOK, dto)
 }
 
 // Instances GET /v1/instances：返当前用户可见的 VM 列表（分页）。
