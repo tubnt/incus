@@ -146,7 +146,8 @@ scope 是 **二选一**（见 INFRA-012 task），等用户拍板。
 | B read-only | ✅ 完成（L3-D 06w1ajv9） | 7 endpoint 接真实 repo + DTO mapper + 19 单测；新增 VMRepo.ListByUserPaged / SSHKeyRepo.ListByUserPaged |
 | C cluster region migration | ✅ 完成（L3-B q21mhhyk） | `db/migrations/027_cluster_region_metadata.sql` + model.Cluster Country/City/RegionStatus/Capabilities + cluster_repo 4 SELECT 路径回填 |
 | D POST /v1/instances | ⏳ 待 L3-G | 复用 OrderService + Idempotency-Key 接入 |
-| E DELETE + Idempotency schema | ✅ schema 完成（L3-C 640vr0dt） | `db/migrations/029_idempotency_keys.sql` + `model.IdempotencyKey` + `repository.IdempotencyRepo` skeleton（middleware 留给 L3-H） |
+| E DELETE + Idempotency schema | ✅ schema 完成（L3-C 640vr0dt） | `db/migrations/029_idempotency_keys.sql` + `model.IdempotencyKey` + `repository.IdempotencyRepo` skeleton |
+| E Idempotency middleware | ✅ 完成（L3-H z2dtqjmt） | `middleware.Idempotency` + `IdempotencyStore` 接口 + `worker.RunIdempotencyCleanup` (24h TTL/每小时第7分) + repo Put/Get(uid) 业务化 + 18 单测；DELETE 业务实装由 L3-G/L3-I 接 endpoint 时挂中间件即生效 |
 | F OpenAPI + 单测 + 文档 | ⏳ 待 L3-J | openapi.yaml 增 /v1/* + curl example |
 
 ### Phase A 骨架（2026-05-26 完成 · campaign cloud-gateway-20260526202415）
@@ -279,3 +280,63 @@ scope 是 **二选一**（见 INFRA-012 task），等用户拍板。
 - Idempotency-Key middleware 本体（L3-H 负责）
 - 订单流 period hook + sub 行写入（L3-E 负责）
 - billing worker（L3-F 负责）
+
+### Phase E middleware（2026-05-26 完成 · L3-H z2dtqjmt 与 schema 同日落地）
+
+- ✅ `internal/middleware/idempotency.go`：
+  - `IdempotencyStore` 接口：Get(ctx, key, userID) / Put(ctx, model.IdempotencyKey)；
+    repo 直接实现，单测注入 in-memory fake
+  - 只对 POST/DELETE 生效；缺 `Idempotency-Key` header 直通；其它方法直通
+  - key 形状校验：长度 16..255 + charset `[A-Za-z0-9._-]`，违规 422 `{field:"Idempotency-Key", reason:"invalid"}`
+  - request_hash = SHA-256(method + path + sorted query + canonical body)；
+    JSON body 解码后再 `json.Marshal`（encoding/json 对 map[string]any 字段输出有序，
+    递归生效）→ 不同字段顺序的同语义 payload 命中同一条缓存；非 JSON / 空 body 退回原 byte
+  - body 读出后 `io.NopCloser(bytes.NewReader(...))` 回灌 r.Body 供下游 ReadAll
+  - 命中 + hash 一致 → 回放 status_code + response_body + `Idempotent-Replay: true` 头
+  - 命中 + hash 不一致 → 422 `{field:"Idempotency-Key", reason:"mismatch", message:"same key, different payload"}`
+  - 未命中 → 包 `captureWriter` 跑下游 → 仅在 2xx / 4xx 缓存；5xx 不缓存（让 client 重试拿到恢复后的后端）
+  - 缓存写用 `context.Background()` + 3s 超时的 detached ctx：client 关连接不影响缓存落盘
+  - Put 失败只 slog.Warn 不阻塞响应（client 仍拿到完整业务结果，最差等同 client 不带 key）
+- ✅ `internal/repository/idempotency_repo.go`：skeleton 业务化
+  - Get 加 `AND user_id = $2` 防 cross-user replay（PRIMARY KEY 全局唯一仍兼容）
+  - Insert → Put：`ON CONFLICT (key) DO NOTHING`，race 场景先到先得
+  - DeleteOlderThan 不变（cleanup worker 调用）
+- ✅ `internal/worker/idempotency_cleanup.go`：
+  - 7 分钟暖机 + 1h ticker（语义对齐 cron `7 * * * *`；不引入 cron 库）
+  - cutoff = NOW() - 24h；删除失败只 slog 不退出 loop；ctx cancel 干净退出
+  - tickEvery 参数注入支持单测毫秒级 fire（同 `RunHealingExpireStale` 模式）
+- ✅ `internal/server/server.go`：`Handlers.Idempotency middleware.IdempotencyStore`；
+  在 RequireBearer + RateLimitV1 之后挂 `middleware.Idempotency(h.Idempotency)`；
+  nil 时 /v1 仍可启动（仅丢失幂等能力，不影响读端点）
+- ✅ `cmd/server/main.go`：`idempotencyRepo := repository.NewIdempotencyRepo(db)` →
+  `go worker.RunIdempotencyCleanup(workerCtx, idempotencyRepo, time.Hour)` →
+  `Handlers{... Idempotency: idempotencyRepo}`
+- ✅ 单测：
+  - `middleware/idempotency_test.go` 18 个：no-key 直通 / 非 POST/DELETE 直通 /
+    miss-then-replay / mismatch 422 / invalid 形状 422（多组）/ 5xx 不缓存 /
+    4xx 缓存 + 重放 / 缺 UserID 401 / Get 错 500 / Put 错被吞 /
+    cross-user scoping miss / body 还原下游 / 字段乱序同语义同 hash /
+    query 顺序无关 / nil store 直通 / fingerprint 一致性 / 非 JSON body 原样 / 空 body
+  - `worker/idempotency_cleanup_test.go` 4 个：nil cleaner 立刻退出 / 快速 tick + cutoff=now-24h ±1s /
+    error 不杀循环 / runOnce 单次直调
+  - `repository/billing_integration_test.go` `TestIdempotencyRepo_RoundTrip` 扩：
+    Put/Get(uid) 改名 + cross-user miss + ON CONFLICT DO NOTHING 不抛错
+- ✅ `go build ./...` 全绿；`go test ./...` 全绿；
+  `golangci-lint run --new-from-rev=HEAD ./...` 0 issues（pre-existing rowserrcheck/gosec 不在本 Phase 范围）
+
+#### Phase E middleware 决策记录
+
+1. **5xx 不缓存 / 4xx 缓存**：5xx 多为暂时态（DB 挂 / 上游 timeout），client 重试应打到恢复后的后端；
+   4xx 缓存避免 client 反复打错请求耗费 quota
+2. **Query string 也进 hash**：sorted query keys 进 SHA-256，避免 `?a=1&b=2` 与 `?b=2&a=1` 被当作异 payload；
+   同名多值保留原顺序（`a=1&a=2 ≠ a=2&a=1` 符合 RFC）
+3. **ON CONFLICT (key) DO NOTHING**：first writer wins；第二个并发请求拿到自己的响应，下次 GET 才会回放 A 的；
+   规避 UPSERT 覆盖语义的歧义
+4. **Put 用 detached ctx + 3s timeout**：client 断开 (ctx.Cancel) 不应让缓存丢失，
+   否则下次同 key 命中场景白白失效；3s 上限防止 DB 慢 query 卡 goroutine
+
+#### Phase E middleware 范围内**未做**（按设计）
+
+- 把 middleware 接到 `POST /v1/instances` / `DELETE /v1/instances/{id}` 业务端点（L3-G / L3-I）
+- OpenAPI 描述 `Idempotency-Key` header + `Idempotent-Replay` 响应头（Phase F / L3-J）
+- 端点级豁免名单（一期对所有 /v1 写端点统一启用；client 不传 key 即 no-op）

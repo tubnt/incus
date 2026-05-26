@@ -150,6 +150,11 @@ type Handlers struct {
 	// /v1/* adapter routes. Mounted outside the ProxyAuth group with
 	// Bearer-only auth + dedicated token-bucket rate limit.
 	V1 RouteRegistrar
+	// Idempotency (PLAN-053 Phase E) caches POST/DELETE responses by
+	// Idempotency-Key header. Mounted after RequireBearer + RateLimitV1
+	// so the cache key (CtxUserID) is set and rate-limited requests never
+	// hit the DB. nil → /v1 routes mount without idempotency support.
+	Idempotency middleware.IdempotencyStore
 }
 
 // OpenAPIHandler 把 openapi handler 的两个端点单独标出来，
@@ -255,9 +260,15 @@ func New(cfg *config.Config, userLookup func(ctx context.Context, email string) 
 		r.Route("/v1", func(r chi.Router) {
 			r.Use(middleware.RequireBearer)
 			r.Use(middleware.RateLimitV1FromEnv())
+			if h.Idempotency != nil {
+				r.Use(middleware.Idempotency(h.Idempotency))
+			}
 			h.V1.Routes(r)
 		})
-		slog.Info("v1 routes registered", "endpoints", v1handler.EndpointCount)
+		slog.Info("v1 routes registered",
+			"endpoints", v1handler.EndpointCount,
+			"idempotency", h.Idempotency != nil,
+		)
 	}
 
 	r.Group(func(r chi.Router) {
