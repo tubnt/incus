@@ -320,6 +320,8 @@ export function useHAEvacuateMutation(clusterName: string) {
       queryClient.invalidateQueries({ queryKey: nodeKeys.all });
       queryClient.invalidateQueries({ queryKey: clusterKeys.all });
     },
+    // WP-F：HA 页疏散成功/失败统一由全局 MutationCache 兜底提示。
+    meta: { globalErrorToast: true, successToast: "ha.evacuateStartedToast" },
   });
 }
 
