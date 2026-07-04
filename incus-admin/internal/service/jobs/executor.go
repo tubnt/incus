@@ -35,6 +35,14 @@ type Params struct {
 	Network     string
 	OrderAmount float64 // 用于 rollback 时的退款金额
 
+	// WP-I1 /v1 三字段透传（cloud-gateway /v1/instances）：
+	//   - RootPass：用户指定的 root 密码；为空走 service.GeneratePassword 随机生成。
+	//   - UserData：用户自定义 cloud-init user-data，合并进 OS-aware 基础配置（不覆盖）。
+	//   - Tags：打到 incus 实例 user.tags 配置（当前 vms 表无 tags 列，落 incus 实例标签）。
+	RootPass string
+	UserData string
+	Tags     []string
+
 	// vm.reinstall
 	ImageSource string
 	ServerURL   string

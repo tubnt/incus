@@ -8,8 +8,10 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -381,6 +383,94 @@ func TestIdempotency_CrossUserScoping(t *testing.T) {
 	}
 	if rr2.Header().Get("Idempotent-Replay") == "true" {
 		t.Errorf("cross-user must not set Idempotent-Replay: true")
+	}
+}
+
+// TestIdempotency_ConcurrentSameKeySingleExecution：并发的相同 (user, key)
+// 请求必须靠进程内占位锁串行化——业务只执行一次，其余全部回放缓存。这是
+// WP-H2 TOCTOU 防护的核心断言：去掉 kmu.lock 后本用例会因多个 goroutine 同时
+// Get→miss 而使 calls > 1 失败。
+func TestIdempotency_ConcurrentSameKeySingleExecution(t *testing.T) {
+	store := newFakeStore()
+	var calls int64
+	h := Idempotency(store)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		// 递增后短暂逗留，放大临界区窗口——无锁时并发 goroutine 会在此重叠，
+		// calls 冲到 >1；有锁时严格串行，只有第一个到此。
+		atomic.AddInt64(&calls, 1)
+		time.Sleep(5 * time.Millisecond)
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"id":1}`))
+	}))
+
+	const (
+		key = "concurrent-same-key-01"
+		n   = 16
+	)
+	const body = `{"product":"p-mini"}`
+
+	var wg sync.WaitGroup
+	var replays int64
+	start := make(chan struct{})
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start // 一齐出发，最大化并发
+			req := withUser(httptest.NewRequest(http.MethodPost, "/v1/instances", strings.NewReader(body)), 77)
+			req.Header.Set("Idempotency-Key", key)
+			rr := httptest.NewRecorder()
+			h.ServeHTTP(rr, req)
+			if rr.Code != http.StatusCreated {
+				t.Errorf("status %d want 201", rr.Code)
+			}
+			if rr.Header().Get("Idempotent-Replay") == "true" {
+				atomic.AddInt64(&replays, 1)
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	if got := atomic.LoadInt64(&calls); got != 1 {
+		t.Fatalf("advisory lock failed: downstream executed %d times, want 1", got)
+	}
+	if got := atomic.LoadInt64(&replays); got != n-1 {
+		t.Errorf("expected %d replays, got %d", n-1, got)
+	}
+}
+
+// TestIdempotency_ConcurrentDifferentKeysNotSerialized：不同 key 不应互相阻塞，
+// 各自独立执行一次（占位锁按 key 维度，不是全局锁）。
+func TestIdempotency_ConcurrentDifferentKeysNotSerialized(t *testing.T) {
+	store := newFakeStore()
+	var calls int64
+	h := Idempotency(store)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt64(&calls, 1)
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+
+	const n = 8
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			req := withUser(httptest.NewRequest(http.MethodPost, "/v1/instances", strings.NewReader(`{}`)), 55)
+			// 每个 goroutine 用不同 key（长度 >=16）
+			req.Header.Set("Idempotency-Key", "distinct-key-000000"+strconv.Itoa(idx))
+			rr := httptest.NewRecorder()
+			h.ServeHTTP(rr, req)
+			if rr.Code != http.StatusCreated {
+				t.Errorf("status %d want 201", rr.Code)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	if got := atomic.LoadInt64(&calls); got != n {
+		t.Fatalf("distinct keys should each execute; calls=%d want %d", got, n)
 	}
 }
 

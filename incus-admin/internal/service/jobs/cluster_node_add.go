@@ -167,22 +167,45 @@ func (e *clusterNodeAddExecutor) Run(ctx context.Context, rt *Runtime, job *mode
 		rt.finishStep(ctx, job.ID, currentSeq, currentName, status, detail)
 	}
 
+	// P0-2：flush goroutine 用显式 stop chan + select 退出。
+	// 原版 `for range flushTicker.C` 依赖 Stop() 关闭 channel —— 但 time.Ticker.Stop()
+	// 只停止投递，不 close C，range 会永久阻塞等下一 tick，goroutine 卡死，主流程
+	// `<-tickerDone` 随之死锁。改为 select{stopFlush | C}，close(stopFlush) 令其干净退出。
 	flushTicker := time.NewTicker(500 * time.Millisecond)
-	defer flushTicker.Stop()
+	stopFlush := make(chan struct{})
 	tickerDone := make(chan struct{})
+	var stopFlushOnce sync.Once
+	// stopFlushLoop 幂等：停 ticker、close(stopFlush) 通知 goroutine 退出并等其结束。
+	// 显式在 RunStream 之后、写终态 step 之前调（避免 flush 与终态并发写同一 step）；
+	// defer 兜底 panic 回卷路径，避免 goroutine 泄漏。close 用 Once 防重复 close panic，
+	// <-tickerDone 对已关闭 chan 可重复接收，二次调用安全。
+	stopFlushLoop := func() {
+		flushTicker.Stop()
+		stopFlushOnce.Do(func() { close(stopFlush) })
+		<-tickerDone
+	}
+	defer stopFlushLoop()
 	go func() {
 		defer close(tickerDone)
-		for range flushTicker.C {
-			mu.Lock()
-			seq := currentSeq
-			name := currentName
-			line := latestLine
-			d := dirty
-			dirty = false
-			mu.Unlock()
-			if d && seq >= 0 {
-				_ = rt.deps.Jobs.UpdateStep(ctx, job.ID, seq, model.StepStatusRunning, line)
-				_ = name
+		for {
+			select {
+			case <-stopFlush:
+				return
+			case <-flushTicker.C:
+				mu.Lock()
+				seq := currentSeq
+				name := currentName
+				line := latestLine
+				d := dirty
+				dirty = false
+				mu.Unlock()
+				if d && seq >= 0 {
+					// safeRun 兜住 UpdateStep 的意外 panic，避免 flush goroutine 静默死掉。
+					safeRun("cluster-node-add-flush", func() {
+						_ = rt.deps.Jobs.UpdateStep(ctx, job.ID, seq, model.StepStatusRunning, line)
+					})
+					_ = name
+				}
 			}
 		}
 	}()
@@ -220,9 +243,8 @@ func (e *clusterNodeAddExecutor) Run(ctx context.Context, rt *Runtime, job *mode
 	}
 
 	streamErr := runner.RunStream(ctx, cmd, onLine)
-	flushTicker.Stop()
-	// 等 ticker goroutine 退出（已 Stop，goroutine range 拿到关闭的 chan 退出）
-	<-tickerDone
+	// 先干净停掉 flush goroutine，再写终态 step（defer 会再调一次，幂等无副作用）。
+	stopFlushLoop()
 
 	mu.Lock()
 	defer mu.Unlock()

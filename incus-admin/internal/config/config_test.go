@@ -62,3 +62,32 @@ func TestLoadIPPools_BadJSONFallsThrough(t *testing.T) {
 		t.Errorf("legacy fallback mismatch: %+v", got[0])
 	}
 }
+
+// TestLoad_ProxySharedSecret 守门决策#6：PROXY_SHARED_SECRET 未设置时默认空
+// （关闭代理签名加固，保持现网默认行为）；设置时原样载入。
+func TestLoad_ProxySharedSecret(t *testing.T) {
+	// Load() 依赖三个 mustEnv；测试里补齐避免 os.Exit。
+	t.Setenv("SESSION_SECRET", "test-session-secret")
+	t.Setenv("DATABASE_URL", "postgres://localhost/test")
+	t.Setenv("EMERGENCY_TOKEN", "test-emergency-token")
+
+	// 未设置 → 默认空 = 关闭。
+	t.Setenv("PROXY_SHARED_SECRET", "")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.Server.ProxySharedSecret != "" {
+		t.Errorf("PROXY_SHARED_SECRET 默认应为空（加固关闭），got %q", cfg.Server.ProxySharedSecret)
+	}
+
+	// 设置 → 原样载入。
+	t.Setenv("PROXY_SHARED_SECRET", "abc123")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.Server.ProxySharedSecret != "abc123" {
+		t.Errorf("PROXY_SHARED_SECRET 应原样载入，got %q", cfg.Server.ProxySharedSecret)
+	}
+}

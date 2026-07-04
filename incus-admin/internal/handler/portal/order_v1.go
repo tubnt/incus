@@ -28,6 +28,14 @@ type V1ProvisionRequest struct {
 	VMName      string
 	Period      string
 	SSHKeys     []string
+
+	// WP-I1 /v1 三字段（已由 handler/v1 完成基本校验）：
+	//   - RootPass：root 密码；空 → executor 随机生成。
+	//   - UserData：cloud-init user-data，合并进 OS-aware 基础配置。
+	//   - Tags：incus 实例标签（user.tags）。
+	RootPass string
+	UserData string
+	Tags     []string
 }
 
 // V1ProvisionResult 是 CreatePayProvision 成功路径的输出。
@@ -246,6 +254,10 @@ func (h *OrderHandler) CreatePayProvision(r *http.Request, req V1ProvisionReques
 		StoragePool: pool,
 		Network:     network,
 		OrderAmount: order.Amount,
+		// WP-I1：/v1 root_pass / user_data / tags 透传到 provisioning executor。
+		RootPass: req.RootPass,
+		UserData: req.UserData,
+		Tags:     req.Tags,
 	}); err != nil {
 		_ = h.jobRepo.Finish(ctx, job.ID, model.JobStatusFailed, "enqueue failed: "+err.Error())
 		h.cancelSubscriptionForRollback(ctx, vm.ID)
