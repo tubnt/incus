@@ -338,7 +338,10 @@ func runServer() {
 	// test/dev environments).
 	if clusterMgr != nil {
 		snapshotFn := worker.ClusterSnapshotFromManager(clusterMgr, "customers")
-		reconcileCfg := worker.VMReconcilerConfig{Interval: 60 * time.Second}
+		// OPS-052 P1-2：CreateBuffer 显式设 30s。配合 repo.ListActiveForReconcile
+		// 已排除 'creating' 状态，双重保证刚 provision 的 VM 不被误判 gone（进而
+		// 误 Release 掉刚分配的 IP 引发双分配）。
+		reconcileCfg := worker.VMReconcilerConfig{Interval: 60 * time.Second, CreateBuffer: 30 * time.Second}
 		go worker.RunVMReconciler(
 			workerCtx,
 			reconcileCfg,
@@ -398,7 +401,42 @@ func runServer() {
 		// 复用 service.VMService.PurgeTrashed（语义即原 Delete 路径），manager
 		// 提供 ID→name 反查。worker 会同时把 DB 行翻 status='deleted'。
 		trashWindow := time.Duration(model.VMTrashWindowSeconds) * time.Second
-		go worker.RunVMTrashPurger(workerCtx, vmRepo, clusterMgr, vmSvc.PurgeTrashed, trashWindow, 5*time.Second)
+		// OPS-052 P0-3 / P1-5：purge 收口时释放 VM 关联的全部网络资源。以闭包注入，
+		// 让 worker 包不反向依赖 repository/service；逐项 best-effort，个别失败仅告警，
+		// 不阻断 DB 落 deleted（泄漏的 IP 由 AllocateNext 内联 RecoverCooldowns 兜底）。
+		floatingIPSvcForReclaim := service.NewFloatingIPService(clusterMgr)
+		reclaimVMResources := func(ctx context.Context, vm model.VM, clusterName, project string) error {
+			// 1) 普通 IP 回可用池：Release 置 cooldown，过窗口后由 AllocateNext 回收。
+			if vm.IP != nil && *vm.IP != "" {
+				if err := ipAddrRepo.Release(ctx, *vm.IP); err != nil {
+					slog.Warn("reclaim: release ip failed", "vm", vm.Name, "ip", *vm.IP, "error", err)
+				}
+			}
+			// 2) Floating IP detach：先 best-effort 复原 Incus NIC 过滤（实例通常已删，
+			//    忽略其错误），再把 DB 行切回 available 供复用。
+			if fips, err := floatingIPRepo.ListByVM(ctx, vm.ID); err != nil {
+				slog.Warn("reclaim: list floating ips failed", "vm", vm.Name, "error", err)
+			} else {
+				for _, fip := range fips {
+					_, _ = floatingIPSvcForReclaim.DetachFromVM(ctx, clusterName, project, vm.Name, fip.IP)
+					if _, derr := floatingIPRepo.Detach(ctx, fip.ID); derr != nil {
+						slog.Warn("reclaim: detach floating ip failed", "vm", vm.Name, "fip_id", fip.ID, "error", derr)
+					}
+				}
+			}
+			// 3) firewall 绑定解除：VM 即将 hard-delete，只需清 vm_firewall_bindings 行。
+			if groups, err := firewallRepo.ListBindingsByVM(ctx, vm.ID); err != nil {
+				slog.Warn("reclaim: list firewall bindings failed", "vm", vm.Name, "error", err)
+			} else {
+				for _, g := range groups {
+					if uerr := firewallRepo.Unbind(ctx, vm.ID, g.ID); uerr != nil {
+						slog.Warn("reclaim: unbind firewall failed", "vm", vm.Name, "group_id", g.ID, "error", uerr)
+					}
+				}
+			}
+			return nil
+		}
+		go worker.RunVMTrashPurger(workerCtx, vmRepo, clusterMgr, vmSvc.PurgeTrashed, reclaimVMResources, trashWindow, 5*time.Second)
 
 		// PLAN-039 / OPS-044: imbalance watchdog（仅告警，不自动迁移）
 		// 5min tick × 3 ticks = 15min 持续不均衡 → 写 system_alerts。

@@ -142,6 +142,33 @@ func (r *FloatingIPRepo) Release(ctx context.Context, id int64) error {
 	return nil
 }
 
+// ListByVM returns the floating IPs currently bound to a VM.
+//
+// OPS-052：本方法在 WP-H4 死代码清理时因当时无引用被删除，现由 WP-C 的 VM
+// hard-delete 资源回收路径（cmd/server/main.go reclaimVMResources 闭包）重新引用
+// —— purge 收口时按 vm_id 反查 Floating IP 逐个 detach 回 available 池。请勿再当
+// 死代码删除。
+func (r *FloatingIPRepo) ListByVM(ctx context.Context, vmID int64) ([]model.FloatingIP, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT `+floatingIPColumns+` FROM floating_ips WHERE bound_vm_id = $1 ORDER BY id ASC`,
+		vmID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]model.FloatingIP, 0)
+	for rows.Next() {
+		var f model.FloatingIP
+		if err := scanFloatingIP(rows, &f); err != nil {
+			return nil, err
+		}
+		out = append(out, f)
+	}
+	return out, rows.Err()
+}
+
 // errIsUniqueViolation matches pgx/pq's SQLSTATE 23505 without importing the
 // driver — string match on the well-documented error text keeps this repo
 // package driver-neutral.
