@@ -1,3 +1,4 @@
+-- +goose Up
 -- PLAN-020 Phase D: healing_events
 -- Durable record of node evacuation / auto-healing cycles. Distinct from
 -- audit_logs: business-level event with structured fields so /admin/ha
@@ -20,3 +21,6 @@ CREATE TABLE IF NOT EXISTS healing_events (
 CREATE INDEX IF NOT EXISTS idx_healing_events_cluster ON healing_events(cluster_id, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_healing_events_node    ON healing_events(node_name, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_healing_events_status  ON healing_events(status) WHERE status = 'in_progress';
+
+-- +goose Down
+DROP TABLE IF EXISTS healing_events;

@@ -1,3 +1,4 @@
+-- +goose Up
 -- PLAN-025 / INFRA-007: VM provisioning 异步化基础设施
 --
 -- 三件事：
@@ -63,3 +64,8 @@ CREATE INDEX IF NOT EXISTS idx_job_steps_job
 CREATE UNIQUE INDEX IF NOT EXISTS vms_cluster_name_active_uniq
     ON vms (cluster_id, name)
     WHERE status NOT IN ('deleted','gone');
+
+-- +goose Down
+DROP INDEX IF EXISTS vms_cluster_name_active_uniq;
+DROP TABLE IF EXISTS provisioning_job_steps;
+DROP TABLE IF EXISTS provisioning_jobs;

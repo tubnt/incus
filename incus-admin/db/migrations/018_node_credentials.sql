@@ -1,3 +1,4 @@
+-- +goose Up
 -- PLAN-033 / OPS-039: store admin-side SSH credentials used to bootstrap new
 -- cluster nodes (password or PEM private key). Ciphertext uses the same
 -- AES-256-GCM v1: format as vms.password (OPS-022) — the encryption key is
@@ -20,3 +21,6 @@ CREATE TABLE IF NOT EXISTS node_credentials (
 
 CREATE INDEX IF NOT EXISTS idx_node_credentials_owner
     ON node_credentials (created_by, id DESC);
+
+-- +goose Down
+DROP TABLE IF EXISTS node_credentials;

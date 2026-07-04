@@ -1,3 +1,4 @@
+-- +goose Up
 -- PLAN-053 / INFRA-012：cloud-gateway 标准 Idempotency-Key 缓存表
 --
 -- 写操作（POST / DELETE）的客户端可在 header 带 Idempotency-Key；middleware
@@ -33,3 +34,6 @@ CREATE INDEX IF NOT EXISTS idx_idemp_user_created
 -- cleanup worker 用：扫 created_at < NOW() - 24h
 CREATE INDEX IF NOT EXISTS idx_idemp_cleanup
     ON idempotency_keys(created_at);
+
+-- +goose Down
+DROP TABLE IF EXISTS idempotency_keys;

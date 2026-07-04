@@ -1,3 +1,4 @@
+-- +goose Up
 -- PLAN-027 / INFRA-003：clusters 表扩 schema 支持完整 cluster + standalone host 配置
 --
 -- 设计：
@@ -17,3 +18,13 @@ ALTER TABLE clusters ADD COLUMN IF NOT EXISTS default_project TEXT;
 ALTER TABLE clusters ADD COLUMN IF NOT EXISTS storage_pool TEXT;
 ALTER TABLE clusters ADD COLUMN IF NOT EXISTS network TEXT;
 ALTER TABLE clusters ADD COLUMN IF NOT EXISTS ip_pools_json JSONB;
+
+-- +goose Down
+ALTER TABLE clusters DROP COLUMN IF EXISTS ip_pools_json;
+ALTER TABLE clusters DROP COLUMN IF EXISTS network;
+ALTER TABLE clusters DROP COLUMN IF EXISTS storage_pool;
+ALTER TABLE clusters DROP COLUMN IF EXISTS default_project;
+ALTER TABLE clusters DROP COLUMN IF EXISTS kind;
+ALTER TABLE clusters DROP COLUMN IF EXISTS ca_file;
+ALTER TABLE clusters DROP COLUMN IF EXISTS key_file;
+ALTER TABLE clusters DROP COLUMN IF EXISTS cert_file;

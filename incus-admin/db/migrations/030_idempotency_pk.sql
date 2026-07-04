@@ -1,3 +1,4 @@
+-- +goose Up
 -- WP-H2 / OPS-052：idempotency_keys 主键由 (key) 收窄为 (key, user_id) 复合主键
 --
 -- 背景：029 建表时用 `key TEXT PRIMARY KEY`，是**全局**唯一约束。若两个不同
@@ -20,3 +21,7 @@
 
 ALTER TABLE idempotency_keys DROP CONSTRAINT IF EXISTS idempotency_keys_pkey;
 ALTER TABLE idempotency_keys ADD CONSTRAINT idempotency_keys_pkey PRIMARY KEY (key, user_id);
+
+-- +goose Down
+ALTER TABLE idempotency_keys DROP CONSTRAINT IF EXISTS idempotency_keys_pkey;
+ALTER TABLE idempotency_keys ADD CONSTRAINT idempotency_keys_pkey PRIMARY KEY (key);

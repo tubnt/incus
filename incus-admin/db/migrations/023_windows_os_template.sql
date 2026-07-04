@@ -1,3 +1,4 @@
+-- +goose Up
 -- OPS-045: 为 OS 镜像模板目录补充 Windows 占位项。
 --
 -- 背景：linuxcontainers.org 不托管 Windows 镜像，无法像 Ubuntu / Debian 那样
@@ -13,3 +14,6 @@ INSERT INTO os_templates (slug, name, source, protocol, server_url, default_user
     ('windows-server-2022', 'Windows Server 2022', 'windows-server-2022', 'incus', '', 'Administrator', false, 200),
     ('windows-11',          'Windows 11',          'windows-11',          'incus', '', 'Administrator', false, 210)
 ON CONFLICT (slug) DO NOTHING;
+
+-- +goose Down
+DELETE FROM os_templates WHERE slug IN ('windows-server-2022', 'windows-11');
