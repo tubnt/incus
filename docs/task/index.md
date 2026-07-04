@@ -115,3 +115,4 @@ Each task is a single line linking to its detail file. All detailed information 
 - [x] [**OPS-051 VM 创建 SSH 不可达根因修复 + 凭据/UX 闭环**](OPS-051.md) `P1`
 - [ ] [**INFRA-012 cloud-gateway /v1 适配层（AI 网关对接标准）**](INFRA-012.md) `P1`
 - [ ] [**INFRA-013 按天付费 billing engine（订阅周期 + 余额定时扣费）**](INFRA-013.md) `P1`
+- [~] [**OPS-052 深度代码审查整改 —— 7 工作包并行修复 + 9 项人工决策**](OPS-052.md) `P0`
