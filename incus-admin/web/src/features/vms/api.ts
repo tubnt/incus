@@ -187,6 +187,9 @@ export function useRestoreServiceMutation() {
       queryClient.invalidateQueries({ queryKey: vmKeys.myList() });
       queryClient.invalidateQueries({ queryKey: vmKeys.myTrash() });
     },
+    // WP-F：回收站撤销成功/失败统一由全局 MutationCache 兜底提示（成功 toast
+    // 带稳定 id，批量 undo 折叠为一条）。
+    meta: { globalErrorToast: true, successToast: "vm.restoredToast" },
   });
 }
 

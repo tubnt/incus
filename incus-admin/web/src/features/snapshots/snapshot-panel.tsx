@@ -45,6 +45,8 @@ export function SnapshotPanel({ vmName, cluster, project, apiBase = "/admin" }: 
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["snapshots", apiBase, vmName] });
       setNewName("");
+      // WP-F：快照创建成功补 toast。
+      toast.success(t("snapshot.created", { defaultValue: "快照已创建" }));
     },
     onError: (err: Error) =>
       toast.error(`${t("snapshot.create")}: ${err.message}`),
@@ -53,7 +55,10 @@ export function SnapshotPanel({ vmName, cluster, project, apiBase = "/admin" }: 
   const deleteMutation = useMutation({
     mutationFn: (snap: string) =>
       http.delete(snapshotPath(apiBase, vmName, snap), { cluster, project }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["snapshots", apiBase, vmName] }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["snapshots", apiBase, vmName] });
+      toast.success(t("snapshot.deleted", { defaultValue: "快照已删除" }));
+    },
     onError: (err: Error) =>
       toast.error(`${t("common.delete")}: ${err.message}`),
   });
@@ -61,7 +66,10 @@ export function SnapshotPanel({ vmName, cluster, project, apiBase = "/admin" }: 
   const restoreMutation = useMutation({
     mutationFn: (snap: string) =>
       http.post(`${snapshotPath(apiBase, vmName, snap)}/restore`, { cluster, project }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["snapshots", apiBase, vmName] }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["snapshots", apiBase, vmName] });
+      toast.success(t("snapshot.restored", { defaultValue: "已从快照恢复" }));
+    },
     onError: (err: Error) =>
       toast.error(`${t("snapshot.restore")}: ${err.message}`),
   });

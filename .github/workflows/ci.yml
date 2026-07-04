@@ -47,6 +47,9 @@ jobs:
       - name: Typecheck
         run: bunx tsc --noEmit
 
+      - name: Check i18n keys
+        run: bun run check:i18n
+
       - name: Build
         run: bun run build
 

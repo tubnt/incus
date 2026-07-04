@@ -663,7 +663,8 @@
       "dismissed": "告警 #{{id}} 已忽略"
     },
     "vmStatefulHint": "已启用 live migration（migration.stateful=true）",
-    "migrateBtn": "迁移"
+    "migrateBtn": "迁移",
+    "roleUpdated": "角色已更新"
   },
   "adminOverview": {
     "apiStatus": "API 状态",
@@ -898,7 +899,8 @@
   "error": {
     "goHome": "回到首页",
     "notFound": "页面不存在",
-    "signInRequired": "请登录以继续"
+    "signInRequired": "请登录以继续",
+    "mutationFailed": "操作失败"
   },
   "ha": {
     "noCluster": "尚未配置集群。",
@@ -945,7 +947,9 @@
     "triggerManual": "手动",
     "vmFrom": "源节点",
     "vmName": "名称",
-    "vmTo": "目标节点"
+    "vmTo": "目标节点",
+    "evacuateStartedToast": "已发起疏散",
+    "nodeRestoredToast": "节点已恢复"
   },
   "invoice": {
     "amount": "金额",
@@ -1170,7 +1174,9 @@
     "restoreMessage": "恢复 {{vm}} 到快照 \"{{name}}\"？当前状态将丢失。",
     "restoreTitle": "恢复快照",
     "title": "快照",
-    "deleteAriaLabel": "删除快照 {{name}}"
+    "deleteAriaLabel": "删除快照 {{name}}",
+    "deleted": "快照已删除",
+    "restored": "已从快照恢复"
   },
   "sshKey": {
     "add": "添加密钥",
@@ -1508,7 +1514,8 @@
     "reinstallStarted": "重装已开始，进度展示中...",
     "resetPwdConfirmMessage": "将为 {{name}} 生成新密码并写入 cloud-init / agent-exec。新密码只显示 20s，请准备好记下。",
     "resetPwdConfirmTitle": "重置 root 密码？",
-    "type": "类型"
+    "type": "类型",
+    "restoredToast": "已从回收站恢复"
   },
   "jobs": {
     "queued": "已排队，等待 worker 拾取...",

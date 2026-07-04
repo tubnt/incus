@@ -13,6 +13,7 @@
  */
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, extname, join, resolve } from "node:path";
+import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -53,7 +54,23 @@ function flatten(obj, prefix, set) {
  * 模板字符串与变量入参不匹配 —— 计入 dynamic 统计。
  */
 const STATIC_RE = /\bt\(\s*(['"])((?:\\.|(?!\1).)*)\1/g;
-const DYNAMIC_RE = /\bt\(\s*(`|[A-Za-z_$])/g;
+// 反引号 / 标识符入参 => 动态 key（模板字符串或变量），无法静态求值，仅统计。
+const DYNAMIC_RE = /\bt\(\s*[`A-Za-z_$]/g;
+// WP-F：mutation `meta.successToast: "<key>"` 的值也是 i18n key，由全局
+// MutationCache 通过 i18n.t() 渲染，纳入校验（否则是无法被 t() 扫描到的盲区）。
+const META_KEY_RE = /successToast\s*:\s*(['"])((?:\\.|(?!\1).)*)\1/g;
+
+function collect(re, keyIndex, text, rel, staticKeys) {
+  re.lastIndex = 0;
+  for (let m = re.exec(text); m !== null; m = re.exec(text)) {
+    const key = m[keyIndex];
+    // 过滤明显不是 i18n key 的入参（HTTP 路径以 / 开头等）
+    if (key.startsWith("/") || key.startsWith("http")) continue;
+    const line = text.slice(0, m.index).split("\n").length;
+    if (!staticKeys.has(key)) staticKeys.set(key, []);
+    staticKeys.get(key).push(`${rel}:${line}`);
+  }
+}
 
 function extractKeys(files) {
   const staticKeys = new Map(); // key -> [locations]
@@ -61,25 +78,11 @@ function extractKeys(files) {
   for (const file of files) {
     const text = readFileSync(file, "utf8");
     const rel = file.slice(webRoot.length + 1);
-    let m;
-    STATIC_RE.lastIndex = 0;
-    while ((m = STATIC_RE.exec(text))) {
-      const key = m[2];
-      // 过滤明显不是 i18n key 的入参（HTTP 路径以 / 开头等）
-      if (key.startsWith("/") || key.startsWith("http")) continue;
-      const line = text.slice(0, m.index).split("\n").length;
-      if (!staticKeys.has(key)) staticKeys.set(key, []);
-      staticKeys.get(key).push(`${rel}:${line}`);
-    }
+    collect(STATIC_RE, 2, text, rel, staticKeys);
+    collect(META_KEY_RE, 2, text, rel, staticKeys);
     DYNAMIC_RE.lastIndex = 0;
-    while ((m = DYNAMIC_RE.exec(text))) {
-      // 反引号 / 标识符入参 => 动态 key
-      const ch = m[1];
-      if (ch === "`") dynamicCount++;
-      else {
-        // 排除被 STATIC_RE 已覆盖的字符串场景（'/"），这里只统计标识符
-        dynamicCount++;
-      }
+    for (let m = DYNAMIC_RE.exec(text); m !== null; m = DYNAMIC_RE.exec(text)) {
+      dynamicCount++;
     }
   }
   return { staticKeys, dynamicCount };

@@ -663,7 +663,8 @@
       "dismissed": "Alert #{{id}} dismissed"
     },
     "vmStatefulHint": "Live migration ready (migration.stateful=true)",
-    "migrateBtn": "Migrate"
+    "migrateBtn": "Migrate",
+    "roleUpdated": "Role updated"
   },
   "adminOverview": {
     "apiStatus": "API Status",
@@ -898,7 +899,8 @@
   "error": {
     "goHome": "Back to home",
     "notFound": "Page not found",
-    "signInRequired": "Please sign in to continue"
+    "signInRequired": "Please sign in to continue",
+    "mutationFailed": "Action failed"
   },
   "ha": {
     "noCluster": "No cluster configured.",
@@ -945,7 +947,9 @@
     "triggerManual": "Manual",
     "vmFrom": "From",
     "vmName": "Name",
-    "vmTo": "To"
+    "vmTo": "To",
+    "evacuateStartedToast": "Evacuation started",
+    "nodeRestoredToast": "Node restored"
   },
   "invoice": {
     "amount": "Amount",
@@ -1170,7 +1174,9 @@
     "restoreMessage": "Restore {{vm}} to snapshot \"{{name}}\"? Current state will be lost.",
     "restoreTitle": "Restore snapshot",
     "title": "Snapshots",
-    "deleteAriaLabel": "Delete snapshot {{name}}"
+    "deleteAriaLabel": "Delete snapshot {{name}}",
+    "deleted": "Snapshot deleted",
+    "restored": "Restored from snapshot"
   },
   "sshKey": {
     "add": "Add Key",
@@ -1508,7 +1514,8 @@
     "reinstallStarted": "Reinstall started, showing progress...",
     "resetPwdConfirmMessage": "A new password will be generated for {{name}} and written via cloud-init / agent-exec. It is shown for only 20s, so be ready to note it down.",
     "resetPwdConfirmTitle": "Reset root password?",
-    "type": "Type"
+    "type": "Type",
+    "restoredToast": "Restored from trash"
   },
   "jobs": {
     "queued": "Queued, waiting for a worker...",
