@@ -300,13 +300,6 @@ func (r *VMRepo) UpdatePassword(ctx context.Context, id int64, password string) 
 	return err
 }
 
-func (r *VMRepo) UpdateNode(ctx context.Context, id int64, node string) error {
-	_, err := r.db.ExecContext(ctx,
-		`UPDATE vms SET node = $1, updated_at = $2 WHERE id = $3`,
-		node, time.Now(), id)
-	return err
-}
-
 // UpdateAfterProvision 在 jobs runner finalize 步骤一次性把 status / node /
 // password 写回。仅在 status='creating' 或 status='running'（重装情形）时改，
 // 防止把 admin 已手动转 'error' 的行又翻回 running。
@@ -375,19 +368,6 @@ func (r *VMRepo) MarkGone(ctx context.Context, id int64) error {
 		return nil
 	}
 	return nil
-}
-
-func (r *VMRepo) CountByUser(ctx context.Context, userID int64) (vms int, vcpus int, ramMB int, diskGB int, err error) {
-	err = r.db.QueryRowContext(ctx,
-		// 'gone' = Incus instance vanished out-of-band (PLAN-020 reconciler).
-		// Counting it would double-charge quota after the reconciler flips
-		// the row but before the admin force-deletes it.
-		// Trashed rows (PLAN-034) are excluded from quota — once trashed_at is set
-		// the VM is on the way to hard-delete and shouldn't count against the user's cap.
-		`SELECT COUNT(*), COALESCE(SUM(cpu),0), COALESCE(SUM(memory_mb),0), COALESCE(SUM(disk_gb),0)
-		 FROM vms WHERE user_id = $1 AND status NOT IN ('deleted','error','gone') AND trashed_at IS NULL`, userID,
-	).Scan(&vms, &vcpus, &ramMB, &diskGB)
-	return
 }
 
 // MarkGoneByName flips status to 'gone' identified by (cluster_id, name).
