@@ -12,10 +12,65 @@ import (
 	"net/url"
 	"regexp"
 	"sort"
+	"strconv"
+	"sync"
 	"time"
 
 	"github.com/incuscloud/incus-admin/internal/model"
 )
+
+// keyedMutex 是按字符串 key 维度的进程内互斥集合（advisory 占位锁）。
+// 用于幂等中间件的 TOCTOU 防护：并发的相同 (user_id, key) 请求需要串行化，
+// 否则两个请求可能同时 Get→miss→各自执行一遍业务（DB 层的 ON CONFLICT 只能
+// 防重复插入缓存行，防不住业务被执行两次）。锁仅存活于本进程，多副本部署时
+// 由 DB 复合主键 + 客户端重试兜底；单进程内它保证同 key 严格一次执行。
+//
+// 采用引用计数 + 用完即删，避免长期运行后 map 无限膨胀（key 空间是客户端可控的
+// 任意 16..255 字符串）。
+type keyedMutex struct {
+	mu    sync.Mutex
+	locks map[string]*keyedMutexEntry
+}
+
+type keyedMutexEntry struct {
+	mu   sync.Mutex
+	refs int
+}
+
+func newKeyedMutex() *keyedMutex {
+	return &keyedMutex{locks: make(map[string]*keyedMutexEntry)}
+}
+
+// lock 获取 key 对应的互斥锁并返回释放函数。释放时若无其它 waiter 引用，
+// 顺带把 entry 从 map 删除，回收内存。
+func (k *keyedMutex) lock(key string) func() {
+	k.mu.Lock()
+	e, ok := k.locks[key]
+	if !ok {
+		e = &keyedMutexEntry{}
+		k.locks[key] = e
+	}
+	e.refs++
+	k.mu.Unlock()
+
+	e.mu.Lock()
+
+	return func() {
+		e.mu.Unlock()
+		k.mu.Lock()
+		e.refs--
+		if e.refs == 0 {
+			delete(k.locks, key)
+		}
+		k.mu.Unlock()
+	}
+}
+
+// lockKey 把 (userID, key) 拼成占位锁的复合键。用 NUL 分隔，避免 userID 与
+// key 拼接歧义（key 字符集已由 idempotencyKeyRe 限定，不含 NUL）。
+func lockKey(userID int64, key string) string {
+	return strconv.FormatInt(userID, 10) + "\x00" + key
+}
 
 // IdempotencyStore 是 middleware 需要的最小 idempotency_keys 持久化接口。
 // repository.IdempotencyRepo 直接实现；测试用 in-memory fake。
@@ -54,6 +109,9 @@ func Idempotency(store IdempotencyStore) func(http.Handler) http.Handler {
 		slog.Error("Idempotency middleware: nil store passed; refusing to wire")
 		return func(next http.Handler) http.Handler { return next }
 	}
+	// 每个中间件实例持有一份 keyedMutex，跨请求共享——同 (user_id, key) 的
+	// 并发请求靠它串行化，防 Get→miss 竞态导致业务重复执行。
+	kmu := newKeyedMutex()
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.Method != http.MethodPost && r.Method != http.MethodDelete {
@@ -94,6 +152,13 @@ func Idempotency(store IdempotencyStore) func(http.Handler) http.Handler {
 			}
 
 			hash := requestFingerprint(r.Method, r.URL.Path, r.URL.RawQuery, bodyBytes)
+
+			// TOCTOU 占位锁：串行化同 (user_id, key) 的并发请求。第一个请求跑
+			// Get→业务→Put 的完整临界区，后续请求阻塞到它释放后再 Get，此时必然
+			// 命中缓存直接回放，业务只执行一次。锁跨整个 handler，defer 覆盖回放
+			// 提前返回与 miss 落盘两条路径。
+			unlock := kmu.lock(lockKey(userID, key))
+			defer unlock()
 
 			existing, err := store.Get(r.Context(), key, userID)
 			if err != nil {

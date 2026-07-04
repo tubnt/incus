@@ -399,11 +399,6 @@ const (
 	BillingChargeInsufficient = "insufficient"
 	BillingChargeSkipped      = "skipped"
 
-	IPAvailable = "available"
-	IPAssigned  = "assigned"
-	IPReserved  = "reserved"
-	IPCooldown  = "cooldown"
-
 	// PLAN-025 / INFRA-007 provisioning job
 	JobKindVMCreate    = "vm.create"
 	JobKindVMReinstall = "vm.reinstall"

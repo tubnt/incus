@@ -300,13 +300,6 @@ func (r *VMRepo) UpdatePassword(ctx context.Context, id int64, password string) 
 	return err
 }
 
-func (r *VMRepo) UpdateNode(ctx context.Context, id int64, node string) error {
-	_, err := r.db.ExecContext(ctx,
-		`UPDATE vms SET node = $1, updated_at = $2 WHERE id = $3`,
-		node, time.Now(), id)
-	return err
-}
-
 // UpdateAfterProvision 在 jobs runner finalize 步骤一次性把 status / node /
 // password 写回。仅在 status='creating' 或 status='running'（重装情形）时改，
 // 防止把 admin 已手动转 'error' 的行又翻回 running。
@@ -337,12 +330,17 @@ func (r *VMRepo) Delete(ctx context.Context, id int64) error {
 // still materialising it. Does not include status='gone' or 'deleted' rows.
 // Trashed rows are excluded too — they're awaiting hard-delete by the trash
 // purger, no point flipping them to 'gone' if Incus already considers them gone.
+//
+// OPS-052 P1-2：'creating' 状态**不**纳入比对。creating 表示 provisioning job 还在
+// 跑（可能持续几分钟），此时 Incus 实例尚未创建可见——若 created_at 已越过 10s buffer
+// 就会被误判 gone，reconciler 随即 Release 掉刚分配的 IP，导致 job finalize 时 IP 双
+// 分配。只比对已就绪（running/stopped/migrating）的 VM，creating 由 job 自身负责收口。
 func (r *VMRepo) ListActiveForReconcile(ctx context.Context, clusterID int64, cutoff time.Time) ([]model.VM, error) {
 	rows, err := r.db.QueryContext(ctx,
 		`SELECT id, name, cluster_id, user_id, order_id, host(ip)::text, status, cpu, memory_mb, disk_gb, os_image, node, password, rescue_state, rescue_started_at, rescue_snapshot_name, trashed_at, trashed_prev_status, created_at, updated_at
 		 FROM vms
 		 WHERE cluster_id = $1
-		   AND status IN ('creating','running','stopped','migrating')
+		   AND status IN ('running','stopped','migrating')
 		   AND trashed_at IS NULL
 		   AND created_at < $2`,
 		clusterID, cutoff,
@@ -375,19 +373,6 @@ func (r *VMRepo) MarkGone(ctx context.Context, id int64) error {
 		return nil
 	}
 	return nil
-}
-
-func (r *VMRepo) CountByUser(ctx context.Context, userID int64) (vms int, vcpus int, ramMB int, diskGB int, err error) {
-	err = r.db.QueryRowContext(ctx,
-		// 'gone' = Incus instance vanished out-of-band (PLAN-020 reconciler).
-		// Counting it would double-charge quota after the reconciler flips
-		// the row but before the admin force-deletes it.
-		// Trashed rows (PLAN-034) are excluded from quota — once trashed_at is set
-		// the VM is on the way to hard-delete and shouldn't count against the user's cap.
-		`SELECT COUNT(*), COALESCE(SUM(cpu),0), COALESCE(SUM(memory_mb),0), COALESCE(SUM(disk_gb),0)
-		 FROM vms WHERE user_id = $1 AND status NOT IN ('deleted','error','gone') AND trashed_at IS NULL`, userID,
-	).Scan(&vms, &vcpus, &ramMB, &diskGB)
-	return
 }
 
 // MarkGoneByName flips status to 'gone' identified by (cluster_id, name).
@@ -589,9 +574,12 @@ func scanVMs(rows *sql.Rows) ([]model.VM, error) {
 // running，stopped → stopped). Idempotent: a row already in trash returns
 // (false, nil). Returns the row id on success so the caller can audit.
 func (r *VMRepo) MarkTrashed(ctx context.Context, vmID int64) (bool, error) {
+	// OPS-052：软删同时清空 password —— VM 一旦进回收站即在 hard-delete 通路上，
+	// 没必要继续在 DB 里保留可解密的登录凭据。restore 只恢复生命周期状态，密码由
+	// 用户自行 reset（VM 内的实际口令不受影响，此处仅清 DB 展示记录）。
 	res, err := r.db.ExecContext(ctx,
 		`UPDATE vms
-		 SET trashed_at = NOW(), trashed_prev_status = status, updated_at = NOW()
+		 SET trashed_at = NOW(), trashed_prev_status = status, password = NULL, updated_at = NOW()
 		 WHERE id = $1 AND trashed_at IS NULL AND status NOT IN ('deleted','gone')`,
 		vmID,
 	)

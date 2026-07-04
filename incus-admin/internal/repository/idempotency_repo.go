@@ -12,8 +12,9 @@ import (
 // IdempotencyRepo PLAN-053 / INFRA-012 idempotency_keys 表读写。
 //
 // 与 middleware.IdempotencyStore 接口签名对齐：Get/Put/DeleteOlderThan。
-// PRIMARY KEY (key) 已天然唯一，但 Get 仍把 user_id 进 WHERE，防止恶意用户
-// 通过预测 key 观察他人缓存响应（cross-user replay 防护）。
+// WP-H2（迁移 030）起主键为复合 (key, user_id)：key 仅在单用户维度唯一，
+// 跨用户相同 key 不再碰撞。所有查询 / 写入均带上 user_id 维度——Get 把
+// user_id 进 WHERE 防 cross-user replay，Put 以 (key, user_id) 判冲突。
 type IdempotencyRepo struct {
 	db *sql.DB
 }
@@ -50,14 +51,15 @@ func (r *IdempotencyRepo) Get(ctx context.Context, key string, userID int64) (*m
 	return &k, nil
 }
 
-// Put 写一条新缓存。ON CONFLICT (key) DO NOTHING 保证 race 场景下先到先得，
-// 第二个写入不抛错也不覆盖（PLAN-053 risk #2 对策）。调用方关心后续重放时
-// 是否读到自己写的那条，直接 Get 即可。
+// Put 写一条新缓存。ON CONFLICT (key, user_id) DO NOTHING 保证同一用户 race
+// 场景下先到先得：第二个写入不抛错也不覆盖既有记录（PLAN-053 risk #2 对策）。
+// 冲突目标必须与迁移 030 的复合主键 (key, user_id) 一致，否则跨用户相同 key
+// 会误判冲突。调用方关心后续重放时是否读到自己写的那条，直接 Get 即可。
 func (r *IdempotencyRepo) Put(ctx context.Context, k model.IdempotencyKey) error {
 	_, err := r.db.ExecContext(ctx,
 		`INSERT INTO idempotency_keys (key, user_id, method, path, status_code, response_body, request_hash)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7)
-		 ON CONFLICT (key) DO NOTHING`,
+		 ON CONFLICT (key, user_id) DO NOTHING`,
 		k.Key, k.UserID, k.Method, k.Path, k.StatusCode, k.ResponseBody, k.RequestHash,
 	)
 	if err != nil {

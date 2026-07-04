@@ -188,6 +188,70 @@ func TestIdempotencyRepo_RoundTrip(t *testing.T) {
 	}
 }
 
+// TestIdempotencyRepo_CompositeKeyCrossUser 验证迁移 030 复合主键 (key, user_id)：
+// 两个不同用户使用**相同** Idempotency-Key 时互不碰撞，各自都能写入 + 读回
+// 自己的缓存行；同一用户 + 同 key 二次 Put 仍走 ON CONFLICT DO NOTHING 不覆盖。
+func TestIdempotencyRepo_CompositeKeyCrossUser(t *testing.T) {
+	db := testhelper.NewTestDB(t, "")
+	repo := repository.NewIdempotencyRepo(db)
+	ctx := context.Background()
+
+	// 两个独立用户
+	var userA, userB int64
+	if err := db.QueryRowContext(ctx,
+		`INSERT INTO users (email, name, role, balance) VALUES ('a@test','a','customer',0) RETURNING id`).Scan(&userA); err != nil {
+		t.Fatalf("seed userA: %v", err)
+	}
+	if err := db.QueryRowContext(ctx,
+		`INSERT INTO users (email, name, role, balance) VALUES ('b@test','b','customer',0) RETURNING id`).Scan(&userB); err != nil {
+		t.Fatalf("seed userB: %v", err)
+	}
+
+	const sameKey = "shared-key-across-users-1"
+	mk := func(uid int64, body string) model.IdempotencyKey {
+		return model.IdempotencyKey{
+			Key: sameKey, UserID: uid, Method: "POST", Path: "/v1/instances",
+			StatusCode: 201, ResponseBody: []byte(body), RequestHash: "h",
+		}
+	}
+
+	// A、B 用相同 key 各写一条——旧 (key) 单主键下第二条会被 ON CONFLICT 吞掉，
+	// 复合主键下两条都应落库。
+	if err := repo.Put(ctx, mk(userA, `{"u":"a"}`)); err != nil {
+		t.Fatalf("Put A: %v", err)
+	}
+	if err := repo.Put(ctx, mk(userB, `{"u":"b"}`)); err != nil {
+		t.Fatalf("Put B (same key, different user) must not collide: %v", err)
+	}
+
+	gotA, err := repo.Get(ctx, sameKey, userA)
+	if err != nil || gotA == nil {
+		t.Fatalf("Get A: %v (nil=%v)", err, gotA == nil)
+	}
+	gotB, err := repo.Get(ctx, sameKey, userB)
+	if err != nil || gotB == nil {
+		t.Fatalf("Get B: %v (nil=%v)", err, gotB == nil)
+	}
+	if !bytes.Equal(gotA.ResponseBody, []byte(`{"u":"a"}`)) {
+		t.Fatalf("user A read wrong row: %q", gotA.ResponseBody)
+	}
+	if !bytes.Equal(gotB.ResponseBody, []byte(`{"u":"b"}`)) {
+		t.Fatalf("user B read wrong row: %q", gotB.ResponseBody)
+	}
+
+	// 同一用户 + 同 key 二次 Put：ON CONFLICT (key, user_id) DO NOTHING，不覆盖。
+	if err := repo.Put(ctx, mk(userA, `{"u":"a-overwritten"}`)); err != nil {
+		t.Fatalf("re-Put A: %v", err)
+	}
+	reA, err := repo.Get(ctx, sameKey, userA)
+	if err != nil || reA == nil {
+		t.Fatalf("re-Get A: %v", err)
+	}
+	if !bytes.Equal(reA.ResponseBody, []byte(`{"u":"a"}`)) {
+		t.Fatalf("second Put must not overwrite; got %q", reA.ResponseBody)
+	}
+}
+
 // TestProductRepo_NewColumnsScan 回归测试：products 加 price_daily +
 // period_supported 后 ListActive / GetByID 必须能完整扫描，扫描偏移错位的话
 // PriceMonthly 会读到 price_daily 的 NULL，整个 Scan 会失败。
