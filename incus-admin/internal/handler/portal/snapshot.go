@@ -54,12 +54,36 @@ func (h *SnapshotHandler) portalWrap(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// resolveVM 按 VM 名反解其 cluster 名与 project，忽略客户端传入的 cluster/project
+// （WP-E 跨集群同名越权修复）。portal 路径已在 portalWrap 做过 owner 校验；admin
+// 路径无 owner 校验但仍按 VM 行定位，杜绝"传 cluster=B 操作别人集群同名快照"。
+// 定位不到 VM 或 cluster 时写好响应并返回 ok=false。
+func (h *SnapshotHandler) resolveVM(w http.ResponseWriter, r *http.Request, vmName string) (clusterName, project string, ok bool) {
+	if h.vmRepo == nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "vm repository unavailable"})
+		return "", "", false
+	}
+	vm, err := h.vmRepo.GetByName(r.Context(), vmName)
+	if err != nil || vm == nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "vm not found"})
+		return "", "", false
+	}
+	clusterName, project = resolveClusterProjectForVM(h.clusters, vm)
+	if clusterName == "" {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "cluster not found"})
+		return "", "", false
+	}
+	return clusterName, project, true
+}
+
 func (h *SnapshotHandler) List(w http.ResponseWriter, r *http.Request) {
 	vmName := chi.URLParam(r, "name")
-	clusterName := r.URL.Query().Get("cluster")
-	project := r.URL.Query().Get("project")
-	if clusterName == "" || project == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "missing cluster or project"})
+	if !isValidName(vmName) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid name"})
+		return
+	}
+	clusterName, project, ok := h.resolveVM(w, r, vmName)
+	if !ok {
 		return
 	}
 
@@ -82,10 +106,13 @@ func (h *SnapshotHandler) List(w http.ResponseWriter, r *http.Request) {
 
 func (h *SnapshotHandler) Create(w http.ResponseWriter, r *http.Request) {
 	vmName := chi.URLParam(r, "name")
+	if !isValidName(vmName) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid name"})
+		return
+	}
+	// WP-E：cluster/project 不再从请求体取，改为按 VM 行反解；仅快照名可由客户端指定。
 	var req struct {
-		Cluster string `json:"cluster" validate:"required,safename"`
-		Project string `json:"project" validate:"omitempty,safename"`
-		Name    string `json:"name"    validate:"omitempty,safename"`
+		Name string `json:"name" validate:"omitempty,safename"`
 	}
 	if !decodeAndValidate(w, r, &req) {
 		return
@@ -94,14 +121,18 @@ func (h *SnapshotHandler) Create(w http.ResponseWriter, r *http.Request) {
 		req.Name = fmt.Sprintf("snap-%s", time.Now().Format("20060102-150405"))
 	}
 
-	client, ok := h.clusters.Get(req.Cluster)
+	clusterName, project, ok := h.resolveVM(w, r, vmName)
+	if !ok {
+		return
+	}
+	client, ok := h.clusters.Get(clusterName)
 	if !ok {
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "cluster not found"})
 		return
 	}
 
 	body, _ := json.Marshal(map[string]any{"name": req.Name})
-	path := fmt.Sprintf("/1.0/instances/%s/snapshots?project=%s", url.PathEscape(vmName), url.QueryEscape(req.Project))
+	path := fmt.Sprintf("/1.0/instances/%s/snapshots?project=%s", url.PathEscape(vmName), url.QueryEscape(project))
 	resp, err := client.APIPost(r.Context(), path, bytes.NewReader(body))
 	if err != nil {
 		slog.Error("create snapshot failed", "vm", vmName, "error", err)
@@ -120,8 +151,8 @@ func (h *SnapshotHandler) Create(w http.ResponseWriter, r *http.Request) {
 	slog.Info("snapshot created", "vm", vmName, "name", req.Name)
 	audit(r.Context(), r, "snapshot.create", "vm", 0, map[string]any{
 		"vm":      vmName,
-		"cluster": req.Cluster,
-		"project": req.Project,
+		"cluster": clusterName,
+		"project": project,
 		"name":    req.Name,
 	})
 	writeJSON(w, http.StatusCreated, map[string]any{"status": "ok", "name": req.Name})
@@ -134,8 +165,10 @@ func (h *SnapshotHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid name"})
 		return
 	}
-	clusterName := r.URL.Query().Get("cluster")
-	project := r.URL.Query().Get("project")
+	clusterName, project, ok := h.resolveVM(w, r, vmName)
+	if !ok {
+		return
+	}
 
 	client, ok := h.clusters.Get(clusterName)
 	if !ok {
@@ -176,22 +209,20 @@ func (h *SnapshotHandler) Restore(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid name"})
 		return
 	}
-	var req struct {
-		Cluster string `json:"cluster" validate:"required,safename"`
-		Project string `json:"project" validate:"omitempty,safename"`
-	}
-	if !decodeAndValidate(w, r, &req) {
+	// WP-E：cluster/project 改为按 VM 行反解，忽略请求体传值。
+	clusterName, project, ok := h.resolveVM(w, r, vmName)
+	if !ok {
 		return
 	}
 
-	client, ok := h.clusters.Get(req.Cluster)
+	client, ok := h.clusters.Get(clusterName)
 	if !ok {
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "cluster not found"})
 		return
 	}
 
 	body, _ := json.Marshal(map[string]any{"restore": snapName})
-	path := fmt.Sprintf("/1.0/instances/%s?project=%s", url.PathEscape(vmName), url.QueryEscape(req.Project))
+	path := fmt.Sprintf("/1.0/instances/%s?project=%s", url.PathEscape(vmName), url.QueryEscape(project))
 	resp, err := client.APIPut(r.Context(), path, bytes.NewReader(body))
 	if err != nil {
 		slog.Error("restore snapshot failed", "vm", vmName, "snap", snapName, "error", err)
@@ -210,8 +241,8 @@ func (h *SnapshotHandler) Restore(w http.ResponseWriter, r *http.Request) {
 	slog.Info("snapshot restored", "vm", vmName, "snap", snapName)
 	audit(r.Context(), r, "snapshot.restore", "vm", 0, map[string]any{
 		"vm":      vmName,
-		"cluster": req.Cluster,
-		"project": req.Project,
+		"cluster": clusterName,
+		"project": project,
 		"name":    snapName,
 	})
 	writeJSON(w, http.StatusOK, map[string]any{"status": "restored"})

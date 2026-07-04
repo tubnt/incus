@@ -14,6 +14,7 @@ import (
 
 	"github.com/incuscloud/incus-admin/internal/cluster"
 	"github.com/incuscloud/incus-admin/internal/middleware"
+	"github.com/incuscloud/incus-admin/internal/model"
 	"github.com/incuscloud/incus-admin/internal/repository"
 )
 
@@ -48,22 +49,41 @@ func NewConsoleHandler(clusters *cluster.Manager, vmRepo *repository.VMRepo) *Co
 
 func (h *ConsoleHandler) HandleConsole(w http.ResponseWriter, r *http.Request) {
 	vmName := r.URL.Query().Get("vm")
-	project := r.URL.Query().Get("project")
-	clusterName := r.URL.Query().Get("cluster")
-
-	if vmName == "" || project == "" || clusterName == "" {
-		http.Error(w, "missing vm, project, or cluster param", http.StatusBadRequest)
+	if vmName == "" {
+		http.Error(w, "missing vm param", http.StatusBadRequest)
+		return
+	}
+	// WP-E 防注入：VM 名必须是合法标识符，杜绝把任意串拼进 Incus API path/query。
+	if !isValidName(vmName) {
+		http.Error(w, "invalid vm name", http.StatusBadRequest)
 		return
 	}
 
 	userID, _ := r.Context().Value(middleware.CtxUserID).(int64)
 	role, _ := r.Context().Value(middleware.CtxUserRole).(string)
-	if role != "admin" && h.vmRepo != nil {
-		vm, err := h.vmRepo.GetByName(r.Context(), vmName)
-		if err != nil || vm == nil || vm.UserID != userID {
-			http.Error(w, "access denied", http.StatusForbidden)
-			return
-		}
+
+	// WP-E 越权修复：cluster/project 一律从 owner 的 VM 行反解，忽略客户端传入的
+	// cluster/project。原实现信任 query 里的 cluster/project，配合 GetByName 只按名
+	// 取行可被"跨集群同名 VM"利用：用户拥有集群 A 的 web，却传 cluster=B 去 exec 进
+	// 别人集群 B 的同名 web。现在既然从 vm.ClusterID 反解，客户端传值不再有意义。
+	if h.vmRepo == nil {
+		http.Error(w, "vm repository unavailable", http.StatusInternalServerError)
+		return
+	}
+	vm, err := h.vmRepo.GetByName(r.Context(), vmName)
+	if err != nil || vm == nil {
+		http.Error(w, "access denied", http.StatusForbidden)
+		return
+	}
+	if role != "admin" && vm.UserID != userID {
+		http.Error(w, "access denied", http.StatusForbidden)
+		return
+	}
+
+	clusterName, project := resolveClusterProjectForVM(h.clusters, vm)
+	if clusterName == "" {
+		http.Error(w, "cluster not found", http.StatusNotFound)
+		return
 	}
 
 	client, ok := h.clusters.Get(clusterName)
@@ -84,7 +104,7 @@ func (h *ConsoleHandler) HandleConsole(w http.ResponseWriter, r *http.Request) {
 		},
 	})
 
-	execPath := fmt.Sprintf("/1.0/instances/%s/exec?project=%s", vmName, project)
+	execPath := fmt.Sprintf("/1.0/instances/%s/exec?project=%s", url.PathEscape(vmName), url.QueryEscape(project))
 	resp, err := client.APIPost(r.Context(), execPath, bytes.NewReader(execBody))
 	if err != nil {
 		slog.Error("exec request failed", "vm", vmName, "error", err)
@@ -203,6 +223,25 @@ func (h *ConsoleHandler) HandleConsole(w http.ResponseWriter, r *http.Request) {
 		"vm": vmName, "project": project, "cluster": clusterName,
 		"duration_ms": duration.Milliseconds(),
 	})
+}
+
+// resolveClusterProjectForVM 从 VM 行反解 cluster 名与 project，供 console/snapshot
+// 等路径使用，替代信任客户端传入的 cluster/project（WP-E 跨集群同名越权修复）。
+// cluster 名由 vm.ClusterID 经 manager 映射得到；project 取该 cluster 的 DefaultProject
+// （即 VM 创建时的口径，见 order.Pay / firewall.resolveVMLocation），缺省回退 "customers"。
+// clusterName 为空表示无法定位（manager 未注册该 cluster），调用方应据此拒绝。
+func resolveClusterProjectForVM(mgr *cluster.Manager, vm *model.VM) (clusterName, project string) {
+	clusterName = findClusterName(mgr, vm.ClusterID)
+	if clusterName == "" {
+		return "", ""
+	}
+	if cc, ok := mgr.ConfigByName(clusterName); ok {
+		project = cc.DefaultProject
+	}
+	if project == "" {
+		project = "customers"
+	}
+	return clusterName, project
 }
 
 func buildIncusWSURL(apiURL, operationID, secret string) string {
