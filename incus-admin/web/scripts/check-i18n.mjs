@@ -14,7 +14,7 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, extname, join, resolve } from "node:path";
 import process from "node:process";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const webRoot = resolve(__dirname, "..");
@@ -37,7 +37,7 @@ function walk(dir, exts) {
 }
 
 /** 把嵌套 JSON 扁平化成点分 key 集合。 */
-function flatten(obj, prefix, set) {
+export function flatten(obj, prefix, set) {
   for (const [k, v] of Object.entries(obj)) {
     const key = prefix ? `${prefix}.${k}` : k;
     if (v && typeof v === "object" && !Array.isArray(v)) {
@@ -86,6 +86,22 @@ function extractKeys(files) {
     }
   }
   return { staticKeys, dynamicCount };
+}
+
+/**
+ * 纯函数版：从一段源码文本提取全部静态 i18n key（含 `t("...")` 与
+ * `meta.successToast: "..."`）。供单元测试直接调用，避免依赖真实文件系统。
+ */
+export function extractStaticKeysFromSource(text) {
+  const map = new Map();
+  collect(STATIC_RE, 2, text, "<mem>", map);
+  collect(META_KEY_RE, 2, text, "<mem>", map);
+  return [...map.keys()];
+}
+
+/** 纯函数版：计算「代码 key 集合」相对某语言包 key 集合的缺失项。 */
+export function findMissingKeys(codeKeys, localeKeys) {
+  return codeKeys.filter((k) => !localeKeys.has(k));
 }
 
 function loadLocale(lng) {
@@ -149,4 +165,7 @@ function main() {
   console.error("✓ i18n 校验通过。\n");
 }
 
-main();
+// 仅在被直接执行时跑 main()，被测试 import 时不触发 process.exit。
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main();
+}
