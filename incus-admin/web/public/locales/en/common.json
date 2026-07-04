@@ -1223,6 +1223,8 @@
     "perMonth": "/ mo",
     "periodDaily": "Daily",
     "periodMonthly": "Monthly",
+    "monthEqualsDays": "1 month = 30 days",
+    "monthEqualsDaysNote": "Billing note: 1 month = 30 days for monthly subscriptions.",
     "statusActive": "Active",
     "statusSuspended": "Suspended",
     "statusCancelled": "Cancelled",

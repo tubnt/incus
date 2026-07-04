@@ -63,8 +63,11 @@ export function SubscriptionList({
     );
   }
 
+  const hasMonthly = sorted.some((s) => s.period === "monthly");
+
   return (
-    <div className="rounded-lg border border-border bg-surface-1 overflow-x-auto">
+    <div className="space-y-2">
+      <div className="rounded-lg border border-border bg-surface-1 overflow-x-auto">
       <Table>
         <TableHeader>
           <TableRow className="hover:bg-transparent">
@@ -86,6 +89,14 @@ export function SubscriptionList({
           ))}
         </TableBody>
       </Table>
+      </div>
+      {hasMonthly ? (
+        <p className="text-caption text-text-tertiary">
+          {t("subscription.monthEqualsDaysNote", {
+            defaultValue: "计费说明：按月订阅 1 个月 = 30 天。",
+          })}
+        </p>
+      ) : null}
     </div>
   );
 }
@@ -151,11 +162,24 @@ function PeriodChip({ period }: { period: VMSubscription["period"] }) {
     period === "daily"
       ? t("subscription.periodDaily", { defaultValue: "按日" })
       : t("subscription.periodMonthly", { defaultValue: "按月" });
-  return (
+  const chip = (
     <span className="inline-flex items-center rounded-pill border border-border bg-surface-2 px-2 py-0.5 text-label text-text-secondary">
       {label}
     </span>
   );
+  // 按月周期为 anniversary 模型，1 个月 = 30 天，用 tooltip 明示避免误解为自然月。
+  if (period === "monthly") {
+    return (
+      <Tooltip
+        content={t("subscription.monthEqualsDays", {
+          defaultValue: "1 个月 = 30 天",
+        })}
+      >
+        <span className="cursor-help">{chip}</span>
+      </Tooltip>
+    );
+  }
+  return chip;
 }
 
 function SubscriptionStatusPill({ sub }: { sub: VMSubscription }) {
