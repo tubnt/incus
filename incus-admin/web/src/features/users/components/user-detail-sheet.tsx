@@ -127,7 +127,12 @@ export function UserDetailSheet({ user, open, onOpenChange }: UserDetailSheetPro
       });
       if (!ok) return;
     }
-    roleMutation.mutate(newRole);
+    // WP-F：改角色补成功/失败 toast（此前静默）。
+    roleMutation.mutate(newRole, {
+      onSuccess: () =>
+        toast.success(t("admin.roleUpdated", { defaultValue: "角色已更新" })),
+      onError: (e) => toast.error(formatError(e)),
+    });
   };
 
   const startShadowLogin = async () => {

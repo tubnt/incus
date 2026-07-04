@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -657,6 +658,7 @@ type CloudInitInput struct {
 	SSHKeys      []string // 注入到 LoginUser 的 authorized_keys
 	AptProxyURL  string   // 形如 http://139.162.24.177:3142/；空 → 不注入
 	ExtraYAML    string   // 来自 os_templates.cloud_init_template，用户/AI 写
+	UserData     string   // WP-I1：/v1 用户自定义 user-data，合并进基础配置（不覆盖）
 }
 
 // BuildCloudInit 输出 cloud-config user-data 字符串。
@@ -796,7 +798,13 @@ func BuildCloudInit(in CloudInitInput) string {
 	b.WriteString("  - 'sed -i \"/^#*PermitRootLogin/d;/^#*PasswordAuthentication/d\" /etc/ssh/sshd_config && printf \"PermitRootLogin yes\\nPasswordAuthentication yes\\n\" >> /etc/ssh/sshd_config'\n")
 	b.WriteString("  - 'systemctl disable --now firewalld 2>/dev/null || true'\n")
 	fmt.Fprintf(&b, "  - 'usermod -U %s 2>/dev/null || true'\n", user)
-	fmt.Fprintf(&b, "  - 'echo %q | chpasswd 2>/dev/null || true'\n", user+":"+in.Password)
+	// chpasswd 兜底：把 user:password 用 base64 编码后在 guest 内解码，避免用户
+	// 指定的 root_pass（WP-I1）含 ' / $ / 反引号等破坏外层 YAML 单引号 scalar 或
+	// 被 shell 展开设错密码。base64 输出仅 [A-Za-z0-9+/=]，在 YAML 单引号与
+	// shell 内均安全（top-level password: / chpasswd: 已用 %q 双引号安全设置，
+	// 本行是首装失败时的 runcmd 兜底）。
+	credB64 := base64.StdEncoding.EncodeToString([]byte(user + ":" + in.Password))
+	fmt.Fprintf(&b, "  - 'echo %s | base64 -d | chpasswd 2>/dev/null || true'\n", credB64)
 	// 再等 DNS 可解析（Rocky 9 / Fedora 等 RHEL 系 NetworkManager-wait-online
 	// 可能超时但 resolv.conf 还没完全 ready；cloud-init runcmd 启动太快导致
 	// dnf install 必失败）。最多 90 秒 + 3 秒间隔 = 30 次。
@@ -837,13 +845,84 @@ func BuildCloudInit(in CloudInitInput) string {
 	// 合并失败（ExtraYAML 解析错）→ 退回 base，admin 端 validateCloudInit-
 	// Template 已有 yaml.Unmarshal 挡 schema，走到这里失败极少。PLAN-053
 	// 可升级为 cloud-init schema-validate。
+	out := base
 	if strings.TrimSpace(in.ExtraYAML) != "" {
-		if merged, err := mergeCloudInit(base, in.ExtraYAML); err == nil {
-			return merged
+		if merged, err := mergeCloudInit(out, in.ExtraYAML); err == nil {
+			out = merged
 		}
 		// 解析失败兜底：保持 base 不变（系统功能不被 ExtraYAML 破坏）
 	}
-	return base
+
+	// WP-I1：用户 user_data 合并进（ExtraYAML 已并入的）base 配置。cloud-config
+	// 走 append 合并保留基础段；非 cloud-config 走 multipart MIME 一并交付。
+	if strings.TrimSpace(in.UserData) != "" {
+		out = combineUserData(out, in.UserData)
+	}
+	return out
+}
+
+// combineUserData 把 /v1 用户提供的 user_data 合并进系统 base cloud-config：
+//   - #cloud-config：走 mergeCloudInit（list append + mapping merge），保留 base
+//     的 packages / runcmd / write_files 等 OS-aware 基础段（追加而非覆盖）。
+//   - 其它形态（#! 脚本 / #cloud-boothook / #include 等，cloud-config 无法与之
+//     YAML 合并）：用 multipart/mixed MIME 把 base 与 user_data 作为两段一并交给
+//     cloud-init，二者都会被消费——不静默丢弃用户 user-data。
+func combineUserData(base, userData string) string {
+	ud := strings.TrimSpace(userData)
+	if ud == "" {
+		return base
+	}
+	if strings.HasPrefix(ud, "#cloud-config") {
+		if merged, err := mergeCloudInit(base, userData); err == nil {
+			return merged
+		}
+		// YAML 非法：退回 MIME，保证 user_data 不被丢弃。
+	}
+	return buildMultipartUserData(base, userData)
+}
+
+// buildMultipartUserData 用 multipart/mixed 组合系统 base cloud-config 与用户
+// user_data。cloud-init 支持 MIME 多段 user-data，各段依 Content-Type 路由
+// handler。boundary 用固定值（内容无随机性需求，且便于测试断言）。
+func buildMultipartUserData(base, userData string) string {
+	const boundary = "===============incusadmin-userdata=="
+	var b strings.Builder
+	b.WriteString("Content-Type: multipart/mixed; boundary=\"")
+	b.WriteString(boundary)
+	b.WriteString("\"\nMIME-Version: 1.0\n\n")
+	// part 1：系统 base cloud-config（含 OS-aware packages / runcmd / root 凭据）。
+	b.WriteString("--")
+	b.WriteString(boundary)
+	b.WriteString("\nContent-Type: text/cloud-config; charset=\"utf-8\"\nMIME-Version: 1.0\n\n")
+	b.WriteString(base)
+	b.WriteString("\n")
+	// part 2：用户 user_data，按首行 magic 判定 Content-Type。
+	b.WriteString("--")
+	b.WriteString(boundary)
+	b.WriteString("\nContent-Type: ")
+	b.WriteString(detectUserDataContentType(userData))
+	b.WriteString("; charset=\"utf-8\"\nMIME-Version: 1.0\n\n")
+	b.WriteString(userData)
+	b.WriteString("\n--")
+	b.WriteString(boundary)
+	b.WriteString("--\n")
+	return b.String()
+}
+
+// detectUserDataContentType 依 cloud-init 惯例的首行 magic 映射 MIME 类型；无法
+// 识别默认按 shell 脚本处理（cloud-init 对未知裸文本的常见回退）。
+func detectUserDataContentType(ud string) string {
+	s := strings.TrimSpace(ud)
+	switch {
+	case strings.HasPrefix(s, "#cloud-config"):
+		return "text/cloud-config"
+	case strings.HasPrefix(s, "#cloud-boothook"):
+		return "text/cloud-boothook"
+	case strings.HasPrefix(s, "#include"):
+		return "text/x-include-url"
+	default:
+		return "text/x-shellscript"
+	}
 }
 
 // mergeCloudInit 把 ExtraYAML 合并到 base cloud-config（list append + mapping

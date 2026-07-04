@@ -506,6 +506,40 @@ func TestService_ReactivateOnTopUp_PartialCoverage(t *testing.T) {
 	}
 }
 
+// TestService_ReactivateOnTopUp_VMGoneCancels 校验：suspended 订阅在补扣恢复前
+// 事务内校验 VM 存活；若 VM 已 trashed，则不补扣，改走 cancel 让位（避免给已删
+// VM 续费产生幽灵扣费）。
+func TestService_ReactivateOnTopUp_VMGoneCancels(t *testing.T) {
+	db := testhelper.NewTestDB(t, "")
+	f := seedFixtures(t, db, 5.0)
+	now := time.Date(2026, 5, 26, 12, 0, 0, 0, time.UTC)
+
+	sub := f.insertSub(t, model.BillingPeriodDaily, 1.0, now.Add(-2*time.Hour), model.SubscriptionStatusSuspended)
+	if err := f.subs.UpdateSuspension(context.Background(), sub.ID, now.Add(-1*time.Hour), now.Add(71*time.Hour)); err != nil {
+		t.Fatalf("update suspension: %v", err)
+	}
+	// VM 被 trash（trashed_at 置位）
+	if _, err := db.Exec(`UPDATE vms SET trashed_at = $1 WHERE id = $2`, now, f.vmID); err != nil {
+		t.Fatalf("trash vm: %v", err)
+	}
+
+	svc := billing.NewService(db, f.subs, f.charges, f.trasher, f.auditor, billing.WithClock(freezeClock(now)))
+	stats, err := svc.ReactivateOnTopUp(context.Background(), f.userID)
+	if err != nil {
+		t.Fatalf("ReactivateOnTopUp: %v", err)
+	}
+	if stats.Reactivated != 0 || stats.Suspended != 1 {
+		t.Fatalf("VM gone should not reactivate: %+v", stats)
+	}
+	if got := f.getBalance(t); got != 5.0 {
+		t.Fatalf("balance should be untouched for gone VM: %v", got)
+	}
+	got, _ := f.subs.GetLatestByVM(context.Background(), f.vmID)
+	if got.Status != model.SubscriptionStatusCancelled {
+		t.Fatalf("sub for gone VM should be cancelled, got %s", got.Status)
+	}
+}
+
 // TestService_ConcurrentChargeAndReactivateNoDoubleCharge 是 CR P0 回归：
 // charger + topup reactivate hook 同时跑同一个 sub，sub 行 FOR UPDATE 让两路
 // 串行；最终结果必须是「恰好 1 笔 charge 行 + 恰好 1 笔 -amount transactions

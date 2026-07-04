@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"strings"
 	"time"
 
@@ -342,7 +343,7 @@ func (s *Service) ExpireGrace(ctx context.Context) (GraceStats, error) {
 	stats.Processed = len(expired)
 	for i := range expired {
 		sub := expired[i]
-		if err := s.expireOne(ctx, &sub); err != nil {
+		if err := s.expireOne(ctx, &sub, now); err != nil {
 			slog.Error("billing: expire grace failed", "sub_id", sub.ID, "vm_id", sub.VMID, "error", err)
 			stats.Errors++
 			continue
@@ -352,18 +353,51 @@ func (s *Service) ExpireGrace(ctx context.Context) (GraceStats, error) {
 	return stats, nil
 }
 
-func (s *Service) expireOne(ctx context.Context, sub *model.VMSubscription) error {
+func (s *Service) expireOne(ctx context.Context, sub *model.VMSubscription, now time.Time) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // 已 commit 时 rollback 是 noop
+
+	// Step 0: 锁 sub 行 + 状态/宽限期复查 —— 与 chargeOne / reactivateOne 在同一
+	// 行上串行。消除"充值恢复"（reactivateOne 把 suspended→active 并清 grace）
+	// 与"到期过期"（本路径）对同一行的竞态：ListSuspendedExpired 的快照可能已
+	// 陈旧，取锁后若发现状态已非 suspended（被 reactivate / cancel 抢走）或
+	// grace_until 已被刷新到未来（充值补扣重置了窗口），本次过期让位。
+	var lockedStatus string
+	var lockedGrace sql.NullTime
+	if err := tx.QueryRowContext(ctx,
+		`SELECT status, grace_until FROM vm_subscriptions WHERE id = $1 FOR UPDATE`,
+		sub.ID,
+	).Scan(&lockedStatus, &lockedGrace); err != nil {
+		return fmt.Errorf("lock sub: %w", err)
+	}
+	if lockedStatus != model.SubscriptionStatusSuspended {
+		return nil // 已被 reactivate / cancel，让位（本次不计 Trashed）
+	}
+	if !lockedGrace.Valid || !lockedGrace.Time.Before(now) {
+		return nil // grace 已被刷新到未来或清空，不再过期
+	}
+
 	// VM trash：MarkTrashed 幂等（已 trash / deleted 行返 false, nil）。CR P2
-	// 修复：MarkTrashed 失败 → 返 err，sub 不 cancel；下个 tick 重试。否则若
+	// 修复：MarkTrashed 失败 → 返 err（回滚，不 cancel）；下个 tick 重试。否则若
 	// trash 永远失败（Incus 长时间不可用），sub 一旦 cancelled，扫描循环再也
-	// 找不到这一行 → VM 永久在跑而不付费。
+	// 找不到这一行 → VM 永久在跑而不付费。持有 sub 行锁期间调用 MarkTrashed
+	// （操作 vms 表另一行）不与 reactivate/charge 构成锁环。
 	if s.vms != nil {
 		if _, err := s.vms.MarkTrashed(ctx, sub.VMID); err != nil {
 			return fmt.Errorf("vm mark trashed: %w", err)
 		}
 	}
-	if err := s.subs.UpdateStatus(ctx, sub.ID, model.SubscriptionStatusCancelled); err != nil {
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE vm_subscriptions SET status = $1, updated_at = NOW() WHERE id = $2`,
+		model.SubscriptionStatusCancelled, sub.ID,
+	); err != nil {
 		return fmt.Errorf("cancel sub: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit expire: %w", err)
 	}
 	s.audit.Log(ctx, ptrInt64(sub.UserID), "subscription_grace_expired", "subscription", sub.ID, map[string]any{
 		"vm_id":       sub.VMID,
@@ -460,6 +494,29 @@ func (s *Service) reactivateOne(ctx context.Context, sub *model.VMSubscription, 
 		return false, nil
 	}
 
+	// 事务内校验 VM 存活：若 VM 已 trashed / deleted，不再补扣恢复（否则会给一
+	// 台不存在的 VM 续费产生幽灵扣费），改走 cancel 让位。VM 消失后订阅无意义。
+	alive, err := vmAliveTx(ctx, tx, sub.VMID)
+	if err != nil {
+		return false, fmt.Errorf("check vm alive: %w", err)
+	}
+	if !alive {
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE vm_subscriptions SET status = $1, updated_at = NOW() WHERE id = $2`,
+			model.SubscriptionStatusCancelled, sub.ID,
+		); err != nil {
+			return false, fmt.Errorf("cancel sub (vm gone): %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return false, fmt.Errorf("commit cancel (vm gone): %w", err)
+		}
+		s.audit.Log(ctx, ptrInt64(sub.UserID), "subscription_cancelled", "subscription", sub.ID, map[string]any{
+			"vm_id":  sub.VMID,
+			"reason": "vm_gone",
+		}, "")
+		return false, nil
+	}
+
 	var balance float64
 	if err := tx.QueryRowContext(ctx,
 		`SELECT balance FROM users WHERE id = $1 FOR UPDATE`, sub.UserID,
@@ -545,15 +602,23 @@ func chargeAmount(sub *model.VMSubscription) (float64, error) {
 		if sub.DailyRate == nil || *sub.DailyRate <= 0 {
 			return 0, fmt.Errorf("sub %d: daily_rate missing or non-positive", sub.ID)
 		}
-		return *sub.DailyRate, nil
+		return RoundMoney(*sub.DailyRate), nil
 	case model.BillingPeriodMonthly:
 		if sub.MonthlyRate == nil || *sub.MonthlyRate <= 0 {
 			return 0, fmt.Errorf("sub %d: monthly_rate missing or non-positive", sub.ID)
 		}
-		return *sub.MonthlyRate, nil
+		return RoundMoney(*sub.MonthlyRate), nil
 	default:
 		return 0, fmt.Errorf("sub %d: unknown period %q", sub.ID, sub.Period)
 	}
+}
+
+// RoundMoney 决策#3：扣费金额统一 math.Round 到 2 位（分）再落库。
+// chargeOne / reactivateOne 以及 restore 补扣都用它，保证 balance /
+// transactions / billing_charges 三处金额一致，消除浮点漂移。
+// 导出以便 portal restore 补扣路径复用同一口径。
+func RoundMoney(v float64) float64 {
+	return math.Round(v*100) / 100
 }
 
 // isUniqueViolation 与 repository.charge_repo 同源；当 INSERT 因 UNIQUE 约束
@@ -569,6 +634,29 @@ func isUniqueViolation(err error) bool {
 	return strings.Contains(s, "SQLSTATE 23505") ||
 		strings.Contains(s, "unique constraint") ||
 		strings.Contains(s, "duplicate key")
+}
+
+// vmAliveTx 在事务内判断 VM 是否仍存活：未 trashed 且状态非 deleted/gone。
+// 行不存在（已被硬删）同样视为已消失。用于 reactivate 前的存活校验。
+func vmAliveTx(ctx context.Context, tx *sql.Tx, vmID int64) (bool, error) {
+	var status string
+	var trashedAt sql.NullTime
+	err := tx.QueryRowContext(ctx,
+		`SELECT status, trashed_at FROM vms WHERE id = $1`, vmID,
+	).Scan(&status, &trashedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if trashedAt.Valid {
+		return false, nil
+	}
+	if status == model.VMStatusDeleted || status == "gone" {
+		return false, nil
+	}
+	return true, nil
 }
 
 func ptrInt64(v int64) *int64 { return &v }

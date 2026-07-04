@@ -216,6 +216,23 @@ else
     CHECKS_PASSED=false
 fi
 
+# 检查 6: VM 公网 VLAN 子接口已绑进 br-pub（OPS-046）
+# 子接口名约定 pub.<vlan>，从 cluster-env.sh 取（默认 376）
+PUB_VLAN_IFACE="pub.${VLAN_PUB:-376}"
+log_info "  检查 6: VM 公网 VLAN 子接口 ${PUB_VLAN_IFACE} 已绑进 br-pub..."
+if ip link show "${PUB_VLAN_IFACE}" >/dev/null 2>&1; then
+    if bridge link show 2>/dev/null | grep -qE "^[0-9]+: ${PUB_VLAN_IFACE}.*master br-pub"; then
+        log_info "  ✓ ${PUB_VLAN_IFACE} 已是 br-pub 的 slave"
+    else
+        log_error "  ✗ ${PUB_VLAN_IFACE} 存在但未绑 br-pub —— VM 公网会全部断"
+        log_error "    修复: ip link set ${PUB_VLAN_IFACE} master br-pub"
+        CHECKS_PASSED=false
+    fi
+else
+    log_error "  ✗ ${PUB_VLAN_IFACE} 不存在 —— VM 没有公网出口"
+    CHECKS_PASSED=false
+fi
+
 # ============================================================
 # 步骤 5: 根据自检结果处理
 # ============================================================

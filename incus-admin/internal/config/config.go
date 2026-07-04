@@ -76,6 +76,13 @@ type ServerConfig struct {
 	// "production" so the safe-by-default path requires an explicit override
 	// on staging/dev deploys.
 	Env string `json:"env"`
+
+	// ProxySharedSecret 是 PLAN-055 决策#6 的可选（opt-in）前置代理信任加固开关。
+	// 默认空 → 行为与现网完全一致（不校验代理签名头，不影响任何现有部署）。
+	// 一旦设置：中间件要求受信反代在每个请求上注入 X-Proxy-Signature 头且其值
+	// 等于本密钥（constant-time 比对）；校验不通过的请求视为"未经受信代理"，
+	// 其携带的 X-Forwarded-For / 身份头一律不被采信。json:"-" 避免落日志/序列化泄漏。
+	ProxySharedSecret string `json:"-"`
 }
 
 type DatabaseConfig struct {
@@ -175,6 +182,8 @@ func Load() (*Config, error) {
 			SessionSecret:   mustEnv("SESSION_SECRET"),
 			SessionTTL:      24 * time.Hour,
 			Env:             envOr("INCUS_ADMIN_ENV", "production"),
+			// 默认空 = 关闭代理签名校验，保持现网默认行为不变（决策#6 opt-in）。
+			ProxySharedSecret: envOr("PROXY_SHARED_SECRET", ""),
 		},
 		Database: DatabaseConfig{
 			DSN:             mustEnv("DATABASE_URL"),

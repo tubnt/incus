@@ -80,6 +80,9 @@ function MyVMs() {
   const closeSheet = () => setSheetKind(null);
 
   const trashMutation = useTrashServiceMutation();
+  // WP-F：回收站撤销的成功/失败 toast 由 useRestoreServiceMutation 的 meta
+  // （successToast + globalErrorToast）在全局 MutationCache 统一兜底，批量 undo
+  // 多次成功经稳定 toast id 折叠为一条，无需在每个调用点重复接 onSuccess/onError。
   const restoreMutation = useRestoreServiceMutation();
   const confirm = useConfirm();
 

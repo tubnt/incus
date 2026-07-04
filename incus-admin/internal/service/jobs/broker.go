@@ -46,14 +46,17 @@ func (b *Broker) Subscribe(jobID int64) (<-chan StepEvent, func()) {
 	b.nextID++
 	b.subs[jobID][id] = ch
 
+	// P1-3：Unsubscribe 只从 map 删除，绝不 close(channel)。
+	// 原版 close(c) 与 Publish 存在竞态：Publish 在 RLock 内拷贝 channel 到本地
+	// 切片、释锁后再发送；若此刻 cancel() 抢到写锁 close 掉该 channel，Publish
+	// 的 `ch <- ev` 就会向已关闭 channel 写入而 panic。改为不 close —— 订阅者
+	// 靠 Terminal 事件或请求 ctx 取消退出读循环，未 close 的 channel 无引用后由
+	// GC 回收，不会泄漏。
 	cancel := func() {
 		b.mu.Lock()
 		defer b.mu.Unlock()
 		if m := b.subs[jobID]; m != nil {
-			if c, ok := m[id]; ok {
-				close(c)
-				delete(m, id)
-			}
+			delete(m, id)
 			if len(m) == 0 {
 				delete(b.subs, jobID)
 			}
