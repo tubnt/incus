@@ -12,6 +12,29 @@ import (
 	"github.com/incuscloud/incus-admin/internal/repository"
 )
 
+const (
+	// jobCtxTimeout 是单个 job 执行 ctx 的上限（image-pull / 加节点最长耗时）。
+	jobCtxTimeout = 30 * time.Minute
+	// staleThreshold 是 sweeper / 启动恢复判定 job 过期的阈值。P1-1：必须 >
+	// jobCtxTimeout，否则会把仍在正常运行、尚未触发自身超时的 job 误判为 stale
+	// 而中途收尾。留 5min 余量。
+	staleThreshold = 35 * time.Minute
+	// compensationTimeout 是补偿（Rollback）+ 收尾（finalize）阶段独立 ctx 的
+	// 上限。这段逻辑跑在 detached ctx 上，不受 job 自身超时/worker 取消牵连。
+	compensationTimeout = 5 * time.Minute
+)
+
+// safeRun 以 recover 包裹 fn，捕获任意 panic 记 slog 而不向上传播——
+// 保证单个 job / 单个后台任务的 panic 不会拖垮整个 worker goroutine 或进程。
+func safeRun(task string, fn func()) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.Error("background task panic recovered", "task", task, "panic", rec)
+		}
+	}()
+	fn()
+}
+
 // Deps 集中声明 runtime 依赖。每条都是 jobs 必须的能力，调用方在 main 里组装。
 type Deps struct {
 	Jobs       *repository.ProvisioningJobRepo
@@ -81,6 +104,10 @@ type Runtime struct {
 	broker  *Broker
 	queue   chan int64
 	wg      sync.WaitGroup
+	// inflight 只统计"已被 worker 领取、正在 runOne 中执行"的 job（不含仍在
+	// queue 里排队的）。Shutdown 等它归零 = 真正的 in-flight job 全部收尾，而不是
+	// 等 worker goroutine 退出（那要等 ctx cancel，与 graceful 语义相悖）。
+	inflight sync.WaitGroup
 	once    sync.Once
 	pmu     sync.Mutex
 	params  map[int64]*Params
@@ -135,8 +162,9 @@ func (r *Runtime) peekParams(jobID int64) *Params {
 func (r *Runtime) Start(ctx context.Context) {
 	r.once.Do(func() {
 		// 启动时先做一次 recovery：把上次进程崩溃留下的 running/queued 老 row
-		// 标 partial 并触发 rollback。30 分钟阈值留给未崩溃但仍在跑的 long job。
-		r.recoverStale(ctx, 30*time.Minute)
+		// 标 partial 并触发 rollback。staleThreshold(35min) 留给未崩溃但仍在跑的
+		// long job（也避免 HA 多实例部署时误 sweep 另一实例正在跑的 job）。
+		r.recoverStale(ctx, staleThreshold)
 
 		for i := 0; i < r.deps.PoolSize; i++ {
 			r.wg.Add(1)
@@ -180,12 +208,16 @@ func (r *Runtime) Stop() { r.wg.Wait() }
 // 退出（worker select 撞到 ctx.Done() 直接 return），但 in-flight job 在 detached
 // 30min ctx 里继续跑——进程随后 os.Exit 把它强杀，DB 留 running 行没人收尾。
 // Shutdown 在 worker ctx cancel 之前调，让正在跑的 job 跑完或者超时（默认运维侧
-// 30s 上限）。runOne 用 background ctx 是有意设计——shutdown 不打断业务正确性，
+// 30s 上限）。runOne 用 detached ctx 是有意设计——shutdown 不打断业务正确性，
 // 只决定我们等多久。
+//
+// P1（in-flight 计数修正）：原版等 r.wg（worker goroutine 生命周期）。但 Shutdown
+// 在 workerCtx cancel 之前调，worker 此刻仍阻塞在 for-select，wg 永不归零 → 每次
+// 都空等到超时。改为等 r.inflight（实际在跑的 job），空载时立即返回 clean。
 func (r *Runtime) Shutdown(ctx context.Context) error {
 	done := make(chan struct{})
 	go func() {
-		r.wg.Wait()
+		r.inflight.Wait()
 		close(done)
 	}()
 	select {
@@ -221,17 +253,13 @@ func (r *Runtime) worker(ctx context.Context, idx int) {
 			slog.Info("provisioning job worker stopping", "idx", idx)
 			return
 		case jobID := <-r.queue:
-			// pma-cr MEDIUM：runOne 内部已对 executor.Run 做 recover；这里再
-			// 包一层防 dispatch / MarkRunning / finalize / Rollback 的意外 panic
-			// 干掉 worker goroutine（pool 永久缩容）。捕获后继续 loop。
-			func() {
-				defer func() {
-					if rec := recover(); rec != nil {
-						slog.Error("provisioning worker recover", "idx", idx, "job_id", jobID, "panic", rec)
-					}
-				}()
-				r.runOne(ctx, jobID)
-			}()
+			// inflight 在领取 job 时 +1、runOne 返回后 -1，供 Shutdown 精确等待
+			// 在跑的 job 收尾。safeRun 兜住 dispatch / MarkRunning / finalize /
+			// Rollback 的意外 panic（runOne 内部亦对 executor.Run 单独 recover），
+			// 一个 job panic 不干掉 worker goroutine（否则 pool 永久缩容）。
+			r.inflight.Add(1)
+			safeRun("job-worker", func() { r.runOne(ctx, jobID) })
+			r.inflight.Done()
 		}
 	}
 }
@@ -268,9 +296,14 @@ func (r *Runtime) runOne(parent context.Context, jobID int64) {
 		"cluster_id":  job.ClusterID,
 	}, "")
 
-	// detached ctx：worker shutdown 不取消进行中的 job；30min 是 image-pull 上限
-	jobCtx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	// detached ctx：worker shutdown 不取消进行中的 job；jobCtxTimeout 是 image-pull 上限
+	jobCtx, cancel := context.WithTimeout(context.Background(), jobCtxTimeout)
 	defer cancel()
+	// 补偿(Rollback) + 收尾(finalize) 用独立 detached ctx。若 job 因 jobCtx 超时
+	// 失败，用 jobCtx 去退款/收尾会因 ctx 已 Done 立刻失败——用户被扣款却退不了。
+	// WithoutCancel 保留 value 但不继承 jobCtx 的取消/超时，另配 5min 上限。
+	compCtx, compCancel := context.WithTimeout(context.WithoutCancel(jobCtx), compensationTimeout)
+	defer compCancel()
 	// Session-2 F-39 / PLAN-051 §2-K：集中 cred.Wipe。原版每个 executor 自觉调
 	// （cluster_node_add 调，vm_reinstall 漏调）；改在 runOne defer 里统一兜底。
 	// takeParams 已是幂等：executor 自己 take 之后 Wipe 后再次 take 返 nil 跳过。
@@ -282,7 +315,7 @@ func (r *Runtime) runOne(parent context.Context, jobID int64) {
 
 	exec, err := r.dispatch(job)
 	if err != nil {
-		r.finalize(jobCtx, job, model.JobStatusFailed, err.Error())
+		r.finalize(compCtx, job, model.JobStatusFailed, err.Error())
 		return
 	}
 
@@ -300,13 +333,14 @@ func (r *Runtime) runOne(parent context.Context, jobID int64) {
 	if runErr != nil {
 		// pma-cr CRITICAL：Run 失败必须先做补偿（释放 IP / 退款 / 取消订单 /
 		// 删残留 instance），再写终态。原版只 finalize failed 不调 Rollback ——
-		// 用户被扣款 VM 没建成也没退款。
-		exec.Rollback(jobCtx, r, job, runErr.Error())
-		r.finalize(jobCtx, job, model.JobStatusFailed, runErr.Error())
+		// 用户被扣款 VM 没建成也没退款。用 compCtx（detached）确保 job 超时后
+		// 退款/收尾仍能执行。
+		exec.Rollback(compCtx, r, job, runErr.Error())
+		r.finalize(compCtx, job, model.JobStatusFailed, runErr.Error())
 		return
 	}
 
-	r.finalize(jobCtx, job, model.JobStatusSucceeded, "")
+	r.finalize(compCtx, job, model.JobStatusSucceeded, "")
 }
 
 func (r *Runtime) finalize(ctx context.Context, job *model.ProvisioningJob, status, errMsg string) {
@@ -362,8 +396,10 @@ func (r *Runtime) dispatch(job *model.ProvisioningJob) (Executor, error) {
 	}
 }
 
-// sweeper 周期性扫超过 maxAge 的 running job，标 partial 并触发 rollback。
-// 与 healing_expire 同模式：5min tick，比 30min 阈值密 6 倍，最多 5min 漂移。
+// sweeper 周期性扫超过 staleThreshold 的 running job，标 partial 并触发 rollback。
+// 与 healing_expire 同模式：5min tick，比 35min 阈值密 7 倍，最多 5min 漂移。
+// safeRun 兜住 recoverStale 内的意外 panic，避免 sweeper goroutine 静默死掉后
+// stale job 再也没人收。
 func (r *Runtime) sweeper(ctx context.Context) {
 	tick := time.NewTicker(5 * time.Minute)
 	defer tick.Stop()
@@ -372,7 +408,7 @@ func (r *Runtime) sweeper(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-tick.C:
-			r.recoverStale(ctx, 30*time.Minute)
+			safeRun("job-sweeper", func() { r.recoverStale(ctx, staleThreshold) })
 		}
 	}
 }
@@ -387,8 +423,10 @@ func (r *Runtime) recoverStale(ctx context.Context, maxAge time.Duration) {
 	for _, j := range stale {
 		j := j
 		slog.Warn("recovering stale provisioning job", "job_id", j.ID, "kind", j.Kind, "started_at", j.StartedAt)
-		// 标 partial 让 finalize 走 fail 分支 + 触发 audit；rollback 走 dispatch
-		if err := r.deps.Jobs.Finish(ctx, j.ID, model.JobStatusPartial, "recovered after process restart or stale > 30m"); err != nil {
+		// 标 partial 让 finalize 走 fail 分支 + 触发 audit；rollback 走 dispatch。
+		// Finish 的 status IN 守卫保证：若该 job 已被 worker 正常收尾（竞态），此处
+		// 命中 0 行、不覆盖终态；后续 rollback 自身幂等/best-effort，重复执行安全。
+		if err := r.deps.Jobs.Finish(ctx, j.ID, model.JobStatusPartial, "recovered after process restart or stale > 35m"); err != nil {
 			slog.Error("finalize stale failed", "job_id", j.ID, "error", err)
 			continue
 		}
