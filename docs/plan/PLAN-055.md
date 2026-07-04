@@ -121,3 +121,10 @@
 - WP-H3 运维脚本同步:`scripts/check-join-node-sync.sh`、`cluster/scripts/{apply-network.sh,probe-node.sh}`、`cluster/configs/cluster-env.sh`
 - WP-H4 死代码清理:`internal/handler/portal/vm.go`(pickNextIP+ipCache)、`internal/handler/openapi/handler.go`(yamlOnce)、`internal/repository/{floating_ip.go,firewall.go,vm.go,ipaddr.go}`、`internal/model/models.go`(IP 常量)
 - WP-H5 前端 月=30天 明示(/pma-des):`incus-admin/web/src/app/routes/billing.tsx` + 相关订阅文案
+
+## 决策更新（2026-07-04 二次）+ Wave 3
+- #4 `/v1` root_pass/user_data/tags → 改为**真正实现**透传（非删除）。→ WP-I1
+- #5 goose → **执行**：引入 goose + 全迁移补注解 + migrate 子命令 + 版本表。→ WP-I2
+- #6 加固 → **执行可选开关版**：`PROXY_SHARED_SECRET` 默认关，设置后校验代理签名头；LISTEN 默认不变。→ WP-I3
+- 纠偏：上一轮 L2 漏建 WP-H1/H2、且 WP-D 未合并，已重新明确指令补齐。
+- 依赖：WP-I1、WP-I2 依赖 WP-H2（migration 030 + order_v1.go 区域）先合并。
