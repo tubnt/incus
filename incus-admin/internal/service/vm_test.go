@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -324,6 +325,90 @@ func TestBuildCloudInit_ExtraYAML(t *testing.T) {
 	// 输出必须是合法 cloud-config（不重复 mapping key）
 	if !strings.HasPrefix(ci, "#cloud-config") {
 		t.Errorf("output missing #cloud-config header")
+	}
+}
+
+// TestBuildCloudInit_UserDataCloudConfig 验证 WP-I1：用户 user_data 为
+// #cloud-config 时走 append 合并，既保留 OS-aware 基础段又并入用户字段。
+func TestBuildCloudInit_UserDataCloudConfig(t *testing.T) {
+	ud := "#cloud-config\nruncmd:\n  - echo user-hello\npackages:\n  - htop\n"
+	ci := BuildCloudInit(CloudInitInput{
+		OSFamily: OSFamilyAPT,
+		Password: "x",
+		UserData: ud,
+	})
+	// 用户字段必须出现
+	if !strings.Contains(ci, "echo user-hello") || !strings.Contains(ci, "htop") {
+		t.Errorf("user_data fields missing:\n%s", ci)
+	}
+	// 系统基础段（sshd drop-in / openssh-server）必须仍在 —— 未被覆盖
+	if !strings.Contains(ci, "99-incusadmin.conf") {
+		t.Errorf("system sshd drop-in stripped by user_data merge:\n%s", ci)
+	}
+	if !strings.Contains(ci, "openssh-server") {
+		t.Errorf("system openssh-server stripped by user_data merge")
+	}
+	if !strings.HasPrefix(ci, "#cloud-config") {
+		t.Errorf("output missing #cloud-config header")
+	}
+}
+
+// TestBuildCloudInit_UserDataScriptMIME 验证 WP-I1：user_data 为非 cloud-config
+// （shell 脚本）时走 multipart MIME，base 配置与用户脚本都被保留，不静默丢弃。
+func TestBuildCloudInit_UserDataScriptMIME(t *testing.T) {
+	ud := "#!/bin/bash\necho custom-script > /tmp/marker\n"
+	ci := BuildCloudInit(CloudInitInput{
+		OSFamily: OSFamilyAPT,
+		Password: "x",
+		UserData: ud,
+	})
+	if !strings.Contains(ci, "multipart/mixed") {
+		t.Errorf("expected multipart MIME wrapper for shell-script user_data:\n%s", ci)
+	}
+	// base cloud-config 段（openssh-server）与用户脚本必须都在
+	if !strings.Contains(ci, "openssh-server") {
+		t.Errorf("base cloud-config dropped in MIME output")
+	}
+	if !strings.Contains(ci, "echo custom-script") {
+		t.Errorf("user shell-script dropped in MIME output:\n%s", ci)
+	}
+	if !strings.Contains(ci, "text/x-shellscript") {
+		t.Errorf("shell-script part not typed as x-shellscript:\n%s", ci)
+	}
+}
+
+// TestBuildCloudInit_SpecialCharPasswordSafe 验证 WP-I1：用户指定的 root_pass
+// 含 shell/YAML 特殊字符（' $ 反引号）时，runcmd chpasswd 兜底走 base64 编码，
+// 不把原始特殊字符裸露进单引号 YAML scalar（否则破坏 cloud-init 解析或设错密码）。
+func TestBuildCloudInit_SpecialCharPasswordSafe(t *testing.T) {
+	pw := "a'b$c`d"
+	ci := BuildCloudInit(CloudInitInput{
+		OSFamily: OSFamilyAPT,
+		Password: pw,
+	})
+	// runcmd chpasswd 兜底必须走 base64 -d 管道
+	if !strings.Contains(ci, "base64 -d | chpasswd") {
+		t.Errorf("chpasswd fallback not base64-encoded:\n%s", ci)
+	}
+	// 原始密码不得出现在 runcmd 的单引号 echo 里（会破坏 YAML/shell）
+	if strings.Contains(ci, "echo \"root:a'b$c`d\"") || strings.Contains(ci, "'echo \"root:"+pw) {
+		t.Errorf("raw special-char password leaked into runcmd echo:\n%s", ci)
+	}
+	// base64(root:a'b$c`d) 必须出现，确认凭据确实透传
+	want := base64.StdEncoding.EncodeToString([]byte("root:" + pw))
+	if !strings.Contains(ci, want) {
+		t.Errorf("expected base64 cred %q in runcmd:\n%s", want, ci)
+	}
+}
+
+// TestBuildCloudInit_NoUserData 无 user_data 时输出与既有基础配置一致（回归保护）。
+func TestBuildCloudInit_NoUserData(t *testing.T) {
+	ci := BuildCloudInit(CloudInitInput{OSFamily: OSFamilyAPT, Password: "x"})
+	if !strings.HasPrefix(ci, "#cloud-config") {
+		t.Errorf("output missing #cloud-config header")
+	}
+	if strings.Contains(ci, "multipart/mixed") {
+		t.Errorf("unexpected MIME wrapper without user_data")
 	}
 }
 
