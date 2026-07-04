@@ -7,6 +7,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"os"
@@ -47,21 +48,21 @@ type PortalRouteRegistrar interface {
 }
 
 type Handlers struct {
-	Admin    RouteRegistrar
-	Portal   RouteRegistrar
-	Users    AdminRouteRegistrar
-	IPPools  AdminRouteRegistrar
-	Console  ConsoleHandlerFunc
-	Snaps    interface {
+	Admin   RouteRegistrar
+	Portal  RouteRegistrar
+	Users   AdminRouteRegistrar
+	IPPools AdminRouteRegistrar
+	Console ConsoleHandlerFunc
+	Snaps   interface {
 		AdminRouteRegistrar
 		PortalRouteRegistrar
 	}
-	Metrics  interface {
+	Metrics interface {
 		AdminRouteRegistrar
 		PortalRouteRegistrar
 	}
-	SSHKeys  RouteRegistrar
-	Tickets  interface {
+	SSHKeys RouteRegistrar
+	Tickets interface {
 		AdminRouteRegistrar
 		PortalRouteRegistrar
 	}
@@ -78,15 +79,15 @@ type Handlers struct {
 		AdminRouteRegistrar
 		PortalRouteRegistrar
 	}
-	Audit      AdminRouteRegistrar
-	APITokens  RouteRegistrar
+	Audit       AdminRouteRegistrar
+	APITokens   RouteRegistrar
 	ClusterMgmt AdminRouteRegistrar
 	Ceph        AdminRouteRegistrar
 	NodeOps     AdminRouteRegistrar
 	// NodeCredentials (PLAN-033 / OPS-039) exposes admin CRUD for SSH
 	// credentials used to bootstrap new nodes. Step-up gated.
 	NodeCredentials AdminRouteRegistrar
-	Invoices  interface {
+	Invoices        interface {
 		AdminRouteRegistrar
 		PortalRouteRegistrar
 	}
@@ -194,11 +195,17 @@ type AuditWriter = middleware.AuditWriter
 
 type UserBalanceLookup func(ctx context.Context, userID int64) (float64, error)
 
-func New(cfg *config.Config, userLookup func(ctx context.Context, email string) (int64, string, error), roleLookup func(ctx context.Context, userID int64) (string, error), balanceLookup UserBalanceLookup, stepUpLookup StepUpLookup, auditWriter AuditWriter, h Handlers) *Server {
+// New 构建路由并返回 Server。stepUpFailClosed 由 main.go 计算：OIDC 已配置但
+// discovery 失败时为 true，令敏感路由 fail-closed 拒绝（见
+// middleware.RequireRecentAuthOnSensitive）。
+func New(cfg *config.Config, userLookup func(ctx context.Context, email string) (int64, string, error), roleLookup func(ctx context.Context, userID int64) (string, error), balanceLookup UserBalanceLookup, stepUpLookup StepUpLookup, stepUpFailClosed bool, auditWriter AuditWriter, h Handlers) *Server {
 	r := chi.NewRouter()
 
 	r.Use(chimw.RequestID)
-	r.Use(chimw.RealIP)
+	// PLAN-055 / OPS-052 §3：不再全局挂 chimw.RealIP。RealIP 无条件用
+	// X-Forwarded-For 覆写 RemoteAddr，会打穿 TRUSTED_PROXIES 信任模型（任何客户端
+	// 都能伪造 XFF 冒充任意 IP）。取客户端 IP 统一走 middleware.realClientIP，
+	// 它仅在 RemoteAddr 属于受信代理网段时才采信 XFF。
 	r.Use(chimw.Recoverer)
 	// Session-2 F-28 / PLAN-051 §2-H：原版 chimw.Timeout(60s) 是全局 middleware，
 	// 把 /api/console (WebSocket) 与 /api/portal/jobs/{id}/stream (SSE) 都砍在
@@ -283,6 +290,12 @@ func New(cfg *config.Config, userLookup func(ctx context.Context, email string) 
 		// 覆盖 /api/auth/stepup/* + /api/admin/users:batch + /shadow/* 等子路径。
 		// 非匹配路径透传，不影响 /api/portal 的 30/min（下面单独挂）。
 		r.Use(middleware.RateLimitSensitive)
+		// PLAN-055 / OPS-052 §1：shadow 拒绝 + step-up 上提到 portal+admin 公共
+		// Group。此前它们只挂 /api/admin，导致 sensitiveRoutes / shadowForbiddenRoutes
+		// 里的 portal 条目（支付、看初始密码）从不生效。在此统一挂载后，portal 与
+		// admin 的敏感 / 拦截路由都被覆盖；两个中间件都只对匹配路由生效，其它透传。
+		r.Use(middleware.RejectShadowSessionOnMoney)
+		r.Use(middleware.RequireRecentAuthOnSensitive(stepUpLookup, cfg.Auth.StepUpMaxAge, stepUpFailClosed))
 
 		r.Route("/api/portal", func(r chi.Router) {
 			r.Use(middleware.RateLimit)
@@ -338,19 +351,15 @@ func New(cfg *config.Config, userLookup func(ctx context.Context, email string) 
 
 		r.Route("/api/admin", func(r chi.Router) {
 			r.Use(middleware.RequireRole("admin"))
-			// Step-up gate: lookup == nil → no-op. See middleware/stepup.go
-			// for the sensitive-route allowlist.
-			r.Use(middleware.RequireRecentAuthOnSensitive(stepUpLookup, cfg.Auth.StepUpMaxAge))
+			// Step-up gate + shadow-mode gate 已上提到父 Group（覆盖 portal+admin），
+			// 见上方 r.Use(RejectShadowSessionOnMoney) / RequireRecentAuthOnSensitive。
 			// Write-audit middleware: auditWriter == nil → no-op. Captures
-			// every POST/PUT/PATCH/DELETE that survives step-up and reaches
-			// the handler so coverage is guaranteed even if the handler
-			// forgets to call audit() explicitly.
+			// every POST/PUT/PATCH/DELETE that reaches the handler so coverage
+			// is guaranteed even if the handler forgets to call audit().
 			r.Use(middleware.AuditAdminWrites(auditWriter))
-			// Shadow-mode money gate: when a shadow session is active,
-			// reject anything under moneyRoutes (balance adjustments,
-			// refunds, etc) with 403. Non-shadow or non-money routes pass
-			// through untouched.
-			r.Use(middleware.RejectShadowSessionOnMoney)
+			// PLAN-055 / OPS-052 §2：禁止管理员改自己的角色（自我提权 / 降权）。
+			// 仅拦截 PUT /users/{id}/role，其余透传。
+			r.Use(middleware.RejectSelfRoleChange)
 
 			// Admin-only shadow-login entry point. Must live under /api/admin
 			// so it inherits RequireRole("admin") — only admins can start a
@@ -539,11 +548,22 @@ func (s *Server) Run() error {
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
+	// PLAN-055 / OPS-052 §4：区分正常关停与启动/监听失败。此前无论哪种情况都
+	// return nil，导致端口占用 / bind 失败等致命错误被吞掉、进程以退出码 0 退出，
+	// systemd 认为是"正常退出"不重启，服务静默死亡。改为把 errCh 的错误上抛：
+	//   - 收到 SIGINT/SIGTERM → 正常关停，return nil（退出码 0）。
+	//   - ListenAndServe 返回错误（非 ErrServerClosed）→ 上抛，进程非 0 退出，
+	//     systemd 触发重启。
+	var runErr error
 	select {
 	case sig := <-quit:
 		slog.Info("shutdown signal received", "signal", sig)
 	case err := <-errCh:
-		slog.Error("server error", "error", err)
+		// ListenAndServe 在 Shutdown 后返回 http.ErrServerClosed，属正常关停，不当错误。
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			slog.Error("server error", "error", err)
+			runErr = err
+		}
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -553,7 +573,7 @@ func (s *Server) Run() error {
 	emergencySrv.Shutdown(ctx)
 
 	slog.Info("server stopped")
-	return nil
+	return runErr
 }
 
 func (s *Server) emergencyRouter() http.Handler {

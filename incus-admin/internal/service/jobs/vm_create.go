@@ -45,7 +45,12 @@ func (e *vmCreateExecutor) Run(ctx context.Context, rt *Runtime, job *model.Prov
 		return fmt.Errorf("cluster %q not registered", clusterName)
 	}
 
+	// WP-I1：root_pass 优先用用户指定值（handler 已按 openapi minLength:8 校验），
+	// 空则随机生成。password 走既有统一 root 凭据链路（cloud-init 注入 + 落库加密）。
 	password := service.GeneratePassword()
+	if strings.TrimSpace(params.RootPass) != "" {
+		password = params.RootPass
+	}
 
 	imageAlias := params.OSImage
 	if len(imageAlias) > 7 && imageAlias[:7] == "images:" {
@@ -76,6 +81,9 @@ func (e *vmCreateExecutor) Run(ctx context.Context, rt *Runtime, job *model.Prov
 		SSHKeys:     params.SSHKeys,
 		AptProxyURL: rt.deps.AptProxyURL,
 		ExtraYAML:   extraYAML,
+		// WP-I1：用户 user_data 合并进 OS-aware 基础配置（cloud-config 追加合并；
+		// 非 cloud-config 走 multipart MIME），不覆盖既有基础段。
+		UserData: params.UserData,
 	})
 
 	// OS-aware：Windows / Linux / CoreOS 走不同 cloud-init 形态。
@@ -143,6 +151,11 @@ func (e *vmCreateExecutor) Run(ctx context.Context, rt *Runtime, job *model.Prov
 		"cloud-init.network-config": netCfg,
 		"security.secureboot":       "false",
 		"migration.stateful":        "true",
+	}
+	// WP-I1：tags 落到 incus 实例 user.tags 配置（vms 表当前无 tags 列，禁止改
+	// schema，故落 incus 实例标签）。逗号分隔，空 tag 过滤。
+	if tagStr := joinTags(params.Tags); tagStr != "" {
+		configMap["user.tags"] = tagStr
 	}
 	// CoreOS 路径：Ignition JSON 通过 qemu fw_cfg name=opt/com.coreos/config
 	// 注入。QEMU 的 OPTS 解析把 `,` 视为子参数分隔符 → JSON 内 `,` 必须
@@ -518,6 +531,18 @@ func applyUserDefaultFirewallGroups(
 		rt.deps.Audit.Log(ctx, &job.UserID, "firewall.default_apply_ok", "vm", *job.VMID,
 			map[string]any{"group_count": ok}, "")
 	}
+}
+
+// joinTags 把 tags 数组规整为 incus user.tags 配置值（逗号分隔）。逐项 Trim 并
+// 过滤空串；全空返回 ""（调用方据此决定是否写 config）。
+func joinTags(tags []string) string {
+	out := make([]string, 0, len(tags))
+	for _, t := range tags {
+		if s := strings.TrimSpace(t); s != "" {
+			out = append(out, s)
+		}
+	}
+	return strings.Join(out, ",")
 }
 
 // isWindowsAlias 判断 image alias 是否 Windows。约定：alias 以 "windows" 开头
