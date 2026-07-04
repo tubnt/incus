@@ -1225,6 +1225,8 @@
     "perMonth": "/ 月",
     "periodDaily": "按日",
     "periodMonthly": "按月",
+    "monthEqualsDays": "1 个月 = 30 天",
+    "monthEqualsDaysNote": "计费说明：按月订阅 1 个月 = 30 天。",
     "statusActive": "活跃",
     "statusSuspended": "已挂起",
     "statusCancelled": "已取消",

@@ -14,7 +14,6 @@ import (
 	_ "embed"
 	"encoding/json"
 	"net/http"
-	"sync"
 )
 
 //go:embed openapi.yaml
@@ -31,8 +30,7 @@ var specYAML []byte
 // Decision: 不内嵌 yaml→json 转换，省一个依赖；Swagger UI 的 url 指向 .yaml 即可。
 
 type Handler struct {
-	yamlOnce sync.Once
-	yaml     []byte
+	yaml []byte
 }
 
 func NewHandler() *Handler {

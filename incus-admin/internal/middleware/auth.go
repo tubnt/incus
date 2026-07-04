@@ -12,6 +12,8 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -145,10 +147,11 @@ func verifyEmergencyCookie(cookieValue string) (email string, ok bool) {
 		}
 		return emailV, true
 	case 2:
-		// pma-cr M-1 / PLAN-051 §2-B：旧格式 grace deadline。EMERGENCY_LEGACY_DEADLINE
-		// 为 RFC3339 时间戳；过该时间后旧格式（无 TTL）一律拒绝。空值表示当前
-		// 还在 grace 期（向后兼容）。建议运维一次性配 +30 天，到期后删除该 env，
-		// 自然进入"仅新格式"模式。
+		// pma-cr M-1 / PLAN-051 §2-B + PLAN-055 §6：旧格式 grace deadline。
+		// EMERGENCY_LEGACY_DEADLINE 为 RFC3339 时间戳；过该时间后旧格式（无 TTL）
+		// 一律拒绝。未配置时不再永久有效，而是回退到 processStart + 24h 的代码级
+		// 硬上限（见 getLegacyDeadline）。建议运维一次性配 +30 天，到期后删除该
+		// env，自然进入"仅新格式"模式。
 		if deadline := getLegacyDeadline(); !deadline.IsZero() && time.Now().After(deadline) {
 			slog.Warn("emergency cookie legacy format rejected after deadline", "deadline", deadline)
 			return "", false
@@ -172,24 +175,45 @@ func verifyEmergencyCookie(cookieValue string) (email string, ok bool) {
 var (
 	legacyDeadlineOnce sync.Once
 	legacyDeadlineVal  time.Time
+	// processStart 记录进程启动时刻，用于给旧格式 emergency cookie 一个代码级
+	// 默认硬上限（见 getLegacyDeadline）。
+	processStart = time.Now()
 )
 
-// getLegacyDeadline 解析 EMERGENCY_LEGACY_DEADLINE env（RFC3339）；空值或解析
-// 失败返 zero time（grace 阶段，旧格式仍有效）。
+// legacyDefaultTTL 是旧格式 emergency cookie（email|hmac，无自带 TTL）在未显式
+// 配置 EMERGENCY_LEGACY_DEADLINE 时的代码级默认硬上限：进程启动后 24h 内旧格式
+// 仍可接受，之后一律拒绝。旧格式 cookie 本身不含签发时间，无法做 per-cookie TTL，
+// 因此以"进程启动 + 固定窗口"作为兜底上界，杜绝"未配 deadline → 旧格式永久有效"
+// 的隐患（PLAN-055 / OPS-052 §6）。运维如需更长 grace，显式配置
+// EMERGENCY_LEGACY_DEADLINE 覆盖此默认。
+const legacyDefaultTTL = 24 * time.Hour
+
+// getLegacyDeadline 解析 EMERGENCY_LEGACY_DEADLINE env（RFC3339），结果缓存。
+// 空值或解析失败时不再返回 zero time（那会让旧格式永久有效），而是回退到
+// processStart + legacyDefaultTTL 的代码级硬上限。纯计算逻辑抽到
+// computeLegacyDeadline 便于单测。
 func getLegacyDeadline() time.Time {
 	legacyDeadlineOnce.Do(func() {
 		raw := strings.TrimSpace(os.Getenv("EMERGENCY_LEGACY_DEADLINE"))
-		if raw == "" {
-			return
-		}
-		t, err := time.Parse(time.RFC3339, raw)
-		if err != nil {
-			slog.Warn("EMERGENCY_LEGACY_DEADLINE parse failed; treating as no deadline (legacy still accepted)", "raw", raw, "error", err)
-			return
-		}
-		legacyDeadlineVal = t
+		legacyDeadlineVal = computeLegacyDeadline(raw, processStart)
 	})
 	return legacyDeadlineVal
+}
+
+// computeLegacyDeadline 是 getLegacyDeadline 的纯函数核心：
+//   - raw 为合法 RFC3339 → 返回该时间。
+//   - raw 为空或解析失败 → 返回 start + legacyDefaultTTL（代码级硬上限），
+//     绝不返回 zero time，杜绝"未配 deadline → 旧格式永久有效"。
+func computeLegacyDeadline(raw string, start time.Time) time.Time {
+	if raw == "" {
+		return start.Add(legacyDefaultTTL)
+	}
+	t, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		slog.Warn("EMERGENCY_LEGACY_DEADLINE parse failed; falling back to code-level default cap (process start + 24h)", "raw", raw, "error", err)
+		return start.Add(legacyDefaultTTL)
+	}
+	return t
 }
 
 func ProxyAuth(next http.Handler) http.Handler {
@@ -335,6 +359,47 @@ func RequireRole(role string) func(http.Handler) http.Handler {
 			next.ServeHTTP(w, r.WithContext(r.Context()))
 		})
 	}
+}
+
+// roleUpdateRoute 匹配 PUT /api/admin/users/{id}/role —— 单条改角色端点。
+var roleUpdateRoute = regexp.MustCompile(`^/api/admin/users/(\d+)/role$`)
+
+// RejectSelfRoleChange 阻止管理员修改自己的角色（自我提权 / 自我降权）。
+// PLAN-055 / OPS-052 §2：仅拦截 PUT /api/admin/users/{id}/role；当路径 {id}
+// 等于当前操作者（shadow 会话下取 CtxActorID，否则取 CtxUserID）时返回 403。
+// 非该路由 / 非 PUT 一律透传。step-up 由 RequireRecentAuthOnSensitive 另行强制。
+func RejectSelfRoleChange(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut {
+			next.ServeHTTP(w, r)
+			return
+		}
+		m := roleUpdateRoute.FindStringSubmatch(r.URL.Path)
+		if m == nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+		targetID, err := strconv.ParseInt(m[1], 10, 64)
+		if err != nil {
+			// 正则已保证是数字，理论不会到这；保守透传给 handler 出 400。
+			next.ServeHTTP(w, r)
+			return
+		}
+		// 操作者身份：shadow 会话下 CtxUserID 是被冒名的目标用户，真实操作者在
+		// CtxActorID；非 shadow 时 CtxActorID 为空，回退 CtxUserID。
+		selfID, _ := r.Context().Value(CtxActorID).(int64)
+		if selfID == 0 {
+			selfID, _ = r.Context().Value(CtxUserID).(int64)
+		}
+		if selfID > 0 && selfID == targetID {
+			slog.Warn("self role change rejected", "user_id", selfID, "path", r.URL.Path)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"error":"self_role_change_forbidden","message":"You cannot change your own role."}`))
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func UserFromEmail(userLookup func(ctx context.Context, email string) (int64, string, error), roleLookup func(ctx context.Context, userID int64) (string, error)) func(http.Handler) http.Handler {

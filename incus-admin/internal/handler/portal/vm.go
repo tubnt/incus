@@ -2044,68 +2044,6 @@ func extractCIDR(cidr string) string {
 	return "27"
 }
 
-var (
-	ipCacheMu      sync.Mutex
-	ipCacheData    map[string]bool
-	ipCacheUpdated time.Time
-)
-
-func pickNextIP(ctx context.Context, vmSvc *service.VMService, clusterName, project, ipRange string) string {
-	parts := strings.Split(ipRange, "-")
-	if len(parts) != 2 {
-		return ""
-	}
-	startParts := strings.Split(strings.TrimSpace(parts[0]), ".")
-	endParts := strings.Split(strings.TrimSpace(parts[1]), ".")
-	if len(startParts) != 4 || len(endParts) != 4 {
-		return ""
-	}
-
-	ipCacheMu.Lock()
-	usedIPs := ipCacheData
-	if usedIPs == nil || time.Since(ipCacheUpdated) > 60*time.Second {
-		instances, _ := vmSvc.ListInstances(ctx, clusterName, project)
-		usedIPs = make(map[string]bool)
-		for _, raw := range instances {
-			var inst struct {
-				State struct {
-					Network map[string]struct {
-						Addresses []struct {
-							Address string `json:"address"`
-							Family  string `json:"family"`
-							Scope   string `json:"scope"`
-						} `json:"addresses"`
-					} `json:"network"`
-				} `json:"state"`
-			}
-			_ = json.Unmarshal(raw, &inst)
-			for nic, data := range inst.State.Network {
-				if nic == "lo" { continue }
-				for _, addr := range data.Addresses {
-					if addr.Family == "inet" && addr.Scope == "global" {
-						usedIPs[addr.Address] = true
-					}
-				}
-			}
-		}
-		ipCacheData = usedIPs
-		ipCacheUpdated = time.Now()
-	}
-	ipCacheMu.Unlock()
-
-	prefix := strings.Join(startParts[:3], ".")
-	start := atoi(startParts[3])
-	end := atoi(endParts[3])
-
-	for i := start; i <= end; i++ {
-		ip := fmt.Sprintf("%s.%d", prefix, i)
-		if !usedIPs[ip] {
-			return ip
-		}
-	}
-	return ""
-}
-
 func atoi(s string) int {
 	n := 0
 	for _, c := range s {

@@ -66,21 +66,6 @@ func (r *FloatingIPRepo) GetByID(ctx context.Context, id int64) (*model.Floating
 	return &f, nil
 }
 
-func (r *FloatingIPRepo) GetByIP(ctx context.Context, ip string) (*model.FloatingIP, error) {
-	var f model.FloatingIP
-	err := scanFloatingIP(
-		r.db.QueryRowContext(ctx, `SELECT `+floatingIPColumns+` FROM floating_ips WHERE ip = $1::inet`, ip),
-		&f,
-	)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	return &f, nil
-}
-
 // Allocate reserves a floating IP in the pool. Returns ErrIPAlreadyAllocated
 // if the IP is taken (unique index). cluster_id + ip are the only required
 // fields; status defaults to 'available' via column default.
@@ -155,27 +140,6 @@ func (r *FloatingIPRepo) Release(ctx context.Context, id int64) error {
 		return errors.New("floating_ip is attached or missing; detach first")
 	}
 	return nil
-}
-
-func (r *FloatingIPRepo) ListByVM(ctx context.Context, vmID int64) ([]model.FloatingIP, error) {
-	rows, err := r.db.QueryContext(ctx,
-		`SELECT `+floatingIPColumns+` FROM floating_ips WHERE bound_vm_id = $1 ORDER BY id ASC`,
-		vmID,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	out := make([]model.FloatingIP, 0)
-	for rows.Next() {
-		var f model.FloatingIP
-		if err := scanFloatingIP(rows, &f); err != nil {
-			return nil, err
-		}
-		out = append(out, f)
-	}
-	return out, rows.Err()
 }
 
 // errIsUniqueViolation matches pgx/pq's SQLSTATE 23505 without importing the
