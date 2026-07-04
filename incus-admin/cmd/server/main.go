@@ -45,6 +45,12 @@ func main() {
 		runBootstrap(os.Args[2:])
 		return
 	}
+	// OPS-052 / WP-I2 migrate 子命令：args[1] == "migrate" 时走 goose runner，
+	// 否则走 runServer。与 bootstrap 同形态，server 启动行为零改动。
+	if len(os.Args) > 1 && os.Args[1] == "migrate" {
+		runMigrate(os.Args[2:])
+		return
+	}
 	runServer()
 }
 
@@ -90,6 +96,17 @@ func runServer() {
 		os.Exit(1)
 	}
 	slog.Info("database connected")
+
+	// OPS-052 / WP-I2：可选启动自动迁移。默认关闭，保持历史「启动不自动迁移，
+	// 迁移由运维单独执行」行为；设 INCUS_ADMIN_AUTO_MIGRATE=true（单机 docker
+	// 一键起库场景）时用 goose runner 把 DB 迁移到最新，失败即 fail-fast 拒绝启动。
+	if autoMigrateEnabled() {
+		if err := runStartupMigrate(db); err != nil {
+			slog.Error("startup auto-migrate failed", "error", err)
+			os.Exit(1)
+		}
+		slog.Info("startup auto-migrate applied")
+	}
 
 	userRepo := repository.NewUserRepo(db)
 	clusterRepo := repository.NewClusterRepo(db)

@@ -1,3 +1,4 @@
+-- +goose Up
 -- PLAN-039 / OPS-044：不均衡持续监控告警表
 --
 -- 复用 jobs runtime / healing_events 不合适（语义不同）；新表专注 system-level
@@ -24,3 +25,6 @@ CREATE UNIQUE INDEX IF NOT EXISTS system_alerts_active_uniq
 
 CREATE INDEX IF NOT EXISTS idx_system_alerts_active
     ON system_alerts (created_at DESC) WHERE resolved_at IS NULL;
+
+-- +goose Down
+DROP TABLE IF EXISTS system_alerts;

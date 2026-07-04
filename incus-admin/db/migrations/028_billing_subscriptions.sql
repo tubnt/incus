@@ -1,3 +1,4 @@
+-- +goose Up
 -- PLAN-054 / INFRA-013：按天付费 billing engine schema
 --
 -- 与现有 monthly 一次性付费**完全并存**：products 加按天单价 + 支持周期数组；
@@ -35,6 +36,7 @@ ALTER TABLE orders
   ADD COLUMN IF NOT EXISTS period TEXT NOT NULL DEFAULT 'monthly';
 
 -- CHECK 约束分开建：IF NOT EXISTS 不支持 ADD CONSTRAINT，用 DO 块兜底
+-- +goose StatementBegin
 DO $$
 BEGIN
   IF NOT EXISTS (
@@ -45,6 +47,7 @@ BEGIN
       ADD CONSTRAINT orders_period_check CHECK (period IN ('daily', 'monthly'));
   END IF;
 END $$;
+-- +goose StatementEnd
 
 -- ============================================================================
 -- vm_subscriptions：vm 与计费周期解耦
@@ -99,3 +102,11 @@ CREATE TABLE IF NOT EXISTS billing_charges (
 -- 用户账单页：按 sub 查最近扣费记录，DESC 取最新
 CREATE INDEX IF NOT EXISTS idx_charges_subscription
     ON billing_charges(subscription_id, charge_date DESC);
+
+-- +goose Down
+DROP TABLE IF EXISTS billing_charges;
+DROP TABLE IF EXISTS vm_subscriptions;
+ALTER TABLE orders DROP CONSTRAINT IF EXISTS orders_period_check;
+ALTER TABLE orders DROP COLUMN IF EXISTS period;
+ALTER TABLE products DROP COLUMN IF EXISTS period_supported;
+ALTER TABLE products DROP COLUMN IF EXISTS price_daily;

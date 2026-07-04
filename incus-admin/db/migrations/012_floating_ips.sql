@@ -1,3 +1,4 @@
+-- +goose Up
 -- PLAN-021 Phase G: floating_ips
 --
 -- A floating IP is a public IPv4 address that admin explicitly reserves and
@@ -40,3 +41,6 @@ CREATE TABLE IF NOT EXISTS floating_ips (
 
 CREATE INDEX IF NOT EXISTS idx_floating_ips_vm ON floating_ips(bound_vm_id) WHERE bound_vm_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_floating_ips_status ON floating_ips(status);
+
+-- +goose Down
+DROP TABLE IF EXISTS floating_ips;
