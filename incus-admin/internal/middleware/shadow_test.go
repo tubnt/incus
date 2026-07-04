@@ -20,7 +20,7 @@ func TestShadowGate_NoActorPassesEverywhere(t *testing.T) {
 	for _, path := range []string{
 		"/api/admin/users/1/balance",
 		"/api/portal/orders/1/pay",
-		"/api/portal/invoices/1/refund",
+		"/api/portal/services/1/initial-credentials",
 		"/api/admin/vms/vm-a",
 	} {
 		req := httptest.NewRequest(http.MethodPost, path, nil)
@@ -34,10 +34,12 @@ func TestShadowGate_NoActorPassesEverywhere(t *testing.T) {
 
 func TestShadowGate_BlocksMoneyRoutesUnderShadow(t *testing.T) {
 	h := shadowWrapped()
+	// PLAN-055 / OPS-052 §1：refund 路由已不存在（移除死条目）；新增看初始密码
+	// （凭据外发）纳入 shadow 拒绝清单，portal 支付同样受拒。
 	money := []string{
 		"/api/admin/users/42/balance",
 		"/api/portal/orders/7/pay",
-		"/api/portal/invoices/9/refund",
+		"/api/portal/services/9/initial-credentials",
 	}
 	for _, path := range money {
 		req := httptest.NewRequest(http.MethodPost, path, nil)
