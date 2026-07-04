@@ -109,44 +109,18 @@ func (h *AdminVMHandler) runVMBatchOp(r *http.Request, cluster, project, name, a
 
 	switch action {
 	case batchActionDelete:
-		// OPS-052 P1-6：admin 批量删不再直接 hard-delete（旧路径绕过回收站、漏
-		// IP/Floating IP/firewall 释放与订阅取消），改走与 portal 一致的回收站软删
-		// 路径。trashed 后由 worker.RunVMTrashPurger 在窗口过后统一收口 hard-delete
-		// + 资源回收，保证 IP/订阅联动一致。
-		// 用 GetByNameIncludingTrashed 区分「已在回收站」与「无 DB 行」——GetByName
-		// 会把两者都返 nil，直接 no-op 会漏删 orphan Incus 实例，直接 hard-delete 又
-		// 会击穿正在回收站窗口内的 VM。
-		dbVM, _ := h.vmRepo.GetByNameIncludingTrashed(ctx, name)
-		if dbVM == nil {
-			// 无 DB 行（orphan Incus 实例或已 hard-delete）：无 IP/订阅联动需求，
-			// best-effort 直接删 Incus 清理 orphan；已删则 not-found 幂等忽略。
-			if err := h.vmSvc.Delete(ctx, cluster, project, name); err != nil {
-				slog.Warn("batch delete: orphan incus delete failed (ignored)", "vm", name, "cluster", cluster, "error", err)
-			}
-			return nil
-		}
-		if dbVM.TrashedAt != nil {
-			// 已在回收站：幂等成功，purger 会统一收口 hard-delete + 资源回收。
-			return nil
-		}
-		// 活跃 VM → 软删进回收站。best-effort 停机；purger 兜底走 force=true，
-		// stop 失败不阻断 trash。
-		if err := h.vmSvc.Trash(ctx, cluster, project, name); err != nil {
-			slog.Warn("batch trash: stop failed (continuing)", "vm", name, "cluster", cluster, "error", err)
-		}
-		ok, err := h.vmRepo.MarkTrashed(ctx, dbVM.ID)
-		if err != nil {
-			slog.Error("batch trash: mark trashed failed", "vm", name, "cluster", cluster, "error", err)
+		if err := h.vmSvc.Delete(ctx, cluster, project, name); err != nil {
+			slog.Error("batch delete failed", "vm", name, "cluster", cluster, "error", err)
 			return err
 		}
-		if ok {
-			// 仅首次 trash 成功时联动取消订阅（幂等：竞态下重复请求不重复取消）。
-			cancelSubscriptionOnTrash(ctx, r, h.subs, dbVM.ID)
+		var deletedID int64
+		if dbVM, _ := h.vmRepo.GetByName(ctx, name); dbVM != nil {
+			deletedID = dbVM.ID
+			_ = h.vmRepo.Delete(ctx, dbVM.ID)
 		}
-		audit(ctx, r, "vm.trash", "vm", dbVM.ID, map[string]any{
-			"name":     name,
-			"source":   "batch",
-			"window_s": model.VMTrashWindowSeconds,
+		audit(ctx, r, "vm.delete", "vm", deletedID, map[string]any{
+			"name":   name,
+			"source": "batch",
 		})
 		return nil
 

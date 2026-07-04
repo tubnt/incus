@@ -3,17 +3,11 @@ package repository
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
-	"log/slog"
 	"net"
 	"strings"
 	"time"
 )
-
-// errPoolExhausted 是 tryAllocate 在池内无 available IP 时返回的哨兵错误，
-// 供 AllocateNext 判定是否需要先回收 cooldown 再重试（不外泄给调用方）。
-var errPoolExhausted = errors.New("ip pool exhausted")
 
 type IPAddrRepo struct {
 	db *sql.DB
@@ -32,28 +26,6 @@ type AllocatedIP struct {
 }
 
 func (r *IPAddrRepo) AllocateNext(ctx context.Context, poolID int64, vmID int64, ipRange string) (string, error) {
-	ip, err := r.tryAllocate(ctx, poolID, vmID)
-	if errors.Is(err, errPoolExhausted) {
-		// OPS-052 P0-3：池空时内联触发 cooldown 回收再重试一次。RecoverCooldowns
-		// 之前零调用方，删 VM 释放的 IP 会永久卡在 'cooldown'；这里在真正需要 IP
-		// （分配失败）的时刻按需回收已过 cooldown_until 的地址，避免依赖后台 worker。
-		// 注意 Release 写入 now+5min 的 cooldown_until，刚删的 IP 仍需等窗口过后才回收。
-		if n, rErr := r.RecoverCooldowns(ctx); rErr != nil {
-			slog.Warn("allocate: recover cooldowns failed", "pool_id", poolID, "error", rErr)
-		} else if n > 0 {
-			slog.Info("allocate: recovered cooldown IPs, retrying", "pool_id", poolID, "recovered", n)
-			ip, err = r.tryAllocate(ctx, poolID, vmID)
-		}
-	}
-	if errors.Is(err, errPoolExhausted) {
-		return "", fmt.Errorf("no available IPs in pool %d", poolID)
-	}
-	return ip, err
-}
-
-// tryAllocate 单次原子分配：锁一个 available IP 置为 assigned。池内无可用地址时
-// 返回 errPoolExhausted 哨兵，交由 AllocateNext 决定是否回收 cooldown 后重试。
-func (r *IPAddrRepo) tryAllocate(ctx context.Context, poolID int64, vmID int64) (string, error) {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return "", err
@@ -67,7 +39,7 @@ func (r *IPAddrRepo) tryAllocate(ctx context.Context, poolID int64, vmID int64) 
 	).Scan(&ip)
 
 	if err == sql.ErrNoRows {
-		return "", errPoolExhausted
+		return "", fmt.Errorf("no available IPs in pool %d", poolID)
 	}
 	if err != nil {
 		return "", fmt.Errorf("select IP: %w", err)
