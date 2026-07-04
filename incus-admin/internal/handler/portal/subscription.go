@@ -121,13 +121,26 @@ func (h *SubscriptionHandler) Reactivate(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	paidUntil := time.Now().Add(dur)
-	if err := h.subs.AdminReactivate(r.Context(), id, paidUntil); err != nil {
+	reactivated, err := h.subs.AdminReactivate(r.Context(), id, paidUntil)
+	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "reactivate failed"})
 		return
 	}
 	updated, err := h.subs.GetByID(r.Context(), id)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "lookup after reactivate failed"})
+		return
+	}
+	if !reactivated {
+		// VM 已 trashed / deleted：不恢复，订阅已被 cancel 让位（避免给已删 VM 续费）。
+		audit(r.Context(), r, "subscription_admin_reactivate_denied", "subscription", id, map[string]any{
+			"prev_status": sub.Status,
+			"reason":      "vm_gone",
+		})
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error":        "vm no longer exists; subscription cancelled",
+			"subscription": updated,
+		})
 		return
 	}
 	audit(r.Context(), r, "subscription_admin_reactivated", "subscription", id, map[string]any{

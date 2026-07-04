@@ -208,6 +208,95 @@ func TestRestoreHook_ReactivatesCancelledSub(t *testing.T) {
 	}
 }
 
+// seedArrearsCancelledSub 造一条"欠费回收"留下的 cancelled 订阅：先 active →
+// UpdateSuspension（挂起，写 suspended_at）→ UpdateStatus cancelled（grace expire
+// 只改 status，保留 suspended_at）。返回该 sub。
+func seedArrearsCancelledSub(t *testing.T, subRepo *repository.SubscriptionRepo, userID, vmID, productID int64, rate float64) *model.VMSubscription {
+	t.Helper()
+	ctx := context.Background()
+	sub, err := subRepo.Insert(ctx, &model.VMSubscription{
+		VMID: vmID, ProductID: productID, UserID: userID,
+		Period: model.BillingPeriodDaily, DailyRate: &rate,
+		PaidUntil: time.Now().Add(-2 * time.Hour), Status: model.SubscriptionStatusActive,
+	})
+	if err != nil {
+		t.Fatalf("seed sub: %v", err)
+	}
+	if err := subRepo.UpdateSuspension(ctx, sub.ID, time.Now().Add(-1*time.Hour), time.Now().Add(-30*time.Minute)); err != nil {
+		t.Fatalf("suspend: %v", err)
+	}
+	if err := subRepo.UpdateStatus(ctx, sub.ID, model.SubscriptionStatusCancelled); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	return sub
+}
+
+// TestRestoreHook_ArrearsChargesOnePeriod 决策#1：欠费回收的订阅 restore 必须
+// 补扣一个周期（余额充足）→ 恢复 active + 扣款 + billing_charge(paid)。
+func TestRestoreHook_ArrearsChargesOnePeriod(t *testing.T) {
+	db := testhelper.NewTestDB(t, "")
+	userID, _, vmID, productID := seedSubFlowFixtures(t, db, model.BillingPeriodDaily, 0.5)
+	if _, err := db.Exec(`UPDATE users SET balance = 5 WHERE id = $1`, userID); err != nil {
+		t.Fatalf("set balance: %v", err)
+	}
+	subRepo := repository.NewSubscriptionRepo(db)
+	sub := seedArrearsCancelledSub(t, subRepo, userID, vmID, productID, 0.5)
+
+	r := httptest.NewRequest("POST", "/portal/services/1/restore", nil)
+	portal.ReactivateSubscriptionOnRestoreForTest(context.Background(), r, subRepo, vmID)
+
+	got, err := subRepo.GetByVM(context.Background(), vmID)
+	if err != nil || got == nil {
+		t.Fatalf("expected active sub, got %+v err=%v", got, err)
+	}
+	if got.Status != model.SubscriptionStatusActive {
+		t.Errorf("status = %q, want active", got.Status)
+	}
+	var bal float64
+	if err := db.QueryRow(`SELECT balance FROM users WHERE id=$1`, userID).Scan(&bal); err != nil {
+		t.Fatalf("read balance: %v", err)
+	}
+	if bal != 4.5 {
+		t.Errorf("balance after charged restore = %v, want 4.5", bal)
+	}
+	charges := repository.NewChargeRepo(db)
+	list, _ := charges.ListBySubscription(context.Background(), sub.ID, 5)
+	if len(list) != 1 || list[0].Status != model.BillingChargePaid || list[0].TransactionID == nil {
+		t.Errorf("expected 1 paid charge with tx, got %+v", list)
+	}
+	wantWindow := 24 * time.Hour
+	if delta := time.Until(got.PaidUntil); delta < wantWindow-time.Minute || delta > wantWindow+time.Minute {
+		t.Errorf("paid_until %v not ~ NOW+24h (delta=%v)", got.PaidUntil, delta)
+	}
+}
+
+// TestRestoreHook_ArrearsInsufficientDenied 决策#1：欠费回收订阅 restore 余额
+// 不足 → 拒绝，保持 cancelled，绝不免费续期，余额不动。
+func TestRestoreHook_ArrearsInsufficientDenied(t *testing.T) {
+	db := testhelper.NewTestDB(t, "")
+	userID, _, vmID, productID := seedSubFlowFixtures(t, db, model.BillingPeriodDaily, 0.5)
+	if _, err := db.Exec(`UPDATE users SET balance = 0.4 WHERE id = $1`, userID); err != nil {
+		t.Fatalf("set balance: %v", err)
+	}
+	subRepo := repository.NewSubscriptionRepo(db)
+	seedArrearsCancelledSub(t, subRepo, userID, vmID, productID, 0.5)
+
+	r := httptest.NewRequest("POST", "/portal/services/1/restore", nil)
+	portal.ReactivateSubscriptionOnRestoreForTest(context.Background(), r, subRepo, vmID)
+
+	latest, _ := subRepo.GetLatestByVM(context.Background(), vmID)
+	if latest == nil || latest.Status != model.SubscriptionStatusCancelled {
+		t.Fatalf("arrears restore with insufficient balance should stay cancelled, got %+v", latest)
+	}
+	var bal float64
+	if err := db.QueryRow(`SELECT balance FROM users WHERE id=$1`, userID).Scan(&bal); err != nil {
+		t.Fatalf("read balance: %v", err)
+	}
+	if bal != 0.4 {
+		t.Errorf("balance changed despite denied restore: %v", bal)
+	}
+}
+
 // TestPayHook_NilRepoIsNoop subs 未注入时 hook 应安静 return nil（不 panic、不报
 // 错），保证测试 / 旧部署兼容。
 func TestPayHook_NilRepoIsNoop(t *testing.T) {

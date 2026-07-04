@@ -37,20 +37,23 @@ func safeRun(task string, fn func()) {
 
 // Deps 集中声明 runtime 依赖。每条都是 jobs 必须的能力，调用方在 main 里组装。
 type Deps struct {
-	Jobs       *repository.ProvisioningJobRepo
-	VMs        *repository.VMRepo
-	IPAddrs    *repository.IPAddrRepo
-	Users      *repository.UserRepo
-	Orders     *repository.OrderRepo
-	Audit      AuditWriter
-	Clusters   *cluster.Manager
+	Jobs        *repository.ProvisioningJobRepo
+	VMs         *repository.VMRepo
+	IPAddrs     *repository.IPAddrRepo
+	Users       *repository.UserRepo
+	Orders      *repository.OrderRepo
+	Audit       AuditWriter
+	Clusters    *cluster.Manager
 	OSTemplates *repository.OSTemplateRepo // 重装时按 slug 查 image_source
+	// P1-4：异步 vm.create 失败回滚时取消该 VM 的订阅，杜绝幽灵扣费。
+	// nil 时跳过（向后兼容 / 测试环境无 billing）。
+	Subscriptions *repository.SubscriptionRepo
 	// PLAN-036：vm.create finalize 软失败应用用户默认 firewall_groups。
 	// 任一为 nil 时跳过（保持向后兼容 + 测试环境无 firewall service）。
-	Firewall    DefaultFirewallApplier
+	Firewall DefaultFirewallApplier
 	// PLAN-037：cluster.vm.migrate-batch executor 调用 service.VMService.Migrate；
 	// nil 时跳过该 kind（测试可注入 stub）。
-	Migrator    VMMigrator
+	Migrator VMMigrator
 	// PoolSize 是 worker 池容量；建议 4–8。0 取默认 4。
 	PoolSize int
 	// OPS-050：入队 channel buffer 长度。0 取默认 64。生产建议 256；
@@ -100,17 +103,17 @@ type AuditWriter interface {
 // 进程崩溃时丢失没问题 —— sweeper 会把缺失 params 的 stale running job 直接
 // 走 rollback 路径（释放 IP / 退款 / cancel order）。
 type Runtime struct {
-	deps    Deps
-	broker  *Broker
-	queue   chan int64
-	wg      sync.WaitGroup
+	deps   Deps
+	broker *Broker
+	queue  chan int64
+	wg     sync.WaitGroup
 	// inflight 只统计"已被 worker 领取、正在 runOne 中执行"的 job（不含仍在
 	// queue 里排队的）。Shutdown 等它归零 = 真正的 in-flight job 全部收尾，而不是
 	// 等 worker goroutine 退出（那要等 ctx cancel，与 graceful 语义相悖）。
 	inflight sync.WaitGroup
-	once    sync.Once
-	pmu     sync.Mutex
-	params  map[int64]*Params
+	once     sync.Once
+	pmu      sync.Mutex
+	params   map[int64]*Params
 	// dispatchFn 在测试里可注入返回桩 Executor；生产留 nil 走 default dispatch。
 	dispatchFn func(*model.ProvisioningJob) (Executor, error)
 }

@@ -519,18 +519,19 @@ func runServer() {
 	var jobsRuntime *jobs.Runtime
 	if clusterMgr != nil {
 		jobsRuntime = jobs.NewRuntime(jobs.Deps{
-			Jobs:        jobRepo,
-			VMs:         vmRepo,
-			IPAddrs:     ipAddrRepo,
-			Users:       userRepo,
-			Orders:      orderRepo,
-			Audit:       auditAdapter{repo: auditRepo},
-			Clusters:    clusterMgr,
-			OSTemplates: osTemplateRepo,
-			Firewall:    defaultFirewallApplier{repo: firewallRepo, svc: service.NewFirewallService(clusterMgr, vmSvc)},
-			Migrator:    vmMigratorAdapter{svc: vmSvc}, // PLAN-037: cluster.vm.migrate-batch
-			PoolSize:    cfg.Jobs.PoolSize,             // OPS-050: env JOBS_POOL_SIZE，默认 4
-			QueueSize:   cfg.Jobs.QueueSize,            // OPS-050: env JOBS_QUEUE_SIZE，默认 64
+			Jobs:          jobRepo,
+			VMs:           vmRepo,
+			IPAddrs:       ipAddrRepo,
+			Users:         userRepo,
+			Orders:        orderRepo,
+			Audit:         auditAdapter{repo: auditRepo},
+			Clusters:      clusterMgr,
+			OSTemplates:   osTemplateRepo,
+			Subscriptions: subRepo, // P1-4：rollback 时取消订阅，杜绝幽灵扣费
+			Firewall:      defaultFirewallApplier{repo: firewallRepo, svc: service.NewFirewallService(clusterMgr, vmSvc)},
+			Migrator:      vmMigratorAdapter{svc: vmSvc}, // PLAN-037: cluster.vm.migrate-batch
+			PoolSize:      cfg.Jobs.PoolSize,             // OPS-050: env JOBS_POOL_SIZE，默认 4
+			QueueSize:     cfg.Jobs.QueueSize,            // OPS-050: env JOBS_QUEUE_SIZE，默认 64
 			// OPS-051 / PLAN-052
 			AptProxyURL:      cfg.Provisioning.AptProxyURL,
 			DefaultLoginUser: cfg.Provisioning.DefaultLoginUser,
