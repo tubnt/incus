@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/incuscloud/incus-admin/internal/handler/portal"
@@ -192,6 +193,57 @@ func TestCreateInstance_Happy(t *testing.T) {
 	}
 	if len(op.last.SSHKeys) != 1 || op.last.SSHKeys[0] != "ssh-rsa AAA u@h" {
 		t.Errorf("ssh keys = %+v", op.last.SSHKeys)
+	}
+}
+
+// TestCreateInstance_ThreeFieldsPassthrough 验证 WP-I1：root_pass / user_data /
+// tags 真正透传到 OrderProvision（不再声明支持却静默丢弃），并在响应回显 tags。
+func TestCreateInstance_ThreeFieldsPassthrough(t *testing.T) {
+	deps, op, _, _ := makeWriteDeps()
+	rr := postInstance(t, New(deps), 1, map[string]any{
+		"region":    "hkg-1",
+		"type":      "nano",
+		"image":     "ubuntu-24",
+		"root_pass": "S3cretPass!",
+		"user_data": "#cloud-config\nruncmd:\n  - echo hi\n",
+		"tags":      []string{"prod", "web"},
+	})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	if op.last.RootPass != "S3cretPass!" {
+		t.Errorf("root_pass not passed: %q", op.last.RootPass)
+	}
+	if !strings.Contains(op.last.UserData, "echo hi") {
+		t.Errorf("user_data not passed: %q", op.last.UserData)
+	}
+	if len(op.last.Tags) != 2 || op.last.Tags[0] != "prod" || op.last.Tags[1] != "web" {
+		t.Errorf("tags not passed: %+v", op.last.Tags)
+	}
+	var resp createInstanceResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Tags) != 2 || resp.Tags[0] != "prod" {
+		t.Errorf("response tags not echoed: %+v", resp.Tags)
+	}
+}
+
+// TestCreateInstance_RootPassTooShort 验证 root_pass 少于 8 字符 → 422（与
+// openapi minLength: 8 一致），且不进入订单流。
+func TestCreateInstance_RootPassTooShort(t *testing.T) {
+	deps, op, _, _ := makeWriteDeps()
+	rr := postInstance(t, New(deps), 1, map[string]any{
+		"region":    "hkg-1",
+		"type":      "nano",
+		"image":     "ubuntu-24",
+		"root_pass": "short",
+	})
+	if rr.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d want 422 body=%s", rr.Code, rr.Body.String())
+	}
+	if op.called != 0 {
+		t.Errorf("OrderProvision should not be called on root_pass validation fail (called=%d)", op.called)
 	}
 }
 

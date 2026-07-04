@@ -136,6 +136,12 @@ func (h *Handler) CreateInstance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 6. root_pass 长度校验（与 openapi minLength: 8 一致；空 → 服务端随机生成）。
+	if req.RootPass != "" && len(req.RootPass) < 8 {
+		writeFieldErr(w, http.StatusUnprocessableEntity, "root_pass", "invalid_root_pass")
+		return
+	}
+
 	// 委托订单流（一步购买）
 	result, provErr := h.deps.OrderProvision.CreatePayProvision(r, portal.V1ProvisionRequest{
 		UserID:      uid,
@@ -146,6 +152,10 @@ func (h *Handler) CreateInstance(w http.ResponseWriter, r *http.Request) {
 		VMName:      req.Label,
 		Period:      period,
 		SSHKeys:     sshKeyStrings,
+		// WP-I1：真正透传 root_pass / user_data / tags（不再声明支持却静默丢弃）。
+		RootPass: req.RootPass,
+		UserData: req.UserData,
+		Tags:     req.Tags,
 	})
 	if provErr != nil {
 		writeProvisionErr(w, r, provErr)
@@ -153,6 +163,11 @@ func (h *Handler) CreateInstance(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 同步返 201：body 是 InstanceDTO（status=pending）+ Location header。
+	// tags 回显请求值（openapi 要求 tags 必填，nil → 空数组）。
+	respTags := req.Tags
+	if respTags == nil {
+		respTags = []string{}
+	}
 	dto := InstanceDTO{
 		ID:        result.VMID,
 		Label:     result.VMName,
@@ -163,7 +178,7 @@ func (h *Handler) CreateInstance(w http.ResponseWriter, r *http.Request) {
 		IP4:       result.IP,
 		IP6:       "",
 		CreatedAt: nowUTC(),
-		Tags:      []string{},
+		Tags:      respTags,
 	}
 	resp := createInstanceResponse{
 		InstanceDTO: dto,
