@@ -57,8 +57,9 @@ func (r *sshKeyResource) Create(ctx context.Context, req resource.CreateRequest,
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	// 后端 Create 响应键为 "key"（单条）。
 	var out struct {
-		Key client.SSHKey `json:"ssh_key"`
+		Key client.SSHKey `json:"key"`
 	}
 	if err := r.c.Do(ctx, "POST", "/api/portal/ssh-keys", client.SSHKey{
 		Name:      plan.Name.ValueString(),
@@ -77,14 +78,15 @@ func (r *sshKeyResource) Read(ctx context.Context, req resource.ReadRequest, res
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	// 后端 List 响应键为 "keys"（列表）。
 	var out struct {
-		SSHKeys []client.SSHKey `json:"ssh_keys"`
+		Keys []client.SSHKey `json:"keys"`
 	}
 	if err := r.c.Do(ctx, "GET", "/api/portal/ssh-keys", nil, &out); err != nil {
 		resp.Diagnostics.AddError("list ssh keys failed", err.Error())
 		return
 	}
-	for _, k := range out.SSHKeys {
+	for _, k := range out.Keys {
 		if k.ID == state.ID.ValueInt64() {
 			state.Name = types.StringValue(k.Name)
 			state.PublicKey = types.StringValue(k.PublicKey)
@@ -102,7 +104,8 @@ func (r *sshKeyResource) Update(_ context.Context, _ resource.UpdateRequest, _ *
 func (r *sshKeyResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
 	var state sshKeyModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
-	if err := r.c.Do(ctx, "DELETE", fmt.Sprintf("/api/portal/ssh-keys/%d", state.ID.ValueInt64()), nil, nil); err != nil {
+	// T7 幂等：404（已不存在）视为删除成功。
+	if err := r.c.Do(ctx, "DELETE", fmt.Sprintf("/api/portal/ssh-keys/%d", state.ID.ValueInt64()), nil, nil); err != nil && !client.IsNotFound(err) {
 		resp.Diagnostics.AddError("delete ssh key failed", err.Error())
 	}
 }
