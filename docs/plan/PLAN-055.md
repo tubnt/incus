@@ -102,3 +102,22 @@
 - 共享热点 `cmd/server/main.go` 被 A/B/C 触及 → L2 按 A→B→C 顺序串行合入并逐次 rebuild，冲突局部可解。
 - WP-F（前端）、WP-G（terraform）与 Go 后端完全不相交 → 无冲突。
 - 只有 L1（本会话）在你二次确认后合入 main。
+
+## 决策结果（2026-07-04 用户拍板）+ Wave 2 派发
+
+- #1 trash-restore 免费续期 → **不免费,必须补扣**。restore 区分 cancel 原因,恢复时按余额补扣一个周期(不足则拒绝/保持 suspended)。→ WP-H1
+- #2 idempotency_keys PK `(key)`→`(key,user_id)` → **执行**(migration 030 + repo Put ON CONFLICT + middleware TOCTOU advisory 占位)。→ WP-H2
+- #3 金额精度 → **保持 2 位**。不改 schema;改为扣费前把 amount round 到 2 位,使 balance/transactions/billing_charges 三处一致。→ WP-H1
+- #4 `/v1` root_pass/user_data/tags → **从 OpenAPI spec 删除 + handler 对这些字段返 422**(停止"声明支持却静默丢弃"的欺骗);真正实现留作后续产品单。→ WP-H2
+- #5 goose 迁移工具 → **暂缓**,单独立项(见对话解释)。
+- #6 LISTEN/代理签名 → **暂缓**,仅在用户确认后做 env-gated 可选版(见对话解释)。
+- #7 月=30 天 → 调研结论:项目是 anniversary(按 VM 起始日滚动)模型,行业推荐用于分摊负载/免 proration;30 天×日费率对用户公平(付 30 天得 30 天)。**保留 30 天**,仅前端/API 明示"1 个月 = 30 天"。→ WP-H5
+- #8 脚本双副本同步 → **纳入 repo 侧**:sync 检查脚本覆盖全部脚本 + 同步 3 个漂移文件(物理机验证另行)。→ WP-H3
+- #9 死代码清理 → **执行**。→ WP-H4
+
+### Wave 2 工作包
+- WP-H1 计费语义(restore 补扣 + 日费率 round 2 位):`internal/handler/portal/subscription_hooks.go`、`internal/service/billing/service.go`、`internal/repository/subscription_repo.go`
+- WP-H2 幂等强化 + /v1 字段诚实化:`db/migrations/030_idempotency_pk.sql`、`internal/repository/idempotency_repo.go`、`internal/middleware/idempotency.go`、`internal/handler/v1/instances_write.go`、`internal/handler/portal/order_v1.go`、`internal/handler/openapi/openapi.yaml`
+- WP-H3 运维脚本同步:`scripts/check-join-node-sync.sh`、`cluster/scripts/{apply-network.sh,probe-node.sh}`、`cluster/configs/cluster-env.sh`
+- WP-H4 死代码清理:`internal/handler/portal/vm.go`(pickNextIP+ipCache)、`internal/handler/openapi/handler.go`(yamlOnce)、`internal/repository/{floating_ip.go,firewall.go,vm.go,ipaddr.go}`、`internal/model/models.go`(IP 常量)
+- WP-H5 前端 月=30天 明示(/pma-des):`incus-admin/web/src/app/routes/billing.tsx` + 相关订阅文案
