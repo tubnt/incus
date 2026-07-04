@@ -25,14 +25,14 @@ import (
 
 // EvaluatorDeps 集中评估器依赖。
 type EvaluatorDeps struct {
-	Rules         *repository.AlertRuleRepo
-	Alerts        *repository.SystemAlertRepo
-	Deliveries    *repository.AlertDeliveryRepo
-	VMs           VMDownLister
-	Users         UsersBalanceLister
-	Jobs          JobFailureCounter
-	Orders        OrderFailureCounter
-	Nodes         ClusterNodeLister
+	Rules      *repository.AlertRuleRepo
+	Alerts     *repository.SystemAlertRepo
+	Deliveries *repository.AlertDeliveryRepo
+	VMs        VMDownLister
+	Users      UsersBalanceLister
+	Jobs       JobFailureCounter
+	Orders     OrderFailureCounter
+	Nodes      ClusterNodeLister
 }
 
 // VMDownLister 给 vm_down 评估用：列窗口内进入 gone/error 的 VM。
@@ -181,7 +181,9 @@ func evalVMDown(ctx context.Context, deps EvaluatorDeps, rule *repository.AlertR
 		slog.Warn("evaluator vm_down: list failed", "error", err)
 		return
 	}
+	downSet := make(map[int64]bool, len(downs))
 	for _, d := range downs {
+		downSet[d.VMID] = true
 		groupKey := fmt.Sprintf("vm_down:%d", d.VMID)
 		payload, _ := json.Marshal(map[string]any{
 			"vm_id": d.VMID, "name": d.Name, "status": d.Status,
@@ -201,6 +203,10 @@ func evalVMDown(ctx context.Context, deps EvaluatorDeps, rule *repository.AlertR
 		ev.ScopeID = &scopeID
 		enqueueAll(ctx, deps, &alertID, &rule.ID, rule.ChannelIDs, groupKey, "firing", rule.Severity, ev)
 	}
+	// resolve 分支：此前 firing 过、但本轮已不在 down 列表（VM 恢复到正常状态）
+	// 的 vm_down 告警翻转为 resolved。只触发不消解会让告警永久悬挂。
+	resolveRecoveredScoped(ctx, deps, rule, repository.AlertKindVMDown, downSet,
+		func(a *repository.SystemAlert) string { return "VM 已恢复正常" })
 }
 
 // ----------------------------------------------------------------------------
@@ -256,7 +262,9 @@ func evalBalanceLow(ctx context.Context, deps EvaluatorDeps, rule *repository.Al
 		slog.Warn("evaluator balance_low: list failed", "error", err)
 		return
 	}
+	lowSet := make(map[int64]bool, len(users))
 	for _, u := range users {
+		lowSet[u.ID] = true
 		groupKey := fmt.Sprintf("balance_low:%d", u.ID)
 		payload, _ := json.Marshal(map[string]any{
 			"user_id": u.ID, "email": redactEmail(u.Email), "balance": u.Balance, "threshold": *rule.Threshold,
@@ -275,6 +283,11 @@ func evalBalanceLow(ctx context.Context, deps EvaluatorDeps, rule *repository.Al
 		ev.ScopeID = &uid
 		enqueueAll(ctx, deps, &alertID, &rule.ID, rule.ChannelIDs, groupKey, "firing", rule.Severity, ev)
 	}
+	// resolve 分支：余额回升到阈值以上（充值后）的用户，其 balance_low 告警翻转
+	// resolved。ListBelowBalance 无时间窗口、返回全量低余额用户，故"不在列表"即
+	// 确定已恢复，不会误消解。
+	resolveRecoveredScoped(ctx, deps, rule, repository.AlertKindBalanceLow, lowSet,
+		func(a *repository.SystemAlert) string { return "用户余额已回升至阈值以上" })
 }
 
 // ----------------------------------------------------------------------------
@@ -407,6 +420,48 @@ func enqueueAll(
 			slog.Warn("evaluator enqueue delivery failed",
 				"channel_id", cid, "group_key", groupKey, "phase", phase, "error", err)
 		}
+	}
+}
+
+// resolveRecoveredScoped 把某 kind 下当前仍 active、但 scope_id 已不在 stillFiring
+// 集合中的告警翻转为 resolved，并给每个 channel 入队一条 resolved delivery。
+// 用于 vm_down / balance_low 这类 per-scope（单 VM / 单用户）告警的消解：只触发
+// 不消解会让告警永久悬挂。titleFn 生成 resolved 通知标题。
+//
+// ResolveByGroup 的 UPDATE ... WHERE resolved_at IS NULL RETURNING 天然幂等：
+// 多条 rule / 重复 tick 抢同一 group 时只有一条拿到行，其余得 nil 跳过。
+func resolveRecoveredScoped(
+	ctx context.Context, deps EvaluatorDeps, rule *repository.AlertRule,
+	kind string, stillFiring map[int64]bool, titleFn func(*repository.SystemAlert) string,
+) {
+	actives, err := deps.Alerts.ListActive(ctx)
+	if err != nil {
+		slog.Warn("evaluator: list active for resolve failed", "kind", kind, "error", err)
+		return
+	}
+	for i := range actives {
+		a := actives[i]
+		if a.Kind != kind || a.GroupKey == nil {
+			continue
+		}
+		if a.ScopeID != nil && stillFiring[*a.ScopeID] {
+			continue // 仍在触发条件内，不消解
+		}
+		resolved, err := deps.Alerts.ResolveByGroup(ctx, *a.GroupKey)
+		if err != nil {
+			slog.Warn("evaluator: resolve by group failed", "kind", kind, "group_key", *a.GroupKey, "error", err)
+			continue
+		}
+		if resolved == nil {
+			continue // 已被并发消解
+		}
+		ev := buildEvent(kind, resolved.Cluster, rule.Severity, "resolved", *resolved.GroupKey, resolved.Payload)
+		ev.Title = titleFn(resolved)
+		if resolved.ScopeKind != nil {
+			ev.ScopeKind = *resolved.ScopeKind
+		}
+		ev.ScopeID = resolved.ScopeID
+		enqueueAll(ctx, deps, &resolved.ID, &rule.ID, rule.ChannelIDs, *resolved.GroupKey, "resolved", rule.Severity, ev)
 	}
 }
 

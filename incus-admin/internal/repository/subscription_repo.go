@@ -3,7 +3,9 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/incuscloud/incus-admin/internal/model"
@@ -316,17 +318,197 @@ func (r *SubscriptionRepo) ListAll(ctx context.Context, status string) ([]model.
 // active，paid_until 重置为传入值，并清空 suspended_at / grace_until。
 // 与 ReactivateByVM（VM restore 触发，只动 cancelled）正交，本路径走 sub_id
 // 直接定位行，不限制原状态（已 active 走 handler 层幂等短路）。
-func (r *SubscriptionRepo) AdminReactivate(ctx context.Context, id int64, paidUntil time.Time) error {
-	_, err := r.db.ExecContext(ctx,
+//
+// 事务内校验 VM 存活：若关联 VM 已 trashed / deleted，则不恢复（避免给已删
+// VM 续费产生幽灵扣费），改走 cancel 让位。返回 (true,nil)=已恢复 active；
+// (false,nil)=VM 已消失、订阅被 cancel。
+func (r *SubscriptionRepo) AdminReactivate(ctx context.Context, id int64, paidUntil time.Time) (bool, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // 已 commit 时 rollback 是 noop
+
+	var vmID int64
+	if err := tx.QueryRowContext(ctx,
+		`SELECT vm_id FROM vm_subscriptions WHERE id = $1 FOR UPDATE`, id,
+	).Scan(&vmID); err != nil {
+		return false, fmt.Errorf("lock subscription: %w", err)
+	}
+	alive, err := vmAliveTx(ctx, tx, vmID)
+	if err != nil {
+		return false, fmt.Errorf("check vm alive: %w", err)
+	}
+	if !alive {
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE vm_subscriptions SET status = 'cancelled', updated_at = NOW() WHERE id = $1`, id,
+		); err != nil {
+			return false, fmt.Errorf("cancel subscription (vm gone): %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return false, fmt.Errorf("commit cancel (vm gone): %w", err)
+		}
+		return false, nil
+	}
+	if _, err := tx.ExecContext(ctx,
 		`UPDATE vm_subscriptions
 		 SET status = 'active',
 		     paid_until = $1,
 		     suspended_at = NULL,
 		     grace_until = NULL,
 		     updated_at = NOW()
-		 WHERE id = $2`, paidUntil, id)
-	if err != nil {
-		return fmt.Errorf("admin reactivate subscription: %w", err)
+		 WHERE id = $2`, paidUntil, id); err != nil {
+		return false, fmt.Errorf("admin reactivate subscription: %w", err)
 	}
-	return nil
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("commit admin reactivate: %w", err)
+	}
+	return true, nil
+}
+
+// RestoreOutcome 描述欠费回收订阅在 VM restore 时的补扣结果。
+type RestoreOutcome int
+
+const (
+	// RestoreNoop 无 cancelled 订阅可恢复（旧数据 / 并发被抢）。
+	RestoreNoop RestoreOutcome = iota
+	// RestoreReactivated 补扣成功，订阅恢复 active。
+	RestoreReactivated
+	// RestoreInsufficient 余额不足，拒绝恢复，订阅保持 cancelled（不免费续期）。
+	RestoreInsufficient
+)
+
+// RestoreChargedByVM 决策#1：欠费回收（grace expire 留下的 cancelled）订阅在 VM
+// restore 时不免费恢复，必须补扣一个周期。单事务内：锁定该 VM 最新一条 cancelled
+// 订阅 → 锁用户余额 → 余额不足则拒绝（保持 cancelled）→ 余额够则扣款 + 写
+// transactions + billing_charges(paid) + 恢复 active（paid_until=now+period）。
+//
+// 金额统一 math.Round 到 2 位，与 billing.RoundMoney 同口径，保证 balance /
+// transactions / billing_charges 三处一致。
+func (r *SubscriptionRepo) RestoreChargedByVM(ctx context.Context, vmID int64, now time.Time) (RestoreOutcome, *model.VMSubscription, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return RestoreNoop, nil, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	var sub model.VMSubscription
+	row := tx.QueryRowContext(ctx,
+		`SELECT `+subSelectCols+`
+		 FROM vm_subscriptions
+		 WHERE vm_id = $1 AND status = 'cancelled'
+		 ORDER BY id DESC LIMIT 1
+		 FOR UPDATE`, vmID)
+	if err := scanSubscription(row, &sub); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return RestoreNoop, nil, nil // 无 cancelled 行 / 并发被抢
+		}
+		return RestoreNoop, nil, fmt.Errorf("lock cancelled sub: %w", err)
+	}
+
+	amount, err := subChargeAmount(&sub)
+	if err != nil {
+		return RestoreNoop, nil, err
+	}
+	period := model.BillingPeriodDuration(sub.Period)
+	if period == 0 {
+		return RestoreNoop, nil, fmt.Errorf("sub %d: invalid period %q", sub.ID, sub.Period)
+	}
+
+	var balance float64
+	if err := tx.QueryRowContext(ctx,
+		`SELECT balance FROM users WHERE id = $1 FOR UPDATE`, sub.UserID,
+	).Scan(&balance); err != nil {
+		return RestoreNoop, nil, fmt.Errorf("lock user: %w", err)
+	}
+	if balance < amount {
+		// 余额不足 → 拒绝恢复，订阅保持 cancelled，绝不免费续期。
+		return RestoreInsufficient, &sub, nil
+	}
+
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE users SET balance = balance - $1, updated_at = NOW() WHERE id = $2`,
+		amount, sub.UserID,
+	); err != nil {
+		return RestoreNoop, nil, fmt.Errorf("deduct balance: %w", err)
+	}
+	var txID int64
+	if err := tx.QueryRowContext(ctx,
+		`INSERT INTO transactions (user_id, amount, type, description)
+		 VALUES ($1, $2, 'charge', $3) RETURNING id`,
+		sub.UserID, -amount, fmt.Sprintf("订阅 #%d %s 欠费恢复补扣", sub.ID, sub.Period),
+	).Scan(&txID); err != nil {
+		return RestoreNoop, nil, fmt.Errorf("insert transaction: %w", err)
+	}
+	chargeDate := now.UTC().Truncate(24 * time.Hour)
+	// billing_charges 幂等：同 (sub, charge_date) 已存在（当日重复 restore）时
+	// DO UPDATE 翻 paid 并关联本次 tx，避免唯一冲突且保持三处金额一致。
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO billing_charges (subscription_id, charge_date, amount, status, transaction_id)
+		 VALUES ($1, $2, $3, 'paid', $4)
+		 ON CONFLICT (subscription_id, charge_date)
+		 DO UPDATE SET amount = EXCLUDED.amount, status = 'paid', transaction_id = EXCLUDED.transaction_id`,
+		sub.ID, chargeDate, amount, txID,
+	); err != nil {
+		return RestoreNoop, nil, fmt.Errorf("insert billing charge: %w", err)
+	}
+	newPaidUntil := now.Add(period)
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE vm_subscriptions
+		 SET status = 'active', paid_until = $1,
+		     suspended_at = NULL, grace_until = NULL, updated_at = NOW()
+		 WHERE id = $2`, newPaidUntil, sub.ID,
+	); err != nil {
+		return RestoreNoop, nil, fmt.Errorf("reactivate sub: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return RestoreNoop, nil, fmt.Errorf("commit restore charge: %w", err)
+	}
+	sub.Status = model.SubscriptionStatusActive
+	sub.PaidUntil = newPaidUntil
+	sub.SuspendedAt = nil
+	sub.GraceUntil = nil
+	return RestoreReactivated, &sub, nil
+}
+
+// vmAliveTx 事务内判断 VM 是否仍存活：未 trashed 且状态非 deleted/gone；
+// 行不存在（已硬删）同样视为已消失。reactivate 前的存活校验用。
+func vmAliveTx(ctx context.Context, tx *sql.Tx, vmID int64) (bool, error) {
+	var status string
+	var trashedAt sql.NullTime
+	err := tx.QueryRowContext(ctx,
+		`SELECT status, trashed_at FROM vms WHERE id = $1`, vmID,
+	).Scan(&status, &trashedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if trashedAt.Valid {
+		return false, nil
+	}
+	if status == model.VMStatusDeleted || status == "gone" {
+		return false, nil
+	}
+	return true, nil
+}
+
+// subChargeAmount 按 period 选 daily/monthly rate 并 math.Round 到 2 位。
+// 与 billing.chargeAmount 同口径（repository 不反向 import billing，故内联）。
+func subChargeAmount(s *model.VMSubscription) (float64, error) {
+	switch s.Period {
+	case model.BillingPeriodDaily:
+		if s.DailyRate == nil || *s.DailyRate <= 0 {
+			return 0, fmt.Errorf("sub %d: daily_rate missing or non-positive", s.ID)
+		}
+		return math.Round(*s.DailyRate*100) / 100, nil
+	case model.BillingPeriodMonthly:
+		if s.MonthlyRate == nil || *s.MonthlyRate <= 0 {
+			return 0, fmt.Errorf("sub %d: monthly_rate missing or non-positive", s.ID)
+		}
+		return math.Round(*s.MonthlyRate*100) / 100, nil
+	default:
+		return 0, fmt.Errorf("sub %d: unknown period %q", s.ID, s.Period)
+	}
 }

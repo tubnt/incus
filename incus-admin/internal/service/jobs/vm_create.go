@@ -20,17 +20,18 @@ import (
 // vmCreateExecutor 执行一次 vm.create 的全部步骤。前置假设：
 //   - handler 已同步完成 IP 分配 + INSERT vms row(status='creating')，并把 vm_id 回写 job
 //   - handler 已 PayWithBalance 把订单推到 paid → provisioning，余额已扣
+//
 // executor 只负责"提交 Incus → 等创建 → 等启动 → 写终态"。
 type vmCreateExecutor struct{}
 
 const (
-	stepSubmit       = "submit_instance"
-	stepWaitCreate   = "wait_create"
-	stepStart        = "start_instance"
-	stepWaitStart    = "wait_start"
+	stepSubmit        = "submit_instance"
+	stepWaitCreate    = "wait_create"
+	stepStart         = "start_instance"
+	stepWaitStart     = "wait_start"
 	stepWaitCloudInit = "wait_cloud_init" // OPS-051 / PLAN-052
-	stepVerifyReady  = "verify_ready"     // OPS-051 / PLAN-052
-	stepFinalize     = "finalize"
+	stepVerifyReady   = "verify_ready"    // OPS-051 / PLAN-052
+	stepFinalize      = "finalize"
 )
 
 func (e *vmCreateExecutor) Run(ctx context.Context, rt *Runtime, job *model.ProvisioningJob) error {
@@ -129,7 +130,9 @@ func (e *vmCreateExecutor) Run(ctx context.Context, rt *Runtime, job *model.Prov
 		// fingerprint 内部解析路径走 admin-only 校验）。
 		aliasResp, aerr := client.APIGet(ctx, fmt.Sprintf("/1.0/images/aliases/%s?project=%s", imageAlias, params.Project))
 		if aerr == nil && aliasResp != nil && len(aliasResp.Metadata) > 0 {
-			var meta struct{ Target string `json:"target"` }
+			var meta struct {
+				Target string `json:"target"`
+			}
 			if jerr := json.Unmarshal(aliasResp.Metadata, &meta); jerr == nil && meta.Target != "" {
 				delete(imageSource, "alias")
 				imageSource["fingerprint"] = meta.Target
@@ -450,6 +453,15 @@ func (e *vmCreateExecutor) Rollback(ctx context.Context, rt *Runtime, job *model
 		}
 	}
 
+	// 6) P1-4：取消该 VM 的订阅（PLAN-054 计费）。异步创建失败时若不销订阅，
+	//    billing worker 仍会按周期扣费产生"幽灵扣费"。CancelByVM 只动 active 行
+	//    且幂等（0 行也不报错）。订单已在步骤 4 cancelled，订阅随之作废。
+	if rt.deps.Subscriptions != nil && job.VMID != nil {
+		if _, err := rt.deps.Subscriptions.CancelByVM(ctx, *job.VMID); err != nil {
+			slog.Error("rollback cancel subscription failed", "job_id", job.ID, "vm_id", *job.VMID, "error", err)
+		}
+	}
+
 	// pma-cr H-3：rollback 路径同样显式 Wipe
 	if taken := rt.takeParams(job.ID); taken != nil && taken.Credential != nil {
 		taken.Credential.Wipe()
@@ -616,11 +628,13 @@ func generateMAC() string {
 
 // buildWindowsNetworkConfigV1 生成 cloud-init network-config v1（cloudbase-init
 // NoCloud 唯一支持的格式）。用 mac_address 匹配比 name/index 更可靠。
-//   subnetCIDR 形如 "26"（仅前缀位数）或 "192.168.1.0/26"；
-//   兼容历史调用，本函数仅取 prefix length。
+//
+//	subnetCIDR 形如 "26"（仅前缀位数）或 "192.168.1.0/26"；
+//	兼容历史调用，本函数仅取 prefix length。
 //
 // Cloudbase-init NoCloudConfigDriveService 引用：
-//   https://cloudbase-init.readthedocs.io/en/latest/services.html#nocloud-configuration-drive
+//
+//	https://cloudbase-init.readthedocs.io/en/latest/services.html#nocloud-configuration-drive
 func buildWindowsNetworkConfigV1(mac, ip, subnetCIDR, gateway string) string {
 	prefix := subnetCIDR
 	if i := strings.LastIndex(subnetCIDR, "/"); i >= 0 {
@@ -752,9 +766,9 @@ Write-Output 'incus-admin: windows cloud-init OK + ip watchdog scheduled'
 	body := map[string]any{
 		"command":            []string{"powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps},
 		"wait-for-websocket": false,
-		"interactive":       false,
-		"width":             80,
-		"height":            25,
+		"interactive":        false,
+		"width":              80,
+		"height":             25,
 	}
 	// OPS-051 测试发现：PS 多行 here-string 经 incus exec 传入时含 `$false`
 	// 等被某层 shell/JSON 转义破坏 → New-NetIPAddress 静默失败 →

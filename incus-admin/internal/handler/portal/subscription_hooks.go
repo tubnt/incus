@@ -30,9 +30,15 @@ func cancelSubscriptionOnTrash(ctx context.Context, r *http.Request, subs *repos
 	audit(ctx, r, "subscription_cancelled", "vm", vmID, map[string]any{"rows": n})
 }
 
-// reactivateSubscriptionOnRestore 在 VM restore 成功后把最新一条 cancelled
-// 订阅恢复为 active 并把 paid_until 重置为 NOW + 周期。重置是免费"恢复"语义
-// —— restore 不再扣费，相当于把 cancelled 之前剩余的窗口延长成一个完整周期。
+// reactivateSubscriptionOnRestore 在 VM restore 成功后恢复该 VM 最新一条
+// cancelled 订阅。区分 cancel 原因（决策#1，绝不免费续期）：
+//
+//   - 用户主动 trash（active → cancelled，suspended_at 为空）：免费"恢复"语义
+//     —— 不扣费，paid_until 重置为 NOW + 周期。用户 trash 前已付的窗口本就有效，
+//     恢复到一个完整周期是对称、公平的。
+//   - 系统欠费回收（suspended → cancelled，suspended_at 非空）：restore 必须
+//     补扣一个周期；余额不足则拒绝（订阅保持 cancelled），不得免费续期。
+//
 // 与 trash 对称，失败仅记日志，不阻塞 restore 主路径。
 func reactivateSubscriptionOnRestore(ctx context.Context, r *http.Request, subs *repository.SubscriptionRepo, vmID int64) {
 	if subs == nil {
@@ -57,6 +63,36 @@ func reactivateSubscriptionOnRestore(ctx context.Context, r *http.Request, subs 
 		slog.Error("restore: invalid sub period", "vm_id", vmID, "sub_id", latest.ID, "period", latest.Period)
 		return
 	}
+
+	// suspended_at 非空 = 该订阅曾被欠费挂起后回收（grace expire 只改 status，保留
+	// suspended_at）。此类订阅 restore 必须补扣，不能免费恢复。
+	if latest.SuspendedAt != nil {
+		outcome, sub, err := subs.RestoreChargedByVM(ctx, vmID, time.Now())
+		if err != nil {
+			slog.Error("charged restore on arrears sub failed", "vm_id", vmID, "sub_id", latest.ID, "error", err)
+			return
+		}
+		switch outcome {
+		case repository.RestoreReactivated:
+			audit(ctx, r, "subscription_restored", "vm", vmID, map[string]any{
+				"sub_id":     latest.ID,
+				"period":     latest.Period,
+				"paid_until": sub.PaidUntil,
+				"charged":    true,
+			})
+		case repository.RestoreInsufficient:
+			slog.Warn("restore denied: insufficient balance for arrears sub", "vm_id", vmID, "sub_id", latest.ID)
+			audit(ctx, r, "subscription_restore_denied", "vm", vmID, map[string]any{
+				"sub_id": latest.ID,
+				"reason": "insufficient_balance",
+			})
+		default:
+			// RestoreNoop：并发被抢 / 无 cancelled 行，静默返回
+		}
+		return
+	}
+
+	// 用户主动 trash 的免费恢复路径（原语义）。
 	paidUntil := time.Now().Add(dur)
 	n, err := subs.ReactivateByVM(ctx, vmID, paidUntil)
 	if err != nil {
