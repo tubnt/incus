@@ -3,6 +3,7 @@ package middleware
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -40,6 +41,12 @@ var sensitiveRoutes = []sensitiveRoute{
 	// UX-007 / PLAN-051 follow-up: portal 用户重看初始密码（创建时生成的 root 密码）。
 	// vms.password 解密后明文外发，按 OWASP 高敏分类强制 step-up；audit 全记。
 	{method: http.MethodPost, path: regexp.MustCompile(`^/api/portal/services/\d+/initial-credentials$`)},
+	// PLAN-055 / OPS-052 §1：portal 支付接口。扣款前强制 step-up（本中间件已上提到
+	// portal+admin 公共 Group，故 /api/portal 也生效）；同时受 shadow 拒绝保护。
+	{method: http.MethodPost, path: regexp.MustCompile(`^/api/portal/orders/\d+/pay$`)},
+	// PLAN-055 / OPS-052 §2：单条改用户角色（提权 / 降权）是高敏动作，强制 step-up。
+	// 批量改角色 /api/admin/users:batch 已在下方覆盖；此处补单条 PUT。
+	{method: http.MethodPut, path: regexp.MustCompile(`^/api/admin/users/\d+/role$`)},
 	// PLAN-037: 批量冷迁移；destructive（停机迁移）+ 高 blast radius
 	{method: http.MethodPost, path: regexp.MustCompile(`^/api/admin/vms:migrate-batch$`)},
 	// PLAN-039 / OPS-043: enable-stateful 涉及重启 VM（用户感知停机）
@@ -90,16 +97,32 @@ func isSensitive(method, path string) bool {
 	return false
 }
 
-// RequireRecentAuthOnSensitive mounts once at the /api/admin router group and
-// only enforces step-up on requests matching sensitiveRoutes. Non-sensitive
-// admin operations pass straight through.
+// RequireRecentAuthOnSensitive mounts once at the portal+admin 公共 router group
+// and only enforces step-up on requests matching sensitiveRoutes. Non-sensitive
+// operations pass straight through.
 //
-// If lookup is nil (step-up not configured at startup), the middleware
-// becomes a no-op and logs nothing on each request — sensitive endpoints
-// remain reachable. This keeps the server bootable before OIDC env vars are
-// provisioned on new deployments.
-func RequireRecentAuthOnSensitive(lookup StepUpLookup, maxAge time.Duration) func(http.Handler) http.Handler {
+// lookup == nil 表示 step-up 未就绪，此时行为由 failClosed 决定：
+//
+//   - failClosed == false：OIDC 根本没配置（新部署尚未 provisioning env）。
+//     中间件降级为 no-op，敏感端点可达，保证 server 可启动。
+//   - failClosed == true：OIDC 已配置但 discovery 失败（PLAN-055 / OPS-052 §5）。
+//     此时不再 fail-open 静默放行，而是 fail-closed —— 所有敏感操作直接 503 拒绝，
+//     避免 step-up 保护因 IdP discovery 短暂故障被绕过。运维修复 OIDC 后重启即恢复。
+func RequireRecentAuthOnSensitive(lookup StepUpLookup, maxAge time.Duration, failClosed bool) func(http.Handler) http.Handler {
 	if lookup == nil {
+		if failClosed {
+			return func(next http.Handler) http.Handler {
+				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if !isSensitive(r.Method, r.URL.Path) {
+						next.ServeHTTP(w, r)
+						return
+					}
+					slog.Error("step-up unavailable (OIDC discovery failed at startup); rejecting sensitive operation (fail-closed)",
+						"method", r.Method, "path", r.URL.Path)
+					writeStepUpUnavailable(w)
+				})
+			}
+		}
 		return func(next http.Handler) http.Handler { return next }
 	}
 	return func(next http.Handler) http.Handler {
@@ -155,5 +178,17 @@ func writeStepUpRequired(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"error":    "step_up_required",
 		"redirect": redirect,
+	})
+}
+
+// writeStepUpUnavailable 在 fail-closed 模式下（OIDC 已配置但 discovery 失败）
+// 拒绝敏感操作。返回 503 而非 401：这不是"你需要重新认证"，而是"服务端 step-up
+// 子系统当前不可用"，前端不应据此发起 step-up 重定向（那样只会再失败一次）。
+func writeStepUpUnavailable(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusServiceUnavailable)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"error":   "step_up_unavailable",
+		"message": "Step-up authentication is temporarily unavailable; sensitive operations are blocked. Contact an operator.",
 	})
 }

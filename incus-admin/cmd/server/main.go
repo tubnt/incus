@@ -242,11 +242,23 @@ func runServer() {
 	// Step-up OIDC is optional; absence just disables sensitive-route protection.
 	// Init is outside the clusterMgr block because step-up has no cluster dependency.
 	var stepUpHandler server.StepUpHandler
+	// stepUpFailClosed：OIDC 已配置但 discovery 失败时置 true，令敏感路由 fail-closed
+	// 拒绝（见 middleware.RequireRecentAuthOnSensitive / PLAN-055 §5）。
+	var stepUpFailClosed bool
 	if cfg.Auth.OIDCIssuer != "" && cfg.Auth.OIDCClientID != "" && cfg.Auth.OIDCClientSecret != "" && cfg.Auth.StepUpCallbackURL != "" {
-		oidcClient, oidcErr := authcore.NewOIDCClient(context.Background(),
+		// PLAN-055 / OPS-052 §5：discovery 加 10s 超时。此前用 context.Background()
+		// 无超时，IdP 网络抖动会把整个进程启动无限期挂住。
+		oidcCtx, oidcCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		oidcClient, oidcErr := authcore.NewOIDCClient(oidcCtx,
 			cfg.Auth.OIDCIssuer, cfg.Auth.OIDCClientID, cfg.Auth.OIDCClientSecret, cfg.Auth.StepUpCallbackURL)
+		oidcCancel()
 		if oidcErr != nil {
-			slog.Warn("step-up OIDC discovery failed, disabled", "issuer", cfg.Auth.OIDCIssuer, "error", oidcErr)
+			// PLAN-055 / OPS-052 §5：OIDC 已配置却 discovery 失败 → fail-closed。
+			// 不再静默降级为 permissive（那会让 step-up 保护被 discovery 故障绕过），
+			// 而是让敏感操作全部被拒（503），逼运维修复 OIDC 后重启恢复。
+			slog.Error("step-up OIDC discovery failed; sensitive operations will be REJECTED (fail-closed) until OIDC recovers",
+				"issuer", cfg.Auth.OIDCIssuer, "error", oidcErr)
+			stepUpFailClosed = true
 		} else {
 			stateSecret := cfg.Auth.StepUpStateSecret
 			if stateSecret == "" {
@@ -496,8 +508,8 @@ func runServer() {
 	portalVMHandler := portal.NewVMHandler(vmSvc, vmRepo, sshKeyRepo, clusterMgr).
 		WithSubscriptions(subRepo) // PLAN-054 trash/restore 联动
 	orderHandler := portal.NewOrderHandler(orderRepo, productRepo, vmSvc, vmRepo, sshKeyRepo, clusterMgr).
-		WithQuotas(quotaRepo).         // OPS-021：购买前 quota 强制
-		WithSubscriptions(subRepo)     // PLAN-054：订单 pay → vm_subscriptions 行写入
+		WithQuotas(quotaRepo).     // OPS-021：购买前 quota 强制
+		WithSubscriptions(subRepo) // PLAN-054：订单 pay → vm_subscriptions 行写入
 	// PLAN-038 / OPS-041 Phase B/C：AI provider —— anthropic / disabled 二选一。
 	// AIConfig.Provider == "disabled"（默认）→ disabledProvider，所有 AI endpoint
 	// 返 503，前端按需隐藏入口。生产没买 API key 也能正常跑。
@@ -507,8 +519,8 @@ func runServer() {
 		WithPersistence(clusterRepo).
 		WithNodeCredentials(nodeCredRepo).
 		WithTopology(scheduler, vmRepo). // PLAN-037 / OPS-040
-		WithAlerts(alertRepo).            // PLAN-039 / OPS-044
-		WithAIProvider(aiProvider)        // PLAN-038 / OPS-041 Tier 2
+		WithAlerts(alertRepo).           // PLAN-039 / OPS-044
+		WithAIProvider(aiProvider)       // PLAN-038 / OPS-041 Tier 2
 	// PLAN-051 §2-K / Session-2 F-13 + F-14：aiRate 与 probeCache 内存 map
 	// 后台周期 GC，防止低活跃用户 entry / 过期 probe 记录永久驻留 → 内存线性增长。
 	clusterMgmtHandler.StartAIRateGC(workerCtx, 30*time.Minute)
@@ -527,36 +539,36 @@ func runServer() {
 		)
 	}
 
-	srv := server.New(cfg, userLookup, roleLookup, balanceLookup, stepUpLookup, auditWriter, server.Handlers{
-		Admin:     adminVMHandler,
-		Portal:    portalVMHandler,
-		Users:     userHandlerWithBilling(portal.NewUserHandler(userRepo), billingSvc),
-		IPPools:   portal.NewIPPoolHandler(clusterMgr),
-		Console:   portal.NewConsoleHandler(clusterMgr, vmRepo),
-		Snaps:     portal.NewSnapshotHandler(clusterMgr, vmRepo),
-		Metrics:   portal.NewMetricsHandler(clusterMgr, vmRepo),
-		SSHKeys:   portal.NewSSHKeyHandler(sshKeyRepo),
-		Tickets:   portal.NewTicketHandler(ticketRepo),
-		Products:  portal.NewProductHandler(productRepo),
-		Orders:    orderHandler,
-		Subscriptions: portal.NewSubscriptionHandler(subRepo),
-		Audit:     portal.NewAuditHandler(auditRepo),
-		APITokens: portal.NewAPITokenHandler(apiTokenRepo),
-		Invoices:    portal.NewInvoiceHandler(invoiceRepo),
-		ClusterMgmt: clusterMgmtHandler,
-		Ceph:        portal.NewCephHandler(cfg.Monitor.CephSSHHost, cfg.Monitor.CephSSHUser, cfg.Monitor.CephSSHKey, cfg.Monitor.SSHKnownHostsFile),
-		NodeOps:     portal.NewNodeOpsHandler(cfg.Monitor.CephSSHUser, cfg.Monitor.CephSSHKey, cfg.Monitor.SSHKnownHostsFile),
+	srv := server.New(cfg, userLookup, roleLookup, balanceLookup, stepUpLookup, stepUpFailClosed, auditWriter, server.Handlers{
+		Admin:           adminVMHandler,
+		Portal:          portalVMHandler,
+		Users:           userHandlerWithBilling(portal.NewUserHandler(userRepo), billingSvc),
+		IPPools:         portal.NewIPPoolHandler(clusterMgr),
+		Console:         portal.NewConsoleHandler(clusterMgr, vmRepo),
+		Snaps:           portal.NewSnapshotHandler(clusterMgr, vmRepo),
+		Metrics:         portal.NewMetricsHandler(clusterMgr, vmRepo),
+		SSHKeys:         portal.NewSSHKeyHandler(sshKeyRepo),
+		Tickets:         portal.NewTicketHandler(ticketRepo),
+		Products:        portal.NewProductHandler(productRepo),
+		Orders:          orderHandler,
+		Subscriptions:   portal.NewSubscriptionHandler(subRepo),
+		Audit:           portal.NewAuditHandler(auditRepo),
+		APITokens:       portal.NewAPITokenHandler(apiTokenRepo),
+		Invoices:        portal.NewInvoiceHandler(invoiceRepo),
+		ClusterMgmt:     clusterMgmtHandler,
+		Ceph:            portal.NewCephHandler(cfg.Monitor.CephSSHHost, cfg.Monitor.CephSSHUser, cfg.Monitor.CephSSHKey, cfg.Monitor.SSHKnownHostsFile),
+		NodeOps:         portal.NewNodeOpsHandler(cfg.Monitor.CephSSHUser, cfg.Monitor.CephSSHKey, cfg.Monitor.SSHKnownHostsFile),
 		NodeCredentials: portal.NewNodeCredentialHandler(nodeCredRepo),
-		Quotas:      portal.NewQuotaHandler(quotaRepo, vmRepo),
-		Events:      portal.NewEventsHandler(clusterMgr),
-		Healing:     portal.NewHealingHandler(healingRepo, clusterMgr),
-		OSTemplates: portal.NewOSTemplateHandler(osTemplateRepo),
-		Firewall:    portal.NewFirewallHandler(firewallRepo, service.NewFirewallService(clusterMgr, vmSvc), vmRepo, clusterMgr).WithQuotas(quotaRepo),
-		FloatingIPs: portal.NewFloatingIPHandler(floatingIPRepo, service.NewFloatingIPService(clusterMgr), vmRepo, clusterRepo, clusterMgr),
-		Rescue:      portal.NewRescueHandler(vmRepo, service.NewRescueService(vmSvc, clusterMgr), clusterMgr),
-		Jobs:        jobsHandlerOrNil(jobsRuntime, jobRepo, vmRepo, aiProvider),
-		Auth:        stepUpHandler,
-		Shadow:      shadowHandler,
+		Quotas:          portal.NewQuotaHandler(quotaRepo, vmRepo),
+		Events:          portal.NewEventsHandler(clusterMgr),
+		Healing:         portal.NewHealingHandler(healingRepo, clusterMgr),
+		OSTemplates:     portal.NewOSTemplateHandler(osTemplateRepo),
+		Firewall:        portal.NewFirewallHandler(firewallRepo, service.NewFirewallService(clusterMgr, vmSvc), vmRepo, clusterMgr).WithQuotas(quotaRepo),
+		FloatingIPs:     portal.NewFloatingIPHandler(floatingIPRepo, service.NewFloatingIPService(clusterMgr), vmRepo, clusterRepo, clusterMgr),
+		Rescue:          portal.NewRescueHandler(vmRepo, service.NewRescueService(vmSvc, clusterMgr), clusterMgr),
+		Jobs:            jobsHandlerOrNil(jobsRuntime, jobRepo, vmRepo, aiProvider),
+		Auth:            stepUpHandler,
+		Shadow:          shadowHandler,
 		// PLAN-041 / INFRA-009 监控告警闭环
 		NotifyChannels: portal.NewNotifyChannelHandler(notifyChannelRepo, notifyRegistry),
 		AlertRules:     portal.NewAlertRuleHandler(alertRuleRepo, alertDeliveryRepo),
@@ -1035,7 +1047,9 @@ func (a userBalanceAdapter) ListBelowBalance(ctx context.Context, threshold floa
 }
 
 // jobFailureAdapter 把 ProvisioningJobRepo.CountFailedJobsSince 转成 worker.JobFailureCounter。
-type jobFailureAdapter struct{ repo *repository.ProvisioningJobRepo }
+type jobFailureAdapter struct {
+	repo *repository.ProvisioningJobRepo
+}
 
 func (a jobFailureAdapter) CountFailedSince(ctx context.Context, since time.Time) (int, error) {
 	if a.repo == nil {
