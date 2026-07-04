@@ -211,6 +211,8 @@ func runServer() {
 	portal.SetOSTemplateRepo(osTemplateRepo)
 	portal.SetAppEnv(cfg.Server.Env)
 	middleware.SetEmergencySecret(cfg.Auth.EmergencyToken)
+	// PLAN-055 决策#6：可选前置代理信任加固。空 → 关闭，行为不变。
+	middleware.SetProxySharedSecret(cfg.Server.ProxySharedSecret)
 
 	// OPS-022：vms.password 字段 AES-256-GCM 加密。空 key → passthrough。
 	if err := authcore.SetPasswordEncryptionKey(cfg.Auth.PasswordEncryptionKey); err != nil {
