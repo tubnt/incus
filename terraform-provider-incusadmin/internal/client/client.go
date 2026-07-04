@@ -80,7 +80,9 @@ func (c *Client) Do(ctx context.Context, method, path string, in any, out any) e
 		if msg == "" {
 			msg = string(respBody)
 		}
-		return fmt.Errorf("incus-admin %s %s: %d %s", method, path, resp.StatusCode, msg)
+		// 返回结构化错误，携带 StatusCode 供上层按状态码判断（如 404 幂等删除），
+		// 避免上层用 strings.Contains(err.Error(), "404") 这类脆弱匹配。
+		return &APIError{Method: method, Path: path, StatusCode: resp.StatusCode, Message: msg}
 	}
 	if out != nil && len(respBody) > 0 {
 		if err := json.Unmarshal(respBody, out); err != nil {
@@ -93,6 +95,26 @@ func (c *Client) Do(ctx context.Context, method, path string, in any, out any) e
 // ErrStepUpRequired 是后端返回 401 + step_up_required 时的标志错误。
 // Terraform provider 不应自动重试（不能开浏览器走 OIDC），让用户先在 UI 完成 step-up。
 var ErrStepUpRequired = errors.New("step-up authentication required (please re-authenticate via web UI within 5 minutes, then retry)")
+
+// APIError 承载后端非 2xx 响应的结构化信息。上层可用 errors.As 取出 StatusCode
+// 做幂等判断（典型场景：Delete 时把 404 视为删除成功）。
+type APIError struct {
+	Method     string
+	Path       string
+	StatusCode int
+	Message    string
+}
+
+func (e *APIError) Error() string {
+	return fmt.Sprintf("incus-admin %s %s: %d %s", e.Method, e.Path, e.StatusCode, e.Message)
+}
+
+// IsNotFound 判断 err 是否为后端 404（资源已不存在）。
+// 用于 Delete 幂等（已不存在=删除成功）与 Read drift 检测（从 state 移除）。
+func IsNotFound(err error) bool {
+	var apiErr *APIError
+	return errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound
+}
 
 // ============================================================================
 // Resource I/O 类型（与 incus-admin handler DTO 对齐）。
@@ -130,13 +152,16 @@ type FirewallGroup struct {
 	Rules       []FirewallRule `json:"rules,omitempty"`
 }
 
+// FloatingIP 与后端 model.FloatingIP 的响应键逐字段对齐：
+//   - cluster_id：所属 cluster
+//   - bound_vm_id：绑定的 VM（后端键为 bound_vm_id，非 vm_id）
 type FloatingIP struct {
-	ID          int64   `json:"id,omitempty"`
-	IP          string  `json:"ip,omitempty"`
-	UserID      *int64  `json:"user_id,omitempty"`
-	VMID        *int64  `json:"vm_id,omitempty"`
-	Status      string  `json:"status,omitempty"`
-	Description string  `json:"description,omitempty"`
+	ID          int64  `json:"id,omitempty"`
+	ClusterID   int64  `json:"cluster_id,omitempty"`
+	IP          string `json:"ip,omitempty"`
+	BoundVMID   *int64 `json:"bound_vm_id,omitempty"`
+	Status      string `json:"status,omitempty"`
+	Description string `json:"description,omitempty"`
 }
 
 type User struct {
