@@ -16,7 +16,12 @@
 #   <raw output>
 #
 # Sections (in this order): hostname, os-release, kernel, cpu, mem,
-# ip-link, ip-addr, ip-route, disks, incus-version, ceph-version.
+# ip-link, ip-addr, ip-route, disks, incus-version, ceph-version,
+# lspci-eth, ethtool, numa.
+#
+# PLAN-038 / OPS-041 Phase A 增段：lspci-eth (NIC PCI 列表) / ethtool
+# (每 NIC 速率/驱动/link) / numa (NUMA topology)。这些都是 ranker 评分
+# 输入，缺失时 ranker 退化为 0 中性值。
 # =============================================================================
 set -u
 
@@ -73,5 +78,29 @@ if command -v ceph >/dev/null 2>&1; then
 else
     echo MISSING
 fi
+
+emit lspci-eth
+# PLAN-038 / OPS-041 Phase A：lspci -mm 列出 ethernet 设备（NIC PCI ID + vendor + model）
+# -mm 输出比 -nn 更紧凑，admin 端用空格分词解析。lspci 普遍存在，缺失则空段。
+if command -v lspci >/dev/null 2>&1; then
+    safe lspci -mm 2>/dev/null | grep -iE '\"(ethernet|network)' || true
+fi
+
+emit ethtool
+# PLAN-038 / OPS-041 Phase A：每个非 lo 网卡的 ethtool 输出（speed/duplex/link
+# detected）+ ethtool -i（driver/bus-info）。每段以 ===<ifname>=== 分隔；admin
+# 端按 ifname 拆解。ethtool 大多 distro 默认有；缺失则空段。
+if command -v ethtool >/dev/null 2>&1; then
+    for nic in $(ip -o link show 2>/dev/null | awk -F': ' '$2 != "lo" {print $2}' | sed 's/@.*//' | sort -u); do
+        echo "===${nic}==="
+        safe ethtool "$nic" 2>/dev/null
+        echo "---driver---"
+        safe ethtool -i "$nic" 2>/dev/null
+    done
+fi
+
+emit numa
+# PLAN-038 / OPS-041 Phase A：NUMA 节点与 socket 数（用于 ranker NUMA-aware 提示）
+safe lscpu 2>/dev/null | grep -E 'NUMA|^Socket' || true
 
 emit end
