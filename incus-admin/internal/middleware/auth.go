@@ -41,9 +41,10 @@ type TokenValidator func(ctx context.Context, token string) (userID int64, err e
 type ShadowVerifier func(cookieValue string) (actorID int64, actorEmail string, targetID int64, targetEmail string, err error)
 
 var (
-	tokenValidator  TokenValidator
-	emergencySecret string
-	shadowVerifier  ShadowVerifier
+	tokenValidator    TokenValidator
+	emergencySecret   string
+	shadowVerifier    ShadowVerifier
+	proxySharedSecret string
 )
 
 func SetTokenValidator(v TokenValidator) {
@@ -56,6 +57,54 @@ func SetEmergencySecret(secret string) {
 
 func SetShadowVerifier(v ShadowVerifier) {
 	shadowVerifier = v
+}
+
+// SetProxySharedSecret 接线 PLAN-055 决策#6 的可选前置代理信任加固开关。
+// 空字符串（默认）= 关闭：ProxyAuth 完全跳过签名校验，行为与现网一致。
+func SetProxySharedSecret(secret string) {
+	proxySharedSecret = secret
+}
+
+// untrustedProxyHeaders 列出仅应由受信前置代理注入、客户端绝不可伪造的头。
+// 当 PROXY_SHARED_SECRET 已开启且请求未通过签名校验时，这些头会被剥离，
+// 使下游只信任直连 RemoteAddr（IP 场景回退直连），且伪造的身份头无法冒充登录。
+//
+// 注意：故意不含 Authorization / Cookie —— Bearer token 与 emergency/shadow
+// cookie 都是自带 HMAC/token 的自证明凭据，不依赖"代理是否可信"，剥离它们
+// 反而会误伤合法直连的 API/应急通道。
+var untrustedProxyHeaders = []string{
+	"X-Forwarded-For",      // 客户端真实 IP（realClientIP / 限流 key 依赖）
+	"X-Real-Ip",            // chi RealIP 的备选来源
+	"X-Auth-Request-Email", // oauth2-proxy 注入的登录身份
+	"X-Forwarded-Email",    // oauth2-proxy 身份的兼容别名
+}
+
+// proxyHeadersTrusted 判定本请求携带的代理头是否可信。
+//
+//   - proxySharedSecret 为空（默认）：始终返回 true —— 加固关闭，零行为变化。
+//   - 已开启：要求 X-Proxy-Signature 头存在且与共享密钥 constant-time 相等。
+//
+// 采用"静态共享密钥直接比对"而非动态 HMAC，是因为签名由反代（nginx/Caddy 等）
+// 用一行静态 proxy_set_header 注入即可，运维成本最低，符合决策#6 的 opt-in 定位。
+func proxyHeadersTrusted(r *http.Request) bool {
+	if proxySharedSecret == "" {
+		return true
+	}
+	sig := r.Header.Get("X-Proxy-Signature")
+	if sig == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(sig), []byte(proxySharedSecret)) == 1
+}
+
+// stripUntrustedProxyHeaders 在签名校验失败时剥离可伪造的代理头（保守方案：
+// 不直接拒绝请求，避免运维刚开启开关、反代尚未配好签名时把现网打挂；但绝不
+// 采信伪造头——IP 回退直连 RemoteAddr，冒充的身份头被清空后 oauth2-proxy
+// header 认证自然回落 401）。
+func stripUntrustedProxyHeaders(r *http.Request) {
+	for _, h := range untrustedProxyHeaders {
+		r.Header.Del(h)
+	}
 }
 
 // verifyEmergencyCookie 校验 emergency cookie。两种格式兼容：
@@ -145,6 +194,15 @@ func getLegacyDeadline() time.Time {
 
 func ProxyAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// PLAN-055 决策#6：可选的前置代理信任加固（opt-in）。默认关闭时
+		// proxyHeadersTrusted 恒为 true，整段短路，行为与现网完全一致。
+		// 开启后：签名校验不通过 → 剥离伪造的 X-Forwarded-For / 身份头，
+		// 与 WP-A 的 TRUSTED_PROXIES 语义叠加（本层只做签名闸，不改其网段判定）。
+		if !proxyHeadersTrusted(r) {
+			slog.Warn("proxy signature check failed; stripping untrusted proxy headers", "remote", r.RemoteAddr, "path", r.URL.Path)
+			stripUntrustedProxyHeaders(r)
+		}
+
 		// Shadow session cookie takes precedence over every other auth path.
 		// When present and valid, we treat the request as originating from
 		// the *target* user (so handler business logic is scoped correctly)
