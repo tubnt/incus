@@ -65,7 +65,7 @@ func (c *Client) Do(ctx context.Context, method, path string, in any, out any) e
 	if err != nil {
 		return fmt.Errorf("http %s %s: %w", method, path, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
 	if resp.StatusCode >= 400 {
 		var perr struct {
