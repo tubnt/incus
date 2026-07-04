@@ -70,7 +70,8 @@
       "ruleSource": "Source",
       "saveRules": "Save rules",
       "saved": "Rules saved",
-      "title": "Firewall Groups"
+      "title": "Firewall Groups",
+      "deleteMessage": "Delete firewall group \"{{name}}\"? Bound VM NICs will be detached automatically."
     },
     "floatingIPs": {
       "allocate": "Allocate IP",
@@ -103,7 +104,11 @@
       "releaseTitle": "Release Floating IP",
       "released": "Released",
       "status": "Status",
-      "title": "Floating IPs"
+      "title": "Floating IPs",
+      "attached": "{{ip}} → {{vm}}",
+      "attachMessage": "Attach {{ip}} to VM #{{vm}}?",
+      "detachMessage": "Detach {{ip}} from its VM?",
+      "releaseMessage": "Release {{ip}}? The IP will be reclaimed and can be allocated again."
     },
     "goToAllVms": "Go to All VMs",
     "hostInvalid": "Enter a valid IPv4, IPv6, or hostname",
@@ -133,7 +138,8 @@
       "selectCluster": "Select cluster",
       "title": "IP Pools",
       "used": "used",
-      "vlanPlaceholder": "VLAN ID"
+      "vlanPlaceholder": "VLAN ID",
+      "description": "Manage the internal/public IP pools that can be allocated to VMs."
     },
     "ipRegistry": {
       "assignedCount": "{{count}} addresses assigned",
@@ -141,7 +147,8 @@
       "empty": "No IP addresses assigned.",
       "ip": "IP Address",
       "searchPlaceholder": "Search by IP or VM name...",
-      "title": "IP Registry"
+      "title": "IP Registry",
+      "description": "Global registry of allocated IP addresses; search by IP or VM name."
     },
     "maxDiskGb": "Max disk (GB)",
     "maxIps": "Max IPs",
@@ -177,7 +184,9 @@
       "enableStateful": "Enable stateful for {{n}} VM(s) (restart)",
       "statefulEnabledAll": "Stateful enabled on {{n}} VM(s) (restarted)",
       "statefulEnabledPartial": "{{ok}}/{{total}} succeeded, {{fail}} failed",
-      "liveNotice": "Live migration: no downtime; requires stateful + shared storage; same concurrency limits."
+      "liveNotice": "Live migration: no downtime; requires stateful + shared storage; same concurrency limits.",
+      "batchEta": "Estimated total time {{lo}}-{{hi}} min",
+      "statefulPartialHint": "Partially failed, check the logs and retry"
     },
     "migrateFailed": "Migration failed",
     "migrateRun": "Migrate",
@@ -374,7 +383,8 @@
           "errorRateLimit": "Rate limit reached; please slow down",
           "errorSchema": "AI returned malformed schema; please retry",
           "errorGeneric": "AI request failed: {{msg}}"
-        }
+        },
+        "cta": "Add node (admin)"
       },
       "remove": {
         "title": "Remove Node",
@@ -422,7 +432,8 @@
         "hotCold": "Hot {{hot}} ↔ Cold {{cold}}",
         "move": "Migration",
         "reason": "Reason"
-      }
+      },
+      "downloadEnvScriptFailed": "Download failed: {{msg}}"
     },
     "nodeCredentials": {
       "title": "Node Credentials",
@@ -501,7 +512,10 @@
       "status": "Status",
       "supportsRescue": "Rescue supported",
       "title": "OS Templates",
-      "updated": "Saved"
+      "updated": "Saved",
+      "cloudInitHint": "disable_root / ssh_pwauth: false are not allowed. Other fields are merged into the system template. Reserved for AI generation.",
+      "cloudInitTemplate": "Advanced cloud-init injection (optional)",
+      "deleteMessage": "Delete template \"{{name}}\"?"
     },
     "prevPage": "Prev",
     "products": {
@@ -527,7 +541,8 @@
       "sortOrder": "Sort",
       "specs": "Specs",
       "status": "Status",
-      "title": "Plans & Products"
+      "title": "Plans & Products",
+      "deactivateMessage": "Deactivate \"{{name}}\"?"
     },
     "quota": "Quota",
     "quotaUpdateFailed": "Quota update failed",
@@ -619,7 +634,8 @@
       "rejectMessage": "Cancel order #{{orderId}}? This cannot be undone.",
       "expire": "Expire",
       "expireTitle": "Expire order",
-      "expireMessage": "Mark order #{{orderId}} as expired?"
+      "expireMessage": "Mark order #{{orderId}} as expired?",
+      "title": "Order approvals"
     },
     "subscriptions": {
       "title": "Subscriptions",
@@ -647,7 +663,8 @@
       "dismissed": "Alert #{{id}} dismissed"
     },
     "vmStatefulHint": "Live migration ready (migration.stateful=true)",
-    "migrateBtn": "Migrate"
+    "migrateBtn": "Migrate",
+    "roleUpdated": "Role updated"
   },
   "adminOverview": {
     "apiStatus": "API Status",
@@ -817,7 +834,12 @@
     "submitting": "Submitting...",
     "summary": "Summary",
     "view": "View",
-    "yes": "Yes"
+    "yes": "Yes",
+    "disable": "Disable",
+    "disabled": "Disabled",
+    "done": "Done",
+    "enable": "Enable",
+    "enabled": "Enabled"
   },
   "confirmDialog": {
     "cancel": "Cancel",
@@ -827,7 +849,9 @@
     "typeDowngrade": "Type DOWNGRADE to confirm",
     "typeRelease": "Type RELEASE to confirm",
     "typeToConfirm": "Type {{name}} to confirm",
-    "typeVmName": "Type VM name {{name}} to confirm"
+    "typeVmName": "Type VM name {{name}} to confirm",
+    "typeIPAddress": "Type the IP address \"{{ip}}\" to confirm",
+    "typeReleaseN": "Type \"{{phrase}}\" to confirm"
   },
   "console": {
     "backToVms": "← Back to VMs",
@@ -875,7 +899,8 @@
   "error": {
     "goHome": "Back to home",
     "notFound": "Page not found",
-    "signInRequired": "Please sign in to continue"
+    "signInRequired": "Please sign in to continue",
+    "mutationFailed": "Action failed"
   },
   "ha": {
     "noCluster": "No cluster configured.",
@@ -922,7 +947,9 @@
     "triggerManual": "Manual",
     "vmFrom": "From",
     "vmName": "Name",
-    "vmTo": "To"
+    "vmTo": "To",
+    "evacuateStartedToast": "Evacuation started",
+    "nodeRestoredToast": "Node restored"
   },
   "invoice": {
     "amount": "Amount",
@@ -1015,7 +1042,10 @@
     "provisioning": "Provisioning VM",
     "provisioningHint": "Live progress; you can leave this page and check from My VMs later.",
     "summaryYourPick": "Your selection",
-    "title": "Launch VM"
+    "title": "Launch VM",
+    "copyAll": "Copy all credentials",
+    "copyFailed": "Copy failed, please select manually",
+    "credentialsCopied": "Credentials copied"
   },
   "nav": {
     "admin": "Admin",
@@ -1077,7 +1107,8 @@
   "pendingIntent": {
     "message": "Detected an interrupted sensitive action: {{description}}\nResume now?",
     "replayed": "Replayed: {{description}}",
-    "title": "Resume the previous action?"
+    "title": "Resume the previous action?",
+    "interrupted": "Your \"{{description}}\" action was interrupted by re-authentication. Please start it again."
   },
   "product": {
     "name": "Name",
@@ -1113,7 +1144,8 @@
     "loginTitle": "Log in as this user (for audit / triage)",
     "reasonLabel": "Reason (required, audit log)",
     "reasonWarning": "You will be logged in as {{email}}; all actions are recorded under admin shadow audit. Please state the reason.",
-    "submit": "Confirm login"
+    "submit": "Confirm login",
+    "loginShort": "Shadow login"
   },
   "sidebar": {
     "backToUser": "Back to User Console",
@@ -1141,7 +1173,10 @@
     "restore": "Restore",
     "restoreMessage": "Restore {{vm}} to snapshot \"{{name}}\"? Current state will be lost.",
     "restoreTitle": "Restore snapshot",
-    "title": "Snapshots"
+    "title": "Snapshots",
+    "deleteAriaLabel": "Delete snapshot {{name}}",
+    "deleted": "Snapshot deleted",
+    "restored": "Restored from snapshot"
   },
   "sshKey": {
     "add": "Add Key",
@@ -1301,7 +1336,8 @@
     "topup": {
       "dailyLimit": "Daily cap {{limit}}",
       "quotaExceeded": "Daily quota exceeded (remaining {{remaining}})",
-      "usedToday": "Used today {{used}} / cap {{limit}}"
+      "usedToday": "Used today {{used}} / cap {{limit}}",
+      "quotaExceededHint": "Exceeds today's remaining quota (remaining {{remaining}})"
     }
   },
   "vm": {
@@ -1471,7 +1507,15 @@
     "filterByNode": "Filter by node",
     "allNodes": "All nodes",
     "viewSiblingsOnNode": "View other VMs on {{node}}",
-    "locatedOnNode": "Running on node {{node}}"
+    "locatedOnNode": "Running on node {{node}}",
+    "openFullDetail": "Open full detail",
+    "peekPanelAria": "VM quick view: {{name}}",
+    "reinstallFailed": "Reinstall failed, the VM is marked as error. Please contact an administrator.",
+    "reinstallStarted": "Reinstall started, showing progress...",
+    "resetPwdConfirmMessage": "A new password will be generated for {{name}} and written via cloud-init / agent-exec. It is shown for only 20s, so be ready to note it down.",
+    "resetPwdConfirmTitle": "Reset root password?",
+    "type": "Type",
+    "restoredToast": "Restored from trash"
   },
   "jobs": {
     "queued": "Queued, waiting for a worker...",
@@ -1544,6 +1588,66 @@
     "filterShared": "Shared",
     "listEmpty": "No firewall groups.",
     "whitelistHint": "Whitelist model: only explicit allow rules let traffic through; everything else is rejected by Incus ACL's default policy. A VM with no group bound has no ACL attached and is fully open.",
-    "editorWhitelistHint": "Whitelist: traffic not matched by an allow rule is rejected by the Incus ACL default. Use reject / drop to override narrower sources before an allow (priority: drop > reject > allow)."
+    "editorWhitelistHint": "Whitelist: traffic not matched by an allow rule is rejected by the Incus ACL default. Use reject / drop to override narrower sources before an allow (priority: drop > reject > allow).",
+    "boundCount": "{{n}} bound",
+    "defaultsRemoveLastTitle": "Remove the last default group?",
+    "defaultsRemoveLastWarn": "New VMs will no longer be auto-bound to any firewall group and must be attached manually.",
+    "rulesPreview": "View rules",
+    "searchPlaceholder": "Search name / slug"
+  },
+  "alertRule": {
+    "add": "Add rule",
+    "addTitle": "Add alert rule",
+    "builtin": "Built-in",
+    "cannotDeleteBuiltin": "Built-in rules cannot be deleted",
+    "channels": "Channels",
+    "created": "Rule created",
+    "deleteConfirm": "Delete alert rule?",
+    "deleted": "Rule deleted",
+    "description": "The evaluator runs once per minute. When a rule fires it upserts system_alerts and pushes notifications by channel_ids. imbalance is a built-in rule; it cannot be deleted but its channels can be changed.",
+    "disabled": "Disabled",
+    "editTitle": "Edit rule",
+    "empty": "No rules yet.",
+    "enabledOk": "Enabled",
+    "history": "History",
+    "historyTitle": "Delivery history",
+    "kind": "Kind",
+    "name": "Name",
+    "nameRequired": "Name is required",
+    "noChannels": "Not bound (alerts go to system_alerts only, no push)",
+    "noChannelsHint": "No channels yet. Add one under /admin/notify-channels first.",
+    "noHistory": "No delivery records yet",
+    "scope": "Scope",
+    "severity": "Severity",
+    "threshold": "Threshold",
+    "thresholdInvalid": "Threshold must be a number",
+    "title": "Alert rules",
+    "updated": "Rule updated",
+    "window": "Window"
+  },
+  "notify": {
+    "add": "Add channel",
+    "addTitle": "Add notification channel",
+    "config": "Config (JSON)",
+    "configEditHint": "Leave empty to keep the existing config",
+    "configEditPlaceholder": "Paste the full JSON to overwrite; leave empty to keep it unchanged.",
+    "configHintLabel": "Example:",
+    "configJsonInvalid": "Config must be valid JSON",
+    "created": "Channel created",
+    "deleteConfirmDesc": "This channel will be permanently deleted; alert rules bound to it will no longer push to it.",
+    "deleteConfirmTitle": "Delete channel?",
+    "deleted": "Channel deleted",
+    "description": "Five channel types: DingTalk / Feishu / WeCom / Webhook / SMTP. Secrets are AES-256-GCM encrypted in the DB.",
+    "editTitle": "Edit channel",
+    "empty": "No channels configured yet. Add one from the top-right.",
+    "enabled": "Enabled",
+    "kind": "Kind",
+    "name": "Name",
+    "nameRequired": "Name is required",
+    "test": "Send test",
+    "testFailed": "Test failed: {{err}}",
+    "testOk": "Test sent successfully, check the target",
+    "title": "Notification channels",
+    "updated": "Channel updated"
   }
 }

@@ -70,7 +70,8 @@
       "ruleSource": "来源",
       "saveRules": "保存规则",
       "saved": "规则已保存",
-      "title": "防火墙组"
+      "title": "防火墙组",
+      "deleteMessage": "确认删除防火墙组 \"{{name}}\"？已绑定的 VM NIC 会自动解除。"
     },
     "floatingIPs": {
       "allocate": "分配 IP",
@@ -103,7 +104,11 @@
       "releaseTitle": "释放 Floating IP",
       "released": "已释放",
       "status": "状态",
-      "title": "Floating IP"
+      "title": "Floating IP",
+      "attached": "{{ip}} → {{vm}}",
+      "attachMessage": "确认将 {{ip}} 绑定到 VM #{{vm}}？",
+      "detachMessage": "确认解除 {{ip}} 与 VM 的绑定？",
+      "releaseMessage": "确认释放 {{ip}}？IP 将回收，可再次分配。"
     },
     "goToAllVms": "前往所有云主机",
     "hostInvalid": "请输入合法的 IPv4 / IPv6 地址或主机名",
@@ -179,7 +184,9 @@
       "enableStateful": "为 {{n}} 台启用 stateful（重启）",
       "statefulEnabledAll": "已为 {{n}} 台 VM 启用 stateful（已重启）",
       "statefulEnabledPartial": "{{ok}}/{{total}} 启用成功，{{fail}} 失败",
-      "liveNotice": "Live 迁移：VM 不停机；需要 stateful + 共享存储；并发上限同冷迁移。"
+      "liveNotice": "Live 迁移：VM 不停机；需要 stateful + 共享存储；并发上限同冷迁移。",
+      "batchEta": "预计总耗时 {{lo}}-{{hi}} 分钟",
+      "statefulPartialHint": "部分失败，请检查日志后重试"
     },
     "migrateFailed": "迁移失败",
     "migrateRun": "迁移",
@@ -376,7 +383,8 @@
           "errorRateLimit": "调用过快，请稍后再试",
           "errorSchema": "AI 输出格式异常，请重试",
           "errorGeneric": "AI 调用失败：{{msg}}"
-        }
+        },
+        "cta": "添加节点（管理员）"
       },
       "remove": {
         "title": "移除节点",
@@ -424,7 +432,8 @@
         "hotCold": "热点 {{hot}} ↔ 冷点 {{cold}}",
         "move": "迁移方向",
         "reason": "原因"
-      }
+      },
+      "downloadEnvScriptFailed": "下载失败：{{msg}}"
     },
     "nodeCredentials": {
       "title": "节点凭据",
@@ -503,7 +512,10 @@
       "status": "状态",
       "supportsRescue": "支持救援模式",
       "title": "OS 镜像模板",
-      "updated": "已保存"
+      "updated": "已保存",
+      "cloudInitHint": "禁止 disable_root / ssh_pwauth: false。其它字段追加合并到系统模板。预留 AI 生成接入位。",
+      "cloudInitTemplate": "高级 cloud-init 注入（可选）",
+      "deleteMessage": "确认删除模板「{{name}}」？"
     },
     "prevPage": "上一页",
     "products": {
@@ -529,7 +541,8 @@
       "sortOrder": "排序",
       "specs": "配置",
       "status": "状态",
-      "title": "产品套餐"
+      "title": "产品套餐",
+      "deactivateMessage": "确认下架「{{name}}」？"
     },
     "quota": "配额",
     "quotaUpdateFailed": "配额更新失败",
@@ -621,7 +634,8 @@
       "rejectMessage": "确认取消订单 #{{orderId}}？此操作无法撤销。",
       "expire": "作废",
       "expireTitle": "作废订单",
-      "expireMessage": "确认将订单 #{{orderId}} 标为已过期？"
+      "expireMessage": "确认将订单 #{{orderId}} 标为已过期？",
+      "title": "订单审批"
     },
     "subscriptions": {
       "title": "订阅管理",
@@ -649,7 +663,8 @@
       "dismissed": "告警 #{{id}} 已忽略"
     },
     "vmStatefulHint": "已启用 live migration（migration.stateful=true）",
-    "migrateBtn": "迁移"
+    "migrateBtn": "迁移",
+    "roleUpdated": "角色已更新"
   },
   "adminOverview": {
     "apiStatus": "API 状态",
@@ -819,7 +834,12 @@
     "submitting": "提交中...",
     "summary": "摘要",
     "view": "查看",
-    "yes": "是"
+    "yes": "是",
+    "disable": "停用",
+    "disabled": "停用",
+    "done": "完成",
+    "enable": "启用",
+    "enabled": "启用"
   },
   "confirmDialog": {
     "cancel": "取消",
@@ -829,7 +849,9 @@
     "typeDowngrade": "请输入 DOWNGRADE 以确认",
     "typeRelease": "请输入 RELEASE 以确认",
     "typeToConfirm": "请输入 {{name}} 以确认",
-    "typeVmName": "请输入 VM 名称 {{name}} 以确认"
+    "typeVmName": "请输入 VM 名称 {{name}} 以确认",
+    "typeIPAddress": "请输入 IP 地址 \"{{ip}}\" 以确认",
+    "typeReleaseN": "请输入 \"{{phrase}}\" 以确认"
   },
   "console": {
     "backToVms": "← 返回云主机",
@@ -877,7 +899,8 @@
   "error": {
     "goHome": "回到首页",
     "notFound": "页面不存在",
-    "signInRequired": "请登录以继续"
+    "signInRequired": "请登录以继续",
+    "mutationFailed": "操作失败"
   },
   "ha": {
     "noCluster": "尚未配置集群。",
@@ -924,7 +947,9 @@
     "triggerManual": "手动",
     "vmFrom": "源节点",
     "vmName": "名称",
-    "vmTo": "目标节点"
+    "vmTo": "目标节点",
+    "evacuateStartedToast": "已发起疏散",
+    "nodeRestoredToast": "节点已恢复"
   },
   "invoice": {
     "amount": "金额",
@@ -1017,7 +1042,10 @@
     "provisioning": "正在创建云主机",
     "provisioningHint": "进度实时更新中，可离开本页稍后到「我的云主机」继续查看。",
     "summaryYourPick": "你的选择",
-    "title": "创建云主机"
+    "title": "创建云主机",
+    "copyAll": "复制全部凭据",
+    "copyFailed": "复制失败，请手动选中",
+    "credentialsCopied": "凭据已复制"
   },
   "nav": {
     "admin": "管理员",
@@ -1079,7 +1107,8 @@
   "pendingIntent": {
     "message": "检测到中断的敏感操作：{{description}}\n是否现在继续？",
     "replayed": "已重新发起：{{description}}",
-    "title": "继续刚才的操作？"
+    "title": "继续刚才的操作？",
+    "interrupted": "你刚才的「{{description}}」操作因二次认证被中断，请重新发起。"
   },
   "product": {
     "name": "名称",
@@ -1115,7 +1144,8 @@
     "loginTitle": "以该用户身份登入（审计、排障用）",
     "reasonLabel": "原因（必填，审计记录用）",
     "reasonWarning": "你将以 {{email}} 的身份登入，所有操作都会按 admin shadow 审计记录。请填写本次操作原因。",
-    "submit": "确认登入"
+    "submit": "确认登入",
+    "loginShort": "Shadow 登入"
   },
   "sidebar": {
     "backToUser": "返回用户后台",
@@ -1143,7 +1173,10 @@
     "restore": "恢复",
     "restoreMessage": "恢复 {{vm}} 到快照 \"{{name}}\"？当前状态将丢失。",
     "restoreTitle": "恢复快照",
-    "title": "快照"
+    "title": "快照",
+    "deleteAriaLabel": "删除快照 {{name}}",
+    "deleted": "快照已删除",
+    "restored": "已从快照恢复"
   },
   "sshKey": {
     "add": "添加密钥",
@@ -1303,7 +1336,8 @@
     "topup": {
       "dailyLimit": "日额度 {{limit}}",
       "quotaExceeded": "超出日额度（剩余 {{remaining}}）",
-      "usedToday": "今日已用 {{used}} / 上限 {{limit}}"
+      "usedToday": "今日已用 {{used}} / 上限 {{limit}}",
+      "quotaExceededHint": "超出今日剩余额度（剩余 {{remaining}}）"
     }
   },
   "vm": {
@@ -1473,7 +1507,15 @@
     "filterByNode": "按节点筛选",
     "allNodes": "所有节点",
     "viewSiblingsOnNode": "查看 {{node}} 上的其他 VM",
-    "locatedOnNode": "运行在节点 {{node}}"
+    "locatedOnNode": "运行在节点 {{node}}",
+    "openFullDetail": "查看完整详情",
+    "peekPanelAria": "VM 详情速览：{{name}}",
+    "reinstallFailed": "重装失败，VM 已标 error，请联系管理员。",
+    "reinstallStarted": "重装已开始，进度展示中...",
+    "resetPwdConfirmMessage": "将为 {{name}} 生成新密码并写入 cloud-init / agent-exec。新密码只显示 20s，请准备好记下。",
+    "resetPwdConfirmTitle": "重置 root 密码？",
+    "type": "类型",
+    "restoredToast": "已从回收站恢复"
   },
   "jobs": {
     "queued": "已排队，等待 worker 拾取...",
@@ -1546,6 +1588,66 @@
     "filterShared": "共享",
     "listEmpty": "无防火墙组。",
     "whitelistHint": "白名单机制：只有显式 allow 的端口 / 来源 才放行；未匹配规则的流量由 Incus ACL 默认 reject。VM 未绑任何组时不挂 ACL，即等价全开放。",
-    "editorWhitelistHint": "白名单：未在下表 allow 的流量由 Incus ACL 默认 reject。reject / drop 用来在 allow 前覆盖更窄的来源（按 drop > reject > allow 优先级）。"
+    "editorWhitelistHint": "白名单：未在下表 allow 的流量由 Incus ACL 默认 reject。reject / drop 用来在 allow 前覆盖更窄的来源（按 drop > reject > allow 优先级）。",
+    "boundCount": "已绑 {{n}}",
+    "defaultsRemoveLastTitle": "删除最后一个默认组？",
+    "defaultsRemoveLastWarn": "之后新建的 VM 不会自动绑定任何 firewall 组，需要手动 attach。",
+    "rulesPreview": "查看规则",
+    "searchPlaceholder": "搜索 name / slug"
+  },
+  "alertRule": {
+    "add": "添加规则",
+    "addTitle": "添加告警规则",
+    "builtin": "内置",
+    "cannotDeleteBuiltin": "内置规则不可删除",
+    "channels": "通道",
+    "created": "规则已创建",
+    "deleteConfirm": "删除告警规则？",
+    "deleted": "规则已删除",
+    "description": "评估器 1 分钟评估一次。规则触发 → upsert system_alerts → 按 channel_ids 推送通知。imbalance 是内置规则，不可删但可改通道。",
+    "disabled": "已停用",
+    "editTitle": "编辑规则",
+    "empty": "尚无规则。",
+    "enabledOk": "已启用",
+    "history": "历史",
+    "historyTitle": "送达历史",
+    "kind": "类型",
+    "name": "名称",
+    "nameRequired": "名称必填",
+    "noChannels": "未绑定 (告警仅入 system_alerts，不推送)",
+    "noChannelsHint": "尚无通道，请先去 /admin/notify-channels 添加。",
+    "noHistory": "尚无送达记录",
+    "scope": "作用域",
+    "severity": "级别",
+    "threshold": "阈值",
+    "thresholdInvalid": "阈值必须是数字",
+    "title": "告警规则",
+    "updated": "规则已更新",
+    "window": "窗口"
+  },
+  "notify": {
+    "add": "添加通道",
+    "addTitle": "添加通知通道",
+    "config": "配置 (JSON)",
+    "configEditHint": "为空则保留原配置",
+    "configEditPlaceholder": "重新粘贴完整 JSON 才会覆盖；不变更则留空。",
+    "configHintLabel": "示例：",
+    "configJsonInvalid": "配置必须是合法 JSON",
+    "created": "通道已创建",
+    "deleteConfirmDesc": "该通道将被永久删除，绑定它的告警规则将不再推送到此通道。",
+    "deleteConfirmTitle": "删除通道？",
+    "deleted": "通道已删除",
+    "description": "钉钉 / 飞书 / 企微 / Webhook / SMTP 五种通道。secret 在 DB 内 AES-256-GCM 加密。",
+    "editTitle": "编辑通道",
+    "empty": "尚未配置通道，先点右上角添加。",
+    "enabled": "启用",
+    "kind": "类型",
+    "name": "名称",
+    "nameRequired": "名称必填",
+    "test": "测试发送",
+    "testFailed": "测试失败：{{err}}",
+    "testOk": "测试发送成功，请检查目标",
+    "title": "通知通道",
+    "updated": "通道已更新"
   }
 }
