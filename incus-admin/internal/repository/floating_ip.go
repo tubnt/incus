@@ -66,21 +66,6 @@ func (r *FloatingIPRepo) GetByID(ctx context.Context, id int64) (*model.Floating
 	return &f, nil
 }
 
-func (r *FloatingIPRepo) GetByIP(ctx context.Context, ip string) (*model.FloatingIP, error) {
-	var f model.FloatingIP
-	err := scanFloatingIP(
-		r.db.QueryRowContext(ctx, `SELECT `+floatingIPColumns+` FROM floating_ips WHERE ip = $1::inet`, ip),
-		&f,
-	)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	return &f, nil
-}
-
 // Allocate reserves a floating IP in the pool. Returns ErrIPAlreadyAllocated
 // if the IP is taken (unique index). cluster_id + ip are the only required
 // fields; status defaults to 'available' via column default.
@@ -157,6 +142,12 @@ func (r *FloatingIPRepo) Release(ctx context.Context, id int64) error {
 	return nil
 }
 
+// ListByVM returns the floating IPs currently bound to a VM.
+//
+// OPS-052：本方法在 WP-H4 死代码清理时因当时无引用被删除，现由 WP-C 的 VM
+// hard-delete 资源回收路径（cmd/server/main.go reclaimVMResources 闭包）重新引用
+// —— purge 收口时按 vm_id 反查 Floating IP 逐个 detach 回 available 池。请勿再当
+// 死代码删除。
 func (r *FloatingIPRepo) ListByVM(ctx context.Context, vmID int64) ([]model.FloatingIP, error) {
 	rows, err := r.db.QueryContext(ctx,
 		`SELECT `+floatingIPColumns+` FROM floating_ips WHERE bound_vm_id = $1 ORDER BY id ASC`,

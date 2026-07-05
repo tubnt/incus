@@ -35,17 +35,49 @@ func TestBroker_UnsubscribeStopsDelivery(t *testing.T) {
 	ch, cancel := b.Subscribe(7)
 	cancel()
 
-	// 取消后 channel 已关闭：再 Publish 不应 panic（select default 丢弃）
+	// P1-3：Unsubscribe 只从 map 删除、不 close(channel)。取消后 Publish 既不
+	// panic 也不再投递到该 channel（订阅已从路由表移除）。
 	b.Publish(StepEvent{JobID: 7, Step: model.ProvisioningJobStep{Seq: 0}})
 
-	// 应能立即从已关闭 chan 读到 zero value（ok=false）
+	// channel 未 close 且不再收事件 → 读应阻塞至超时（而非立即拿到 zero value）。
 	select {
-	case _, ok := <-ch:
+	case ev, ok := <-ch:
 		if ok {
-			t.Fatal("expected channel closed after cancel")
+			t.Fatalf("cancelled subscriber should not receive events, got seq=%d", ev.Step.Seq)
 		}
-	case <-time.After(time.Second):
-		t.Fatal("channel should be closed and unblock recv")
+		t.Fatal("channel should NOT be closed by cancel (P1-3), but recv returned ok=false")
+	case <-time.After(200 * time.Millisecond):
+		// expected：未 close、无投递，读阻塞。
+	}
+}
+
+// TestBroker_CancelDuringPublishNoPanic 复现 P1-3 竞态：并发 cancel + Publish。
+// 原版 cancel close(channel)，Publish 释锁后向已关闭 channel 写 → panic；
+// 新版 cancel 不 close，无论时序都安全。
+func TestBroker_CancelDuringPublishNoPanic(t *testing.T) {
+	for iter := 0; iter < 50; iter++ {
+		b := NewBroker()
+		var wg sync.WaitGroup
+		// 若干订阅者，并发取消
+		cancels := make([]func(), 0, 8)
+		for i := 0; i < 8; i++ {
+			_, cancel := b.Subscribe(1)
+			cancels = append(cancels, cancel)
+		}
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 100; i++ {
+				b.Publish(StepEvent{JobID: 1, Step: model.ProvisioningJobStep{Seq: i}})
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			for _, c := range cancels {
+				c()
+			}
+		}()
+		wg.Wait()
 	}
 }
 

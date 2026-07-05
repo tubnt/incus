@@ -16,7 +16,17 @@ func newStepUpHandler(lookup StepUpLookup, maxAge time.Duration) http.Handler {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
-	return RequireRecentAuthOnSensitive(lookup, maxAge)(inner)
+	return RequireRecentAuthOnSensitive(lookup, maxAge, false)(inner)
+}
+
+// newStepUpFailClosedHandler wraps with lookup==nil + failClosed=true to exercise
+// the OIDC-configured-but-discovery-failed path (PLAN-055 §5).
+func newStepUpFailClosedHandler() http.Handler {
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	})
+	return RequireRecentAuthOnSensitive(nil, 5*time.Minute, true)(inner)
 }
 
 func TestStepUp_NoLookupIsNoOp(t *testing.T) {
@@ -144,16 +154,56 @@ func TestStepUp_IsSensitiveMatchesAllEnumeratedRoutes(t *testing.T) {
 		{"POST", "/api/admin/nodes/node1/evacuate", true},
 		{"POST", "/api/admin/nodes/node1/restore", true},
 		{"POST", "/api/admin/users/42/balance", true},
+		// PLAN-055 / OPS-052 §1+§2：portal 支付 + 看初始密码 + 单条改角色。
+		{"POST", "/api/portal/orders/7/pay", true},
+		{"POST", "/api/portal/services/9/initial-credentials", true},
+		{"PUT", "/api/admin/users/42/role", true},
 
 		// Negatives — must not match.
 		{"GET", "/api/admin/vms/vm-abc", false},
 		{"DELETE", "/api/admin/vms", false},
 		{"POST", "/api/admin/users/abc/balance", false},
 		{"POST", "/api/admin/vms/vm-abc/start", false},
+		// role 只对 PUT 生效，且 id 必须是数字。
+		{"GET", "/api/admin/users/42/role", false},
+		{"PUT", "/api/admin/users/abc/role", false},
+		// pay 只对 POST 生效。
+		{"GET", "/api/portal/orders/7/pay", false},
 	}
 	for _, c := range cases {
 		if got := isSensitive(c.method, c.path); got != c.want {
 			t.Errorf("isSensitive(%s %s)=%v want %v", c.method, c.path, got, c.want)
 		}
+	}
+}
+
+// TestStepUp_FailClosedRejectsSensitive 覆盖 PLAN-055 §5：OIDC 已配置但 discovery
+// 失败（lookup==nil + failClosed=true）时，敏感路由必须被 503 拒绝，非敏感路由透传。
+func TestStepUp_FailClosedRejectsSensitive(t *testing.T) {
+	h := newStepUpFailClosedHandler()
+
+	// 敏感路由：503 fail-closed。
+	req := httptest.NewRequest(http.MethodPost, "/api/portal/orders/7/pay", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 fail-closed on sensitive route, got %d", w.Code)
+	}
+	var body struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("json decode: %v", err)
+	}
+	if body.Error != "step_up_unavailable" {
+		t.Fatalf("error=%q want step_up_unavailable", body.Error)
+	}
+
+	// 非敏感路由：仍透传 200。
+	req2 := httptest.NewRequest(http.MethodGet, "/api/admin/vms", nil)
+	w2 := httptest.NewRecorder()
+	h.ServeHTTP(w2, req2)
+	if w2.Code != http.StatusOK {
+		t.Fatalf("expected 200 pass-through on non-sensitive route, got %d", w2.Code)
 	}
 }

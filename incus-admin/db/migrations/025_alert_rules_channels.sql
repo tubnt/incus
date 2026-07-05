@@ -1,3 +1,4 @@
+-- +goose Up
 -- PLAN-041 / INFRA-009：监控告警闭环
 --
 -- 三张新表 + system_alerts 扩展：
@@ -173,3 +174,16 @@ CREATE INDEX IF NOT EXISTS idx_alert_deliveries_dedup
 INSERT INTO alert_rules (name, kind, scope_kind, threshold, window_seconds, severity, enabled, channel_ids, builtin)
 VALUES ('Cluster Imbalance', 'imbalance', 'global', NULL, 900, 'warning', TRUE, '{}', TRUE)
 ON CONFLICT DO NOTHING;
+
+-- +goose Down
+DROP TABLE IF EXISTS alert_deliveries;
+DROP TABLE IF EXISTS alert_rules;
+DROP TABLE IF EXISTS notify_channels;
+DROP INDEX IF EXISTS system_alerts_group_active_uniq;
+DROP INDEX IF EXISTS idx_system_alerts_group_key;
+ALTER TABLE system_alerts DROP COLUMN IF EXISTS rule_id;
+ALTER TABLE system_alerts DROP COLUMN IF EXISTS scope_id;
+ALTER TABLE system_alerts DROP COLUMN IF EXISTS scope_kind;
+ALTER TABLE system_alerts DROP COLUMN IF EXISTS group_key;
+ALTER TABLE system_alerts DROP CONSTRAINT IF EXISTS system_alerts_kind_check;
+ALTER TABLE system_alerts ADD CONSTRAINT system_alerts_kind_check CHECK (kind IN ('imbalance'));

@@ -164,9 +164,8 @@ function NodeRow({ node: n, clusterName }: { node: NodeInfo; clusterName: string
                   message: t("deleteConfirm.evacuateMessage", { node: n.server_name }),
                   destructive: true,
                 });
-                if (ok) evacuateMutation.mutate(n.server_name, {
-                  onError: (err) => toast.error(formatError(err)),
-                });
+                // WP-F：成功/失败 toast 由 useEvacuateNodeMutation 的 meta 全局兜底。
+                if (ok) evacuateMutation.mutate(n.server_name);
               }}
               disabled={acting}
             >

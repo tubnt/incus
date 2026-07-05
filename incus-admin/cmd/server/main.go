@@ -45,6 +45,12 @@ func main() {
 		runBootstrap(os.Args[2:])
 		return
 	}
+	// OPS-052 / WP-I2 migrate 子命令：args[1] == "migrate" 时走 goose runner，
+	// 否则走 runServer。与 bootstrap 同形态，server 启动行为零改动。
+	if len(os.Args) > 1 && os.Args[1] == "migrate" {
+		runMigrate(os.Args[2:])
+		return
+	}
 	runServer()
 }
 
@@ -90,6 +96,17 @@ func runServer() {
 		os.Exit(1)
 	}
 	slog.Info("database connected")
+
+	// OPS-052 / WP-I2：可选启动自动迁移。默认关闭，保持历史「启动不自动迁移，
+	// 迁移由运维单独执行」行为；设 INCUS_ADMIN_AUTO_MIGRATE=true（单机 docker
+	// 一键起库场景）时用 goose runner 把 DB 迁移到最新，失败即 fail-fast 拒绝启动。
+	if autoMigrateEnabled() {
+		if err := runStartupMigrate(db); err != nil {
+			slog.Error("startup auto-migrate failed", "error", err)
+			os.Exit(1)
+		}
+		slog.Info("startup auto-migrate applied")
+	}
 
 	userRepo := repository.NewUserRepo(db)
 	clusterRepo := repository.NewClusterRepo(db)
@@ -211,6 +228,8 @@ func runServer() {
 	portal.SetOSTemplateRepo(osTemplateRepo)
 	portal.SetAppEnv(cfg.Server.Env)
 	middleware.SetEmergencySecret(cfg.Auth.EmergencyToken)
+	// PLAN-055 决策#6：可选前置代理信任加固。空 → 关闭，行为不变。
+	middleware.SetProxySharedSecret(cfg.Server.ProxySharedSecret)
 
 	// OPS-022：vms.password 字段 AES-256-GCM 加密。空 key → passthrough。
 	if err := authcore.SetPasswordEncryptionKey(cfg.Auth.PasswordEncryptionKey); err != nil {
@@ -242,11 +261,23 @@ func runServer() {
 	// Step-up OIDC is optional; absence just disables sensitive-route protection.
 	// Init is outside the clusterMgr block because step-up has no cluster dependency.
 	var stepUpHandler server.StepUpHandler
+	// stepUpFailClosed：OIDC 已配置但 discovery 失败时置 true，令敏感路由 fail-closed
+	// 拒绝（见 middleware.RequireRecentAuthOnSensitive / PLAN-055 §5）。
+	var stepUpFailClosed bool
 	if cfg.Auth.OIDCIssuer != "" && cfg.Auth.OIDCClientID != "" && cfg.Auth.OIDCClientSecret != "" && cfg.Auth.StepUpCallbackURL != "" {
-		oidcClient, oidcErr := authcore.NewOIDCClient(context.Background(),
+		// PLAN-055 / OPS-052 §5：discovery 加 10s 超时。此前用 context.Background()
+		// 无超时，IdP 网络抖动会把整个进程启动无限期挂住。
+		oidcCtx, oidcCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		oidcClient, oidcErr := authcore.NewOIDCClient(oidcCtx,
 			cfg.Auth.OIDCIssuer, cfg.Auth.OIDCClientID, cfg.Auth.OIDCClientSecret, cfg.Auth.StepUpCallbackURL)
+		oidcCancel()
 		if oidcErr != nil {
-			slog.Warn("step-up OIDC discovery failed, disabled", "issuer", cfg.Auth.OIDCIssuer, "error", oidcErr)
+			// PLAN-055 / OPS-052 §5：OIDC 已配置却 discovery 失败 → fail-closed。
+			// 不再静默降级为 permissive（那会让 step-up 保护被 discovery 故障绕过），
+			// 而是让敏感操作全部被拒（503），逼运维修复 OIDC 后重启恢复。
+			slog.Error("step-up OIDC discovery failed; sensitive operations will be REJECTED (fail-closed) until OIDC recovers",
+				"issuer", cfg.Auth.OIDCIssuer, "error", oidcErr)
+			stepUpFailClosed = true
 		} else {
 			stateSecret := cfg.Auth.StepUpStateSecret
 			if stateSecret == "" {
@@ -326,7 +357,10 @@ func runServer() {
 	// test/dev environments).
 	if clusterMgr != nil {
 		snapshotFn := worker.ClusterSnapshotFromManager(clusterMgr, "customers")
-		reconcileCfg := worker.VMReconcilerConfig{Interval: 60 * time.Second}
+		// OPS-052 P1-2：CreateBuffer 显式设 30s。配合 repo.ListActiveForReconcile
+		// 已排除 'creating' 状态，双重保证刚 provision 的 VM 不被误判 gone（进而
+		// 误 Release 掉刚分配的 IP 引发双分配）。
+		reconcileCfg := worker.VMReconcilerConfig{Interval: 60 * time.Second, CreateBuffer: 30 * time.Second}
 		go worker.RunVMReconciler(
 			workerCtx,
 			reconcileCfg,
@@ -386,7 +420,42 @@ func runServer() {
 		// 复用 service.VMService.PurgeTrashed（语义即原 Delete 路径），manager
 		// 提供 ID→name 反查。worker 会同时把 DB 行翻 status='deleted'。
 		trashWindow := time.Duration(model.VMTrashWindowSeconds) * time.Second
-		go worker.RunVMTrashPurger(workerCtx, vmRepo, clusterMgr, vmSvc.PurgeTrashed, trashWindow, 5*time.Second)
+		// OPS-052 P0-3 / P1-5：purge 收口时释放 VM 关联的全部网络资源。以闭包注入，
+		// 让 worker 包不反向依赖 repository/service；逐项 best-effort，个别失败仅告警，
+		// 不阻断 DB 落 deleted（泄漏的 IP 由 AllocateNext 内联 RecoverCooldowns 兜底）。
+		floatingIPSvcForReclaim := service.NewFloatingIPService(clusterMgr)
+		reclaimVMResources := func(ctx context.Context, vm model.VM, clusterName, project string) error {
+			// 1) 普通 IP 回可用池：Release 置 cooldown，过窗口后由 AllocateNext 回收。
+			if vm.IP != nil && *vm.IP != "" {
+				if err := ipAddrRepo.Release(ctx, *vm.IP); err != nil {
+					slog.Warn("reclaim: release ip failed", "vm", vm.Name, "ip", *vm.IP, "error", err)
+				}
+			}
+			// 2) Floating IP detach：先 best-effort 复原 Incus NIC 过滤（实例通常已删，
+			//    忽略其错误），再把 DB 行切回 available 供复用。
+			if fips, err := floatingIPRepo.ListByVM(ctx, vm.ID); err != nil {
+				slog.Warn("reclaim: list floating ips failed", "vm", vm.Name, "error", err)
+			} else {
+				for _, fip := range fips {
+					_, _ = floatingIPSvcForReclaim.DetachFromVM(ctx, clusterName, project, vm.Name, fip.IP)
+					if _, derr := floatingIPRepo.Detach(ctx, fip.ID); derr != nil {
+						slog.Warn("reclaim: detach floating ip failed", "vm", vm.Name, "fip_id", fip.ID, "error", derr)
+					}
+				}
+			}
+			// 3) firewall 绑定解除：VM 即将 hard-delete，只需清 vm_firewall_bindings 行。
+			if groups, err := firewallRepo.ListBindingsByVM(ctx, vm.ID); err != nil {
+				slog.Warn("reclaim: list firewall bindings failed", "vm", vm.Name, "error", err)
+			} else {
+				for _, g := range groups {
+					if uerr := firewallRepo.Unbind(ctx, vm.ID, g.ID); uerr != nil {
+						slog.Warn("reclaim: unbind firewall failed", "vm", vm.Name, "group_id", g.ID, "error", uerr)
+					}
+				}
+			}
+			return nil
+		}
+		go worker.RunVMTrashPurger(workerCtx, vmRepo, clusterMgr, vmSvc.PurgeTrashed, reclaimVMResources, trashWindow, 5*time.Second)
 
 		// PLAN-039 / OPS-044: imbalance watchdog（仅告警，不自动迁移）
 		// 5min tick × 3 ticks = 15min 持续不均衡 → 写 system_alerts。
@@ -467,18 +536,19 @@ func runServer() {
 	var jobsRuntime *jobs.Runtime
 	if clusterMgr != nil {
 		jobsRuntime = jobs.NewRuntime(jobs.Deps{
-			Jobs:        jobRepo,
-			VMs:         vmRepo,
-			IPAddrs:     ipAddrRepo,
-			Users:       userRepo,
-			Orders:      orderRepo,
-			Audit:       auditAdapter{repo: auditRepo},
-			Clusters:    clusterMgr,
-			OSTemplates: osTemplateRepo,
-			Firewall:    defaultFirewallApplier{repo: firewallRepo, svc: service.NewFirewallService(clusterMgr, vmSvc)},
-			Migrator:    vmMigratorAdapter{svc: vmSvc}, // PLAN-037: cluster.vm.migrate-batch
-			PoolSize:    cfg.Jobs.PoolSize,             // OPS-050: env JOBS_POOL_SIZE，默认 4
-			QueueSize:   cfg.Jobs.QueueSize,            // OPS-050: env JOBS_QUEUE_SIZE，默认 64
+			Jobs:          jobRepo,
+			VMs:           vmRepo,
+			IPAddrs:       ipAddrRepo,
+			Users:         userRepo,
+			Orders:        orderRepo,
+			Audit:         auditAdapter{repo: auditRepo},
+			Clusters:      clusterMgr,
+			OSTemplates:   osTemplateRepo,
+			Subscriptions: subRepo, // P1-4：rollback 时取消订阅，杜绝幽灵扣费
+			Firewall:      defaultFirewallApplier{repo: firewallRepo, svc: service.NewFirewallService(clusterMgr, vmSvc)},
+			Migrator:      vmMigratorAdapter{svc: vmSvc}, // PLAN-037: cluster.vm.migrate-batch
+			PoolSize:      cfg.Jobs.PoolSize,             // OPS-050: env JOBS_POOL_SIZE，默认 4
+			QueueSize:     cfg.Jobs.QueueSize,            // OPS-050: env JOBS_QUEUE_SIZE，默认 64
 			// OPS-051 / PLAN-052
 			AptProxyURL:      cfg.Provisioning.AptProxyURL,
 			DefaultLoginUser: cfg.Provisioning.DefaultLoginUser,
@@ -496,8 +566,8 @@ func runServer() {
 	portalVMHandler := portal.NewVMHandler(vmSvc, vmRepo, sshKeyRepo, clusterMgr).
 		WithSubscriptions(subRepo) // PLAN-054 trash/restore 联动
 	orderHandler := portal.NewOrderHandler(orderRepo, productRepo, vmSvc, vmRepo, sshKeyRepo, clusterMgr).
-		WithQuotas(quotaRepo).         // OPS-021：购买前 quota 强制
-		WithSubscriptions(subRepo)     // PLAN-054：订单 pay → vm_subscriptions 行写入
+		WithQuotas(quotaRepo).     // OPS-021：购买前 quota 强制
+		WithSubscriptions(subRepo) // PLAN-054：订单 pay → vm_subscriptions 行写入
 	// PLAN-038 / OPS-041 Phase B/C：AI provider —— anthropic / disabled 二选一。
 	// AIConfig.Provider == "disabled"（默认）→ disabledProvider，所有 AI endpoint
 	// 返 503，前端按需隐藏入口。生产没买 API key 也能正常跑。
@@ -507,8 +577,8 @@ func runServer() {
 		WithPersistence(clusterRepo).
 		WithNodeCredentials(nodeCredRepo).
 		WithTopology(scheduler, vmRepo). // PLAN-037 / OPS-040
-		WithAlerts(alertRepo).            // PLAN-039 / OPS-044
-		WithAIProvider(aiProvider)        // PLAN-038 / OPS-041 Tier 2
+		WithAlerts(alertRepo).           // PLAN-039 / OPS-044
+		WithAIProvider(aiProvider)       // PLAN-038 / OPS-041 Tier 2
 	// PLAN-051 §2-K / Session-2 F-13 + F-14：aiRate 与 probeCache 内存 map
 	// 后台周期 GC，防止低活跃用户 entry / 过期 probe 记录永久驻留 → 内存线性增长。
 	clusterMgmtHandler.StartAIRateGC(workerCtx, 30*time.Minute)
@@ -527,36 +597,36 @@ func runServer() {
 		)
 	}
 
-	srv := server.New(cfg, userLookup, roleLookup, balanceLookup, stepUpLookup, auditWriter, server.Handlers{
-		Admin:     adminVMHandler,
-		Portal:    portalVMHandler,
-		Users:     userHandlerWithBilling(portal.NewUserHandler(userRepo), billingSvc),
-		IPPools:   portal.NewIPPoolHandler(clusterMgr),
-		Console:   portal.NewConsoleHandler(clusterMgr, vmRepo),
-		Snaps:     portal.NewSnapshotHandler(clusterMgr, vmRepo),
-		Metrics:   portal.NewMetricsHandler(clusterMgr, vmRepo),
-		SSHKeys:   portal.NewSSHKeyHandler(sshKeyRepo),
-		Tickets:   portal.NewTicketHandler(ticketRepo),
-		Products:  portal.NewProductHandler(productRepo),
-		Orders:    orderHandler,
-		Subscriptions: portal.NewSubscriptionHandler(subRepo),
-		Audit:     portal.NewAuditHandler(auditRepo),
-		APITokens: portal.NewAPITokenHandler(apiTokenRepo),
-		Invoices:    portal.NewInvoiceHandler(invoiceRepo),
-		ClusterMgmt: clusterMgmtHandler,
-		Ceph:        portal.NewCephHandler(cfg.Monitor.CephSSHHost, cfg.Monitor.CephSSHUser, cfg.Monitor.CephSSHKey, cfg.Monitor.SSHKnownHostsFile),
-		NodeOps:     portal.NewNodeOpsHandler(cfg.Monitor.CephSSHUser, cfg.Monitor.CephSSHKey, cfg.Monitor.SSHKnownHostsFile),
+	srv := server.New(cfg, userLookup, roleLookup, balanceLookup, stepUpLookup, stepUpFailClosed, auditWriter, server.Handlers{
+		Admin:           adminVMHandler,
+		Portal:          portalVMHandler,
+		Users:           userHandlerWithBilling(portal.NewUserHandler(userRepo), billingSvc),
+		IPPools:         portal.NewIPPoolHandler(clusterMgr),
+		Console:         portal.NewConsoleHandler(clusterMgr, vmRepo),
+		Snaps:           portal.NewSnapshotHandler(clusterMgr, vmRepo),
+		Metrics:         portal.NewMetricsHandler(clusterMgr, vmRepo),
+		SSHKeys:         portal.NewSSHKeyHandler(sshKeyRepo),
+		Tickets:         portal.NewTicketHandler(ticketRepo),
+		Products:        portal.NewProductHandler(productRepo),
+		Orders:          orderHandler,
+		Subscriptions:   portal.NewSubscriptionHandler(subRepo),
+		Audit:           portal.NewAuditHandler(auditRepo),
+		APITokens:       portal.NewAPITokenHandler(apiTokenRepo),
+		Invoices:        portal.NewInvoiceHandler(invoiceRepo),
+		ClusterMgmt:     clusterMgmtHandler,
+		Ceph:            portal.NewCephHandler(cfg.Monitor.CephSSHHost, cfg.Monitor.CephSSHUser, cfg.Monitor.CephSSHKey, cfg.Monitor.SSHKnownHostsFile),
+		NodeOps:         portal.NewNodeOpsHandler(cfg.Monitor.CephSSHUser, cfg.Monitor.CephSSHKey, cfg.Monitor.SSHKnownHostsFile),
 		NodeCredentials: portal.NewNodeCredentialHandler(nodeCredRepo),
-		Quotas:      portal.NewQuotaHandler(quotaRepo, vmRepo),
-		Events:      portal.NewEventsHandler(clusterMgr),
-		Healing:     portal.NewHealingHandler(healingRepo, clusterMgr),
-		OSTemplates: portal.NewOSTemplateHandler(osTemplateRepo),
-		Firewall:    portal.NewFirewallHandler(firewallRepo, service.NewFirewallService(clusterMgr, vmSvc), vmRepo, clusterMgr).WithQuotas(quotaRepo),
-		FloatingIPs: portal.NewFloatingIPHandler(floatingIPRepo, service.NewFloatingIPService(clusterMgr), vmRepo, clusterRepo, clusterMgr),
-		Rescue:      portal.NewRescueHandler(vmRepo, service.NewRescueService(vmSvc, clusterMgr), clusterMgr),
-		Jobs:        jobsHandlerOrNil(jobsRuntime, jobRepo, vmRepo, aiProvider),
-		Auth:        stepUpHandler,
-		Shadow:      shadowHandler,
+		Quotas:          portal.NewQuotaHandler(quotaRepo, vmRepo),
+		Events:          portal.NewEventsHandler(clusterMgr),
+		Healing:         portal.NewHealingHandler(healingRepo, clusterMgr),
+		OSTemplates:     portal.NewOSTemplateHandler(osTemplateRepo),
+		Firewall:        portal.NewFirewallHandler(firewallRepo, service.NewFirewallService(clusterMgr, vmSvc), vmRepo, clusterMgr).WithQuotas(quotaRepo),
+		FloatingIPs:     portal.NewFloatingIPHandler(floatingIPRepo, service.NewFloatingIPService(clusterMgr), vmRepo, clusterRepo, clusterMgr),
+		Rescue:          portal.NewRescueHandler(vmRepo, service.NewRescueService(vmSvc, clusterMgr), clusterMgr),
+		Jobs:            jobsHandlerOrNil(jobsRuntime, jobRepo, vmRepo, aiProvider),
+		Auth:            stepUpHandler,
+		Shadow:          shadowHandler,
 		// PLAN-041 / INFRA-009 监控告警闭环
 		NotifyChannels: portal.NewNotifyChannelHandler(notifyChannelRepo, notifyRegistry),
 		AlertRules:     portal.NewAlertRuleHandler(alertRuleRepo, alertDeliveryRepo),
@@ -1035,7 +1105,9 @@ func (a userBalanceAdapter) ListBelowBalance(ctx context.Context, threshold floa
 }
 
 // jobFailureAdapter 把 ProvisioningJobRepo.CountFailedJobsSince 转成 worker.JobFailureCounter。
-type jobFailureAdapter struct{ repo *repository.ProvisioningJobRepo }
+type jobFailureAdapter struct {
+	repo *repository.ProvisioningJobRepo
+}
 
 func (a jobFailureAdapter) CountFailedSince(ctx context.Context, since time.Time) (int, error) {
 	if a.repo == nil {

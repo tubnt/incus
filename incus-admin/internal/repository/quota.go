@@ -23,6 +23,12 @@ func (r *QuotaRepo) GetByUserID(ctx context.Context, userID int64) (*model.Quota
 		 FROM quotas WHERE user_id = $1`, userID,
 	).Scan(&q.ID, &q.UserID, &q.MaxVMs, &q.MaxVCPUs, &q.MaxRAMMB, &q.MaxDiskGB, &q.MaxIPs, &q.MaxSnapshots,
 		&q.MaxFirewallGroups, &q.MaxFirewallRulesPerGroup)
+	// WP-E 契约修正：缺配额行 = 用户未设配额 = 零记录（走默认放行），不是错误。
+	// 原实现把 sql.ErrNoRows 当 error 返回，调用方 fail-closed 分支误判成 DB 故障
+	// 而回 503。统一约定：无行返 (nil, nil)，真 DB 错误才返 err，调用方据此 fail-closed。
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, err
 	}

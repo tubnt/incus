@@ -12,6 +12,21 @@ defaults:
     working-directory: incus-admin
 
 jobs:
+  # 运维脚本"双副本"同步 gate：embedded 副本（打进二进制）与 cluster/ 副本
+  # 必须逐一一致，漂移即 fail。历史事故见 scripts/check-join-node-sync.sh 头注释。
+  scripts-sync:
+    name: Ops scripts dual-copy sync
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+        working-directory: .
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check dual-copy scripts in sync
+        run: bash scripts/check-join-node-sync.sh
+
   frontend:
     name: Frontend typecheck + build
     runs-on: ubuntu-latest
@@ -31,6 +46,9 @@ jobs:
 
       - name: Typecheck
         run: bunx tsc --noEmit
+
+      - name: Check i18n keys
+        run: bun run check:i18n
 
       - name: Build
         run: bun run build

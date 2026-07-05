@@ -315,6 +315,7 @@ function NodeDetail({
                     message: t("deleteConfirm.evacuateMessage", { node: nodeName }),
                     destructive: true,
                   });
+                  // WP-F：成功/失败 toast 由 useNodeEvacuateMutation 的 meta 全局兜底。
                   if (ok) evacuateMutation.mutate();
                 }}
                 disabled={evacuateMutation.isPending}

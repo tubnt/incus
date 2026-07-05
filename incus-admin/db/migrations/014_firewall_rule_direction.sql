@@ -1,3 +1,4 @@
+-- +goose Up
 -- OPS-017 Phase: firewall_rules.direction (ingress / egress)
 --
 -- Phase E shipped ingress-only because every customer scenario at the time
@@ -17,3 +18,7 @@ ALTER TABLE firewall_rules
 ALTER TABLE firewall_rules
     ADD CONSTRAINT firewall_rules_direction_check
         CHECK (direction IN ('ingress', 'egress'));
+
+-- +goose Down
+ALTER TABLE firewall_rules DROP CONSTRAINT IF EXISTS firewall_rules_direction_check;
+ALTER TABLE firewall_rules DROP COLUMN IF EXISTS direction;

@@ -1,3 +1,4 @@
+-- +goose Up
 -- PLAN-053 Phase C / INFRA-012：clusters 表加 region metadata 字段
 --
 -- /v1/regions 端点（cloud-gateway 适配层）需要把 cluster 暴露为标准 region：
@@ -21,3 +22,9 @@ ALTER TABLE clusters
     ADD COLUMN IF NOT EXISTS region_status  TEXT NOT NULL DEFAULT 'available'
         CHECK (region_status IN ('available','unavailable','maintenance')),
     ADD COLUMN IF NOT EXISTS capabilities   JSONB NOT NULL DEFAULT '["instances"]'::jsonb;
+
+-- +goose Down
+ALTER TABLE clusters DROP COLUMN IF EXISTS capabilities;
+ALTER TABLE clusters DROP COLUMN IF EXISTS region_status;
+ALTER TABLE clusters DROP COLUMN IF EXISTS city;
+ALTER TABLE clusters DROP COLUMN IF EXISTS country;

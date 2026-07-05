@@ -1,3 +1,4 @@
+-- +goose Up
 -- PLAN-034: VM trash-with-undo（30s 回收站窗口）
 --
 -- 现状：VM 删除走硬路径——先停机再 Incus DELETE 再 DB UPDATE status='deleted'，
@@ -19,3 +20,8 @@ ALTER TABLE vms ADD COLUMN IF NOT EXISTS trashed_prev_status TEXT;
 CREATE INDEX IF NOT EXISTS idx_vms_trashed_at
     ON vms (trashed_at)
     WHERE trashed_at IS NOT NULL;
+
+-- +goose Down
+DROP INDEX IF EXISTS idx_vms_trashed_at;
+ALTER TABLE vms DROP COLUMN IF EXISTS trashed_prev_status;
+ALTER TABLE vms DROP COLUMN IF EXISTS trashed_at;
