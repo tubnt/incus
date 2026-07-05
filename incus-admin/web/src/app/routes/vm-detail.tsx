@@ -105,7 +105,7 @@ function UserVMDetailPage() {
     if (!result?.password) return;
     toast.success(
       t("vm.reinstallDone", {
-        username: result.username ?? "ubuntu",
+        username: result.username ?? "root",
         password: result.password,
         defaultValue: "重装完成 · {{username}} / {{password}}",
       }),

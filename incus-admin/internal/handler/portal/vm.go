@@ -32,6 +32,9 @@ type VMHandler struct {
 	// PLAN-025：异步 reinstall 入口
 	jobs    *jobs.Runtime
 	jobRepo *repository.ProvisioningJobRepo
+	// PLAN-054 / INFRA-013：vm_subscriptions repo。trash/restore 时联动切状态。
+	// nil 时跳过（兼容尚未注入的部署），与生产 main 注入保持一致。
+	subs *repository.SubscriptionRepo
 }
 
 func NewVMHandler(vmSvc *service.VMService, vmRepo *repository.VMRepo, sshKeys *repository.SSHKeyRepo, clusters *cluster.Manager) *VMHandler {
@@ -43,6 +46,12 @@ func NewVMHandler(vmSvc *service.VMService, vmRepo *repository.VMRepo, sshKeys *
 func (h *VMHandler) WithJobs(rt *jobs.Runtime, jobRepo *repository.ProvisioningJobRepo) *VMHandler {
 	h.jobs = rt
 	h.jobRepo = jobRepo
+	return h
+}
+
+// WithSubscriptions 注入 vm_subscriptions repo，启用 PLAN-054 trash/restore 联动。
+func (h *VMHandler) WithSubscriptions(s *repository.SubscriptionRepo) *VMHandler {
+	h.subs = s
 	return h
 }
 
@@ -93,6 +102,7 @@ func (h *VMHandler) TrashService(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]any{"error": "vm already trashed or deleted"})
 		return
 	}
+	cancelSubscriptionOnTrash(r.Context(), r, h.subs, vm.ID)
 	audit(r.Context(), r, "vm.trash", "vm", vm.ID, map[string]any{"name": vm.Name, "self": true})
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":     "trashed",
@@ -129,6 +139,7 @@ func (h *VMHandler) RestoreService(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]any{"error": "vm not in trash (race)"})
 		return
 	}
+	reactivateSubscriptionOnRestore(r.Context(), r, h.subs, vm.ID)
 	prev := ""
 	if vm.TrashedPrevStatus != nil {
 		prev = *vm.TrashedPrevStatus
@@ -201,22 +212,8 @@ func (h *VMHandler) Reinstall(w http.ResponseWriter, r *http.Request) {
 	resolved.VMName = vm.Name
 
 	if h.jobs == nil || h.jobRepo == nil {
-		// 兜底：未注入 jobs runtime 时回退同步路径，行为与 PLAN-025 前完全一致
-		result, err := h.vmSvc.Reinstall(r.Context(), resolved)
-		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-			return
-		}
-		auditDetails := map[string]any{"name": vm.Name, "source": resolved.ImageSource, "user": resolved.DefaultUser}
-		if req.TemplateSlug != "" {
-			auditDetails["template_slug"] = req.TemplateSlug
-		}
-		audit(r.Context(), r, "vm.reinstall", "vm", vmID, auditDetails)
-		writeJSON(w, http.StatusOK, map[string]any{
-			"status":   "reinstalled",
-			"password": result.Password,
-			"username": result.Username,
-		})
+		// OPS-051 / PLAN-052 Q3=A：删除同步兜底路径。生产强制注入 jobs runtime。
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "reinstall runtime unavailable"})
 		return
 	}
 
@@ -300,7 +297,8 @@ func (h *VMHandler) ResetPassword(w http.ResponseWriter, r *http.Request) {
 		project = "customers"
 	}
 
-	result, err := h.vmSvc.ResetPassword(r.Context(), clusterName, project, vm.Name, "ubuntu", mode)
+	// OPS-051 / PLAN-052 Q7：portal reset 默认目标用户 = root（与新建 VM 一致）
+	result, err := h.vmSvc.ResetPassword(r.Context(), clusterName, project, vm.Name, "root", mode)
 	if err != nil {
 		slog.Error("reset password failed", "vm", vm.Name, "error", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "password reset failed: " + err.Error()})
@@ -393,22 +391,14 @@ func (h *VMHandler) GetInitialCredentials(w http.ResponseWriter, r *http.Request
 	})
 }
 
-// defaultUserForVM 推断 VM 默认登录用户。Linux 镜像走 ubuntu / debian / rocky
-// 等约定；Windows 走 Administrator。无信号时回退 ubuntu（与 cloud-init 默认一致）。
+// defaultUserForVM 推断 VM 默认登录用户。OPS-051 / PLAN-052 Q7：所有 Linux
+// 统一 root；Windows 仍 Administrator。
 func defaultUserForVM(vm *model.VM) string {
 	img := strings.ToLower(vm.OSImage)
-	switch {
-	case strings.Contains(img, "windows"):
+	if strings.Contains(img, "windows") {
 		return "Administrator"
-	case strings.Contains(img, "debian"):
-		return "debian"
-	case strings.Contains(img, "rocky"), strings.Contains(img, "alma"), strings.Contains(img, "centos"):
-		return "rocky"
-	case strings.Contains(img, "fedora"):
-		return "fedora"
-	default:
-		return "ubuntu"
 	}
+	return "root"
 }
 
 func (h *VMHandler) GetService(w http.ResponseWriter, r *http.Request) {
@@ -524,6 +514,8 @@ type AdminVMHandler struct {
 	scheduler *cluster.Scheduler
 	jobs      *jobs.Runtime
 	jobRepo   *repository.ProvisioningJobRepo
+	// PLAN-054 / INFRA-013：admin trash/restore 也联动 vm_subscriptions。
+	subs *repository.SubscriptionRepo
 }
 
 func NewAdminVMHandler(vmSvc *service.VMService, vmRepo *repository.VMRepo, sshKeys *repository.SSHKeyRepo, clusters *cluster.Manager, scheduler *cluster.Scheduler) *AdminVMHandler {
@@ -534,6 +526,12 @@ func NewAdminVMHandler(vmSvc *service.VMService, vmRepo *repository.VMRepo, sshK
 func (h *AdminVMHandler) WithJobs(rt *jobs.Runtime, jobRepo *repository.ProvisioningJobRepo) *AdminVMHandler {
 	h.jobs = rt
 	h.jobRepo = jobRepo
+	return h
+}
+
+// WithSubscriptions 注入 vm_subscriptions repo，启用 PLAN-054 trash/restore 联动。
+func (h *AdminVMHandler) WithSubscriptions(s *repository.SubscriptionRepo) *AdminVMHandler {
+	h.subs = s
 	return h
 }
 
@@ -1212,63 +1210,9 @@ func (h *AdminVMHandler) CreateVM(w http.ResponseWriter, r *http.Request) {
 		req.SSHKeys = sshKeys
 	}
 
-	// OPS-024 B2：sync fallback 不支持 batch（兜底路径少用 + sync 阻塞 N*30s 不友好）
-	if (h.jobs == nil || h.jobRepo == nil) && req.Count > 1 {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "batch create requires async jobs runtime"})
-		return
-	}
-
+	// OPS-051 / PLAN-052 Q3=A：删除所有同步兜底路径，jobs runtime 必须注入。
 	if h.jobs == nil || h.jobRepo == nil {
-		// 兜底：未注入 jobs runtime 时同步路径（count == 1）
-		ip, gateway, cidr, ipErr := allocateIP(r.Context(), cc, 0)
-		if ipErr != nil {
-			slog.Error("allocate IP failed", "cluster", clusterName, "error", ipErr)
-			writeJSON(w, http.StatusConflict, map[string]any{"error": "no available IPs: " + ipErr.Error()})
-			return
-		}
-		result, err := h.vmSvc.Create(r.Context(), service.CreateVMParams{
-			ClusterName: clusterName,
-			Project:     req.Project,
-			UserID:      userID,
-			CPU:         req.CPU,
-			MemoryMB:    req.MemoryMB,
-			DiskGB:      req.DiskGB,
-			OSImage:     req.OSImage,
-			SSHKeys:     req.SSHKeys,
-			IP:          ip,
-			Gateway:     gateway,
-			SubnetCIDR:  cidr,
-			StoragePool: pool,
-			Network:     network,
-		})
-		if err != nil {
-			slog.Error("create VM failed", "cluster", clusterName, "error", err)
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-			return
-		}
-		vm := &model.VM{
-			Name:      result.VMName,
-			ClusterID: h.clusters.IDByName(clusterName),
-			UserID:    userID,
-			Status:    model.VMStatusRunning,
-			CPU:       req.CPU,
-			MemoryMB:  req.MemoryMB,
-			DiskGB:    req.DiskGB,
-			OSImage:   req.OSImage,
-			Node:      result.Node,
-			Password:  &result.Password,
-		}
-		if result.IP != "" {
-			vm.IP = &result.IP
-		}
-		if err := h.vmRepo.Create(r.Context(), vm); err != nil {
-			slog.Error("vm row insert failed", "name", result.VMName, "error", err)
-		} else {
-			attachIPToVM(r.Context(), result.IP, vm.ID)
-		}
-		audit(r.Context(), r, "vm.create", "vm", vm.ID, map[string]any{"name": result.VMName, "ip": result.IP, "admin": true})
-		slog.Info("VM created via admin", "vm", result.VMName, "ip", result.IP)
-		writeJSON(w, http.StatusCreated, result)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "provisioning runtime unavailable"})
 		return
 	}
 
@@ -1494,6 +1438,7 @@ func (h *AdminVMHandler) DeleteVM(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]any{"error": "vm already trashed or deleted"})
 		return
 	}
+	cancelSubscriptionOnTrash(r.Context(), r, h.subs, dbVM.ID)
 	slog.Info("vm trashed", "vm", vmName, "window_s", model.VMTrashWindowSeconds)
 	audit(r.Context(), r, "vm.trash", "vm", dbVM.ID, map[string]any{"name": vmName, "window_s": model.VMTrashWindowSeconds})
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -1528,6 +1473,7 @@ func (h *AdminVMHandler) RestoreVM(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]any{"error": "vm not in trash (race)"})
 		return
 	}
+	reactivateSubscriptionOnRestore(r.Context(), r, h.subs, dbVM.ID)
 	prev := ""
 	if dbVM.TrashedPrevStatus != nil {
 		prev = *dbVM.TrashedPrevStatus
@@ -1697,24 +1643,8 @@ func (h *AdminVMHandler) ReinstallVM(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 兜底：jobs runtime 未注入 → 同步原路径
-	result, err := h.vmSvc.Reinstall(r.Context(), resolved)
-	if err != nil {
-		slog.Error("reinstall VM failed", "vm", vmName, "error", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-	slog.Info("vm reinstalled", "vm", vmName, "source", resolved.ImageSource)
-	auditDetails := map[string]any{"name": vmName, "source": resolved.ImageSource, "user": resolved.DefaultUser, "admin": true}
-	if req.TemplateSlug != "" {
-		auditDetails["template_slug"] = req.TemplateSlug
-	}
-	audit(r.Context(), r, "vm.reinstall", "vm", h.vmIDByName(r.Context(), vmName), auditDetails)
-	writeJSON(w, http.StatusOK, map[string]any{
-		"status":   "reinstalled",
-		"password": result.Password,
-		"username": result.Username,
-	})
+	// OPS-051 / PLAN-052 Q3=A：删除同步兜底，jobs runtime 必须注入。
+	writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "reinstall runtime unavailable"})
 }
 
 // ResetPasswordAdmin 给 VM 重置密码（admin 路径）。PLAN-021 Phase C 起支持
@@ -1735,7 +1665,8 @@ func (h *AdminVMHandler) ResetPasswordAdmin(w http.ResponseWriter, r *http.Reque
 		req.Project = "customers"
 	}
 	if req.Username == "" {
-		req.Username = "ubuntu"
+		// OPS-051 / PLAN-052 Q7：默认登录用户改 root
+		req.Username = "root"
 	}
 
 	result, err := h.vmSvc.ResetPassword(r.Context(), req.Cluster, req.Project, vmName, req.Username, service.ResetPasswordMode(req.Mode))
@@ -2111,68 +2042,6 @@ func extractCIDR(cidr string) string {
 		return parts[1]
 	}
 	return "27"
-}
-
-var (
-	ipCacheMu      sync.Mutex
-	ipCacheData    map[string]bool
-	ipCacheUpdated time.Time
-)
-
-func pickNextIP(ctx context.Context, vmSvc *service.VMService, clusterName, project, ipRange string) string {
-	parts := strings.Split(ipRange, "-")
-	if len(parts) != 2 {
-		return ""
-	}
-	startParts := strings.Split(strings.TrimSpace(parts[0]), ".")
-	endParts := strings.Split(strings.TrimSpace(parts[1]), ".")
-	if len(startParts) != 4 || len(endParts) != 4 {
-		return ""
-	}
-
-	ipCacheMu.Lock()
-	usedIPs := ipCacheData
-	if usedIPs == nil || time.Since(ipCacheUpdated) > 60*time.Second {
-		instances, _ := vmSvc.ListInstances(ctx, clusterName, project)
-		usedIPs = make(map[string]bool)
-		for _, raw := range instances {
-			var inst struct {
-				State struct {
-					Network map[string]struct {
-						Addresses []struct {
-							Address string `json:"address"`
-							Family  string `json:"family"`
-							Scope   string `json:"scope"`
-						} `json:"addresses"`
-					} `json:"network"`
-				} `json:"state"`
-			}
-			_ = json.Unmarshal(raw, &inst)
-			for nic, data := range inst.State.Network {
-				if nic == "lo" { continue }
-				for _, addr := range data.Addresses {
-					if addr.Family == "inet" && addr.Scope == "global" {
-						usedIPs[addr.Address] = true
-					}
-				}
-			}
-		}
-		ipCacheData = usedIPs
-		ipCacheUpdated = time.Now()
-	}
-	ipCacheMu.Unlock()
-
-	prefix := strings.Join(startParts[:3], ".")
-	start := atoi(startParts[3])
-	end := atoi(endParts[3])
-
-	for i := start; i <= end; i++ {
-		ip := fmt.Sprintf("%s.%d", prefix, i)
-		if !usedIPs[ip] {
-			return ip
-		}
-	}
-	return ""
 }
 
 func atoi(s string) int {

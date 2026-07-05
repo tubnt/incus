@@ -1,3 +1,4 @@
+-- +goose Up
 -- PLAN-036 用户级防火墙集中管理：默认 firewall group 列表（per-user）
 --
 -- 用 junction table 而不是 users.default_group_ids INT[]，原因：
@@ -19,3 +20,6 @@ CREATE TABLE IF NOT EXISTS user_default_firewall_groups (
 
 CREATE INDEX IF NOT EXISTS idx_user_default_firewall_groups_order
     ON user_default_firewall_groups (user_id, sort_order, group_id);
+
+-- +goose Down
+DROP TABLE IF EXISTS user_default_firewall_groups;

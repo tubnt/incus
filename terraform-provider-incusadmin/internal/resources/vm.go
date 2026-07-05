@@ -8,6 +8,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -46,28 +47,31 @@ func (r *vmResource) Metadata(_ context.Context, _ resource.MetadataRequest, res
 }
 
 func (r *vmResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
-	requiresReplace := []planmodifier.String{stringplanmodifier.RequiresReplace()}
+	requiresReplaceStr := []planmodifier.String{stringplanmodifier.RequiresReplace()}
+	requiresReplaceInt := []planmodifier.Int64{int64planmodifier.RequiresReplace()}
 	resp.Schema = schema.Schema{
-		Description: "Incus VM 资源（admin only，跳过订单流）。Import ID 形式 `cluster/name`。一期所有字段修改触发 ForceNew；二期接 admin PATCH 端点支持 in-place resize。",
+		Description: "Incus VM 资源（admin only，跳过订单流）。Import ID 形式 `cluster/name`。cpu/memory_mb/disk_gb/os_image 修改触发 ForceNew（incus-admin 不支持 in-place resize）；二期接 admin PATCH 端点后再放开。",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.Int64Attribute{Computed: true},
 			"cluster": schema.StringAttribute{
 				Required:      true,
 				Description:   "Cluster 名（与 incus-admin admin clusters 列表一致）",
-				PlanModifiers: requiresReplace,
+				PlanModifiers: requiresReplaceStr,
 			},
+			// name 由后端 GenerateVMName 生成（CreateVM 忽略请求体的 name），
+			// 故为 Computed：Create 后从 202 响应的 vm_name 回填。
 			"name": schema.StringAttribute{
-				Required:      true,
-				Description:   "VM 名（仅小写字母 / 数字 / 连字符）",
-				PlanModifiers: requiresReplace,
+				Computed:    true,
+				Description: "VM 名（后端自动生成，创建后回填）",
 			},
-			"cpu":       schema.Int64Attribute{Required: true, PlanModifiers: []planmodifier.Int64{}},
-			"memory_mb": schema.Int64Attribute{Required: true, PlanModifiers: []planmodifier.Int64{}},
-			"disk_gb":   schema.Int64Attribute{Required: true, PlanModifiers: []planmodifier.Int64{}},
+			// cpu/memory_mb/disk_gb 补 RequiresReplace：改这三项必须重建（无 in-place resize）。
+			"cpu":       schema.Int64Attribute{Required: true, PlanModifiers: requiresReplaceInt, Description: "vCPU 核数"},
+			"memory_mb": schema.Int64Attribute{Required: true, PlanModifiers: requiresReplaceInt, Description: "内存 MB"},
+			"disk_gb":   schema.Int64Attribute{Required: true, PlanModifiers: requiresReplaceInt, Description: "系统盘 GB"},
 			"os_image": schema.StringAttribute{
 				Required:      true,
 				Description:   "OS 镜像 alias（如 ubuntu-22.04）",
-				PlanModifiers: requiresReplace,
+				PlanModifiers: requiresReplaceStr,
 			},
 			"ip":     schema.StringAttribute{Computed: true},
 			"status": schema.StringAttribute{Computed: true},
@@ -89,6 +93,8 @@ func (r *vmResource) Configure(_ context.Context, req resource.ConfigureRequest,
 }
 
 // adminCreateVMReq 与后端 AdminVMHandler.CreateVM body schema 对齐。
+// 注意：后端 CreateVM 用 GenerateVMName 生成 VM 名并忽略请求体的 name，
+// 故此处不含 name 字段；VM 名由 202 响应的 vm_name 回填。
 type adminCreateVMReq struct {
 	CPU          int      `json:"cpu"`
 	MemoryMB     int      `json:"memory_mb"`
@@ -98,7 +104,6 @@ type adminCreateVMReq struct {
 	SSHKeys      []string `json:"ssh_keys,omitempty"`
 	TargetUserID int64    `json:"target_user_id,omitempty"`
 	Count        int      `json:"count,omitempty"`
-	Name         string   `json:"name,omitempty"` // PLAN-026 batch with names
 }
 
 func (r *vmResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
@@ -112,40 +117,41 @@ func (r *vmResource) Create(ctx context.Context, req resource.CreateRequest, res
 		MemoryMB: int(plan.MemoryMB.ValueInt64()),
 		DiskGB:   int(plan.DiskGB.ValueInt64()),
 		OSImage:  plan.OSImage.ValueString(),
-		Name:     plan.Name.ValueString(),
 		Count:    1,
 	}
-	// 后端响应：异步 jobs runtime 返 202 + { vm: {...}, job_id: ... }；
-	// 这里一期不轮询 SSE，直接接受异步语义后立即 Read 拉最新。
+	// 后端 CreateVM 走异步 jobs runtime，单 VM 返 202 +
+	//   { status, job_id, vm_id, vm_name, ip }
+	// name 由后端 GenerateVMName 生成，请求体的 name 被忽略；此处按响应真实字段回填。
 	var out struct {
-		VM    *client.VM `json:"vm,omitempty"`
-		JobID int64      `json:"job_id,omitempty"`
+		Status string `json:"status"`
+		JobID  int64  `json:"job_id"`
+		VMID   int64  `json:"vm_id"`
+		VMName string `json:"vm_name"`
+		IP     string `json:"ip"`
 	}
 	cluster := plan.Cluster.ValueString()
 	if err := r.c.Do(ctx, "POST", fmt.Sprintf("/api/admin/clusters/%s/vms", cluster), body, &out); err != nil {
 		resp.Diagnostics.AddError("create vm failed", err.Error())
 		return
 	}
-	if out.VM == nil {
-		// 异步路径下后端可能仅返 job_id；让 Read 用 name 拉详情兜底
-		resp.Diagnostics.AddWarning(
-			"vm creation queued",
-			fmt.Sprintf("VM %s 创建已入队（job_id=%d）。Provider 不轮询 SSE；下次 plan/refresh 时 Read 自动同步。", plan.Name.ValueString(), out.JobID),
-		)
-		plan.Status = types.StringValue("creating")
-		plan.IP = types.StringNull()
-		plan.Node = types.StringNull()
-		resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
-		return
-	}
-	plan.ID = types.Int64Value(out.VM.ID)
-	plan.Status = types.StringValue(out.VM.Status)
-	plan.Node = types.StringValue(out.VM.Node)
-	if out.VM.IP != nil {
-		plan.IP = types.StringValue(*out.VM.IP)
+	plan.ID = types.Int64Value(out.VMID)
+	plan.Name = types.StringValue(out.VMName) // 回填后端生成名
+	if out.IP != "" {
+		plan.IP = types.StringValue(out.IP)
 	} else {
 		plan.IP = types.StringNull()
 	}
+	if out.Status != "" {
+		plan.Status = types.StringValue(out.Status)
+	} else {
+		plan.Status = types.StringValue("provisioning")
+	}
+	// 异步创建：node 尚未确定，交由后续 Read 从 db 行填充。
+	plan.Node = types.StringNull()
+	resp.Diagnostics.AddWarning(
+		"vm creation queued",
+		fmt.Sprintf("VM %s 创建已入队（job_id=%d）。Provider 不轮询 SSE；下次 plan/refresh 时 Read 自动同步 status/node。", out.VMName, out.JobID),
+	)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
@@ -157,28 +163,38 @@ func (r *vmResource) Read(ctx context.Context, req resource.ReadRequest, resp *r
 	}
 	cluster := state.Cluster.ValueString()
 	name := state.Name.ValueString()
+	// admin GET /clusters/{name}/vms/{vmName} 返
+	//   { vm, state, snapshots, project, db }
+	// 其中 db 键承载持久化的 model.VM 行（cpu/memory_mb/disk_gb/os_image/status/node/ip）；
+	// vm 键是脱敏后的 Incus 实例原始 JSON，不用于回填 Terraform 字段。
 	var out struct {
-		VM client.VM `json:"vm"`
+		DB *client.VM `json:"db"`
 	}
-	// admin GET /clusters/{name}/vms/{vmName} 返 single VM by cluster + name
 	if err := r.c.Do(ctx, "GET", fmt.Sprintf("/api/admin/clusters/%s/vms/%s", cluster, name), nil, &out); err != nil {
 		// 404 → drift；让 framework 自动从 state remove
-		if strings.Contains(err.Error(), "404") {
+		if client.IsNotFound(err) {
 			resp.State.RemoveResource(ctx)
 			return
 		}
 		resp.Diagnostics.AddError("read vm failed", err.Error())
 		return
 	}
-	state.ID = types.Int64Value(out.VM.ID)
-	state.CPU = types.Int64Value(int64(out.VM.CPU))
-	state.MemoryMB = types.Int64Value(int64(out.VM.MemoryMB))
-	state.DiskGB = types.Int64Value(int64(out.VM.DiskGB))
-	state.OSImage = types.StringValue(out.VM.OSImage)
-	state.Status = types.StringValue(out.VM.Status)
-	state.Node = types.StringValue(out.VM.Node)
-	if out.VM.IP != nil {
-		state.IP = types.StringValue(*out.VM.IP)
+	if out.DB == nil {
+		// Incus 有实例但 DB 无持久化行（漂移/手工创建）：无可回填的权威字段，视为 drift。
+		resp.State.RemoveResource(ctx)
+		return
+	}
+	db := out.DB
+	state.ID = types.Int64Value(db.ID)
+	state.Name = types.StringValue(db.Name)
+	state.CPU = types.Int64Value(int64(db.CPU))
+	state.MemoryMB = types.Int64Value(int64(db.MemoryMB))
+	state.DiskGB = types.Int64Value(int64(db.DiskGB))
+	state.OSImage = types.StringValue(db.OSImage)
+	state.Status = types.StringValue(db.Status)
+	state.Node = types.StringValue(db.Node)
+	if db.IP != nil {
+		state.IP = types.StringValue(*db.IP)
 	} else {
 		state.IP = types.StringNull()
 	}
@@ -196,8 +212,9 @@ func (r *vmResource) Delete(ctx context.Context, req resource.DeleteRequest, res
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	// admin DELETE /vms/{name} 走 trash → 30s 后 worker 真删（PLAN-034）
-	if err := r.c.Do(ctx, "DELETE", fmt.Sprintf("/api/admin/vms/%s", state.Name.ValueString()), nil, nil); err != nil {
+	// admin DELETE /vms/{name} 走 trash → 30s 后 worker 真删（PLAN-034）。
+	// T7 幂等：404（已不存在）视为删除成功。
+	if err := r.c.Do(ctx, "DELETE", fmt.Sprintf("/api/admin/vms/%s", state.Name.ValueString()), nil, nil); err != nil && !client.IsNotFound(err) {
 		resp.Diagnostics.AddError("delete vm failed", err.Error())
 	}
 }

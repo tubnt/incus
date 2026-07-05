@@ -46,34 +46,13 @@ func resolveReinstallTemplate(ctx context.Context, templateSlug, osImage string)
 	return params, nil
 }
 
-// defaultUserForSource mirrors the distro→default-user map used by the
-// frontend (web/src/features/vms/default-user.ts). We only hit this path for
-// legacy os_image requests; once all callers send template_slug this branch
-// becomes dead code.
+// defaultUserForSource：legacy os_image 路径的默认登录用户兜底。OPS-051 /
+// PLAN-052 Q7 决策：所有 Linux 镜像统一 root；Windows 仍 Administrator。
+// 实际生产路径都走 template_slug → DB.default_user（已 migration 改 root）。
 func defaultUserForSource(source string) string {
 	s := strings.ToLower(source)
-	switch {
-	case strings.Contains(s, "windows"):
+	if strings.Contains(s, "windows") {
 		return "Administrator"
-	case strings.Contains(s, "debian"):
-		return "debian"
-	case strings.Contains(s, "rocky"):
-		return "rocky"
-	case strings.Contains(s, "alma"):
-		return "almalinux"
-	case strings.Contains(s, "centos"):
-		return "centos"
-	case strings.Contains(s, "fedora"):
-		return "fedora"
-	case strings.Contains(s, "opensuse"):
-		return "opensuse"
-	case strings.Contains(s, "arch"):
-		return "arch"
-	case strings.Contains(s, "alpine"):
-		return "alpine"
-	case strings.Contains(s, "freebsd"):
-		return "freebsd"
-	default:
-		return "ubuntu"
 	}
+	return "root"
 }

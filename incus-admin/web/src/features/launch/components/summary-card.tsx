@@ -9,7 +9,7 @@ import { cn, formatCurrency } from "@/shared/lib/utils";
 
 /**
  * SummaryCard —— `/launch` 右栏 sticky 摘要：
- * 选择回顾 + 月费 hero + 余额对比 + 不足时 inline alert。
+ * 选择回顾 + 单价 hero（按周期切换 monthly/daily）+ 余额对比 + 不足时 inline alert。
  */
 export function SummaryCard({
   product,
@@ -18,6 +18,8 @@ export function SummaryCard({
   balance,
   balanceCurrency,
   insufficient,
+  period = "monthly",
+  unitPrice,
 }: {
   product: Product | null;
   osImage: string;
@@ -25,9 +27,21 @@ export function SummaryCard({
   balance: number;
   balanceCurrency: string | undefined;
   insufficient: boolean;
+  period?: "daily" | "monthly";
+  unitPrice?: number | null;
 }) {
   const { t } = useTranslation();
   const osLabel = useOsImageLabel(osImage);
+  // PLAN-054：unitPrice 缺失（product 不支持当前 period）时回退到 monthly 单价。
+  const heroPrice = unitPrice ?? product?.price_monthly ?? null;
+  const heroUnit =
+    period === "daily"
+      ? t("period.perDay", { defaultValue: "/ 天" })
+      : t("billing.perMonth", { defaultValue: "/ 月" });
+  const heroLabel =
+    period === "daily"
+      ? t("period.dailyLabel", { defaultValue: "按日" })
+      : t("launch.priceMonthly", { defaultValue: "月费" });
   return (
     <Card>
       <CardContent className="flex flex-col gap-3 p-4">
@@ -53,14 +67,14 @@ export function SummaryCard({
 
         <div className="rounded-md border border-border bg-surface-1 p-3 flex flex-col gap-1.5">
           <div className="text-caption text-text-tertiary font-emphasis">
-            {t("launch.priceMonthly", { defaultValue: "月费" })}
+            {heroLabel}
           </div>
           <div className="flex items-baseline gap-1.5">
             <span className="text-body-emphasis font-strong text-foreground tabular-nums">
-              {product ? formatCurrency(product.price_monthly, product.currency) : "—"}
+              {heroPrice != null ? formatCurrency(heroPrice, product?.currency) : "—"}
             </span>
             <span className="text-caption text-text-tertiary">
-              {t("billing.perMonth", { defaultValue: "/ 月" })}
+              {heroUnit}
             </span>
           </div>
         </div>

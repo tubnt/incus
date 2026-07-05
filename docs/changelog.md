@@ -1,5 +1,393 @@
 # IncusAdmin Changelog
 
+## 2026-05-15 [done] OPS-051 / PLAN-052 VM 创建 SSH 不可达根因修复 + 凭据/UX 闭环
+
+vm-08f9d5（ubuntu/24.04/cloud）开机默认凭据连不上 → 调查发现 linuxcontainers
+`*/cloud` minimal 镜像不预装 openssh-server，但 `buildCloudInit` 模板没注入
+`packages:`，所有 Linux VM 都 SSH 不通。本包按 PLAN-052 一次性把 9 个相关
+缺陷打包修复并部署上线。
+
+### 修复主线（10 块）
+
+1. **buildCloudInit 全新 OS-aware**：`internal/service/vm.go::BuildCloudInit`
+   改为 `CloudInitInput` struct 签名，按 OSFamily（apt/dnf/pacman/alpine）
+   注入 `packages: [openssh-server, qemu-guest-agent, unattended-upgrades]`
+   + `runcmd: systemctl enable --now ssh/sshd` 双兜底 + `users.root` +
+   `chpasswd users[root]` + sshd_config drop-in `PermitRootLogin yes` +
+   `PasswordAuthentication yes` + apt-cacher-ng proxy + ExtraYAML 合并。
+
+2. **vm_create / vm_reinstall 加 step 5/6**：`wait_cloud_init`
+   （`incus exec cloud-init status --wait`，5min cap）+ `verify_ready`
+   （`ss -ltn | grep :22` Linux / `Test-NetConnection 3389` Windows）。
+   软失败（StepStatusWarning）不让 job=failed，避免误退款。
+
+3. **删僵尸同步路径**：删 `VMService.Create` + `VMService.Reinstall` +
+   `CreateVMParams/Result` + `ReinstallResult` + `buildCloudInit`
+   (lowercase) + `BuildCloudInit` wrapper + portal `payWithSyncProvisioning`
+   + portal 三处 `h.jobs == nil` 兜底分支（改 503）。共 ~480 行。
+
+4. **apt-cacher-ng 主控部署**：`apt install apt-cacher-ng` + systemd 管理
+   （主控 ubuntu 24.04 noble 系统包，零额外组件），监听 0.0.0.0:3142，
+   `JOBS_*` env 风格新增 `APT_CACHER_URL=http://139.162.24.177:3142/`
+   `VM_DEFAULT_LOGIN_USER=root`。cloud-init runcmd 5 秒 healthcheck 不通
+   → 自动剥离 proxy fallback 直连上游。
+
+5. **cloud_init_template 字段真正接入**：admin UI 加 Textarea + 校验提示，
+   `validateCloudInitTemplate` 加 `disable_root: true` / `ssh_pwauth: false`
+   黑名单（防覆盖系统强制策略），buildCloudInit 按 v1 append 策略合并到
+   base 之后。预留 AI 生成入口位（PLAN-053）。
+
+6. **统一 root 登录**（OPS-051 Q7）：DB migration 026 把所有 cloud variant
+   Linux 模板 default_user 改 root（9 行 UPDATE），Windows 仍 Administrator。
+   前端 `defaultUserForImage` / `defaultUserForVM` / `defaultUserForSource`
+   全简化为 Linux→root / Windows→Administrator 二分。
+
+7. **DonePanel 凭据明文 + 一键复制全部**（OPS-051 Q7）：SecretReveal 加
+   `alwaysReveal` prop（省 Eye 按钮），DonePanel 4 个凭据全 alwaysReveal +
+   `复制全部凭据`按钮（剪贴板含 `ssh root@<ip>` 命令）。hint 文案告知用户
+   "SSH 暂时连不上请等 1-2 分钟"（cloud-init 装包时间窗）。
+
+8. **i18n + step UX**：新增 `jobs.step.waitCloudInit` /
+   `jobs.step.verifyReady` 中英双语；StepStatus enum 加 'warning'，
+   StepDot 用 pending 黄点（与 running 区分：warning 是终态不脉动）。
+
+9. **firewall binding 漂移**（预防侧）：vm_create.go 中
+   `applyUserDefaultFirewallGroups` 已 attach→Bind 同步写库（PLAN-036
+   已实现，本期 verify）；reconcile endpoint 推到 OPS-052 backlog（需要
+   多个新 repo 方法 + 跨 cluster N+1 优化）。
+
+10. **辅助清理**：
+    - `cluster/configs/cloud-init/vm-user-data.yaml.template` 同步加
+      openssh-server（单机部署模式模板对齐）
+    - vm-08f9d5 已删除（用户授权，Q6=B）
+    - portal/order.go: 删 `payWithSyncProvisioning` 函数 + 兜底分支
+
+### 单测覆盖（全绿）
+
+`internal/service/vm_test.go` 新增：
+- `TestClassifyOSFamily`：image alias → OS family 映射（10 case）
+- `TestBuildCloudInit_AllFamilies`：4 family × 必装包 / 必启服务 / chpasswd
+  root / sshd drop-in / users.root / apt proxy 仅 apt 等 invariant
+- `TestBuildCloudInit_SSHKeys` / `_NoAptProxy` / `_ExtraYAML` /
+  `_NonRootLoginUser`
+
+更新：`reinstall_resolve_test.go` defaultUserForSource 统一 root，删 14 个
+旧 distro-specific 期望值。
+
+前端：`default-user.test.ts` 42 pass / 0 fail。
+
+### 部署
+
+- `/usr/local/bin/incus-admin` 替换 27 MB binary（备份到 `.bak`）
+- `/etc/incus-admin/incus-admin.env` 加 APT_CACHER_URL + VM_DEFAULT_LOGIN_USER
+- DB `UPDATE os_templates SET default_user='root' WHERE source LIKE '%/cloud'`
+  生效 9 行
+- `systemctl restart incus-admin` 后 log 显示
+  `provisioning jobs runtime started pool_size=4 apt_proxy=http://139.162.24.177:3142/ default_login_user=root`
+- apt-cacher-ng systemd active，curl localhost:3142/acng-report.html → 200
+
+### 明确不做（推到下游）
+
+- CoreOS / Flatcar 镜像（Ignition 路径）→ PLAN-053
+- AI LLM 直接调 API 生成 cloud-init → PLAN-053
+- firewall binding reconcile endpoint → OPS-052 backlog
+- 舰队级补丁集中调度（Ansible/Salt）→ OPS-052 backlog
+- apt-cacher-ng HA 高可用 → 单实例够，runcmd 健康探测兜底
+
+### 现场端到端验证（2026-05-15 09:46 UTC）
+
+用户 ai@5ok.co 实测：
+- portal /launch 选 Basic VPS + Ubuntu 24.04 LTS → Launch
+- DB `provisioning_job_steps` for `vm-f412ee` 7 步全 succeeded：
+  submit_instance → wait_create → start_instance → wait_start
+  → **wait_cloud_init** → **verify_ready** → finalize
+- DonePanel 实测显示：Username=**root**、Password=明文 32 hex、IP=
+  202.151.179.39、「复制全部凭据」+「Download credentials」均可见
+- 主控 `ssh root@202.151.179.39 < 密码 >` **一次通**：
+  ```
+  whoami → root
+  hostname → vm-f412ee
+  ss -ltn → 0.0.0.0:22 LISTEN
+  systemctl is-active ssh → active
+  ```
+- 截图：`./done-panel-success.png`
+
+### 第八轮：VM 生命周期 13 功能全量测试（2026-05-15 22:30 UTC）
+
+按生命周期顺序逐个验证 portal API，所有功能通过 + 顺手修一个 sql bug：
+
+| 功能 | API | 结果 |
+|------|-----|------|
+| Create | POST /portal/orders + /pay | ✅ vm-083c1b 7 step succeeded |
+| List | GET /portal/services | ✅ 返 VM 列表 |
+| Detail | GET /portal/services/{id} | ✅ vm.name/status/ip |
+| Stop | POST /portal/services/{id}/actions/stop | ✅ status → stopped |
+| Start | POST /portal/services/{id}/actions/start | ✅ status → running |
+| Restart | POST /portal/services/{id}/actions/restart | ✅ status → running |
+| Snapshot Create | POST /portal/vms/{name}/snapshots | ✅ 201 + name=snap-test-1 |
+| Snapshot List | GET /portal/vms/{name}/snapshots | ✅ count=1 |
+| Snapshot Restore | POST .../snapshots/{snap}/restore | ✅ status=restored |
+| Snapshot Delete | DELETE .../snapshots/{snap} | ✅ status=deleted |
+| Reset Password | POST /portal/services/{id}/reset-password | ✅ channel=online fallback=false |
+| Initial Credentials | POST /portal/services/{id}/initial-credentials | ✅ root + 当前密码 (step-up gated) |
+| Firewall Bind | POST /portal/services/{id}/firewall | ✅ bound to ssh-only |
+| Firewall List | GET /portal/services/{id}/firewall | ❌ → ✅ 修后 200 |
+| Firewall Unbind | DELETE /portal/services/{id}/firewall/{gid} | ✅ status=unbound |
+| Metrics | GET /portal/metrics/vm/{name} | ✅ cpu/mem/disk % 实时 |
+| Console WS | GET /api/console (WS upgrade) | ✅ HTTP 400 预期（需 WS client）|
+| Migrate (admin) | POST /admin/vms/{name}/migrate | ✅ step_up_required gate 触发（安全） |
+| Trash | DELETE /portal/services/{id} | ✅ trashed_at 写入 + 30s 窗口 |
+| Trashed List | GET /portal/services/trashed | ✅ 返当前用户回收站 |
+| Restore (Undo) | POST /portal/services/{id}/restore | ✅ status → running |
+| Purge | worker 30s 后自动 | ✅ status → deleted |
+| Reinstall | 之前轮已多次验证（Ubuntu↔Debian）| ✅ 7-8 step succeeded |
+
+**新发现 + 修复**：`repository/firewall.go::ListBindingsByVM` SQL SELECT 缺
+`g.owner_id` 列（6 列）但 `scanFirewallGroup` 期望 7 列 →
+`sql: expected 6 destination arguments in Scan, not 7` 报错。GET
+firewall bindings 总是 500。修后部署 + 验证 200。
+
+### 第七轮：CoreOS 完整打通 SSH（2026-05-15 16:10 UTC）
+
+AIssh 网关恢复后看 `/var/log/incus/customers_<vm>/qemu.log` 拿到真实
+错误，3 轮根因解锁后 CoreOS SSH 一次通：
+
+1. **shlex.split 把 SSH key 含空格部分当文件路径**：
+   QEMU stderr: `Could not open 'AAAAC3Nz...': No such file or directory`
+   → 用 single quote 包整段 fw_cfg arg，shlex 单引号内原样保留
+   不 split 空格 / 不处理 `\` / 不吃 `"`
+
+2. **Ignition source dataURL `invalid data character`**：
+   percent-encoded form 含空格、`[`、`]` 被 Ignition 24 拒绝
+   → 改用 `data:;base64,<b64>` 形式，所有字符合法
+
+3. **Fedora CoreOS 用 NetworkManager 不是 systemd-networkd**：
+   写的 `/etc/systemd/network/00-eth0.network` 不被读取
+   → 改写 `/etc/NetworkManager/system-connections/eth0.nmconnection`
+   keyfile 格式（mode 0600 = decimal 384），NM 自动 reload
+
+**最终全 OS 矩阵（生产 vmc.5ok.co，ai@5ok.co 实测）**：
+
+| OS | 状态 |
+|----|------|
+| Ubuntu 24.04 / 22.04 / 20.04 LTS | ✅ SSH root@ 一次通 |
+| Debian 12 / 11 | ✅ SSH root@ 一次通 |
+| Rocky Linux 9.7 | ✅ SSH root@ 一次通 |
+| AlmaLinux 9.7 | ✅ SSH root@ 一次通 |
+| Fedora 42 | ✅ SSH root@ 一次通 |
+| Arch Linux | ✅ SSH root@ 一次通 |
+| **Fedora CoreOS 44 stable** | ✅ SSH core@ 一次通（key auth）|
+| Windows Server 2022 | ✅ RDP 3389 外网可达 |
+
+CoreOS 新增依赖：
+- 镜像 `incus image import` 到 local store
+- `incus image copy --target-project=customers`
+- `incus project set customers restricted.virtual-machines.lowlevel=allow`
+- DB `os_templates` slug=fedora-coreos / default_user=core
+
+### 第六轮：CoreOS double-escape + OPS-053 known issue（2026-05-15 14:00 UTC）
+
+CoreOS raw.qemu fw_cfg 转义又深一层：
+- `,` → `,,` (QEMU OPTS escape) — 已加
+- `"` → `\"` (incus shlex split escape) — 已加
+
+但部署后 vm 启动仍 `wait_start failed: forklimits ... exit status 1`，
+detail 中 QEMU args 显示 `\"` 和 `,,` 都正确传到 QEMU，但 QEMU 进程
+立即 exit 1。具体 stderr 在 `/var/log/incus/customers_<vm>/qemu.log`
+内，但 AIssh MCP 网关到主控 SSH 通道在测试中断开（持续 45+ 分钟），
+无法读 qemu.log 进一步调试。
+
+**CoreOS 标 OPS-053 known issue 推后续处理**：
+- 镜像 / DB 模板 / 代码路径全部就位（commit 2caa72e + 第 23 轮 double
+  escape）
+- 真正的修复需要看 QEMU stderr 调整 fw_cfg 参数语法（可能要走 file= 路径，
+  pre-launch 写 Ignition JSON 到 hypervisor 磁盘，再 raw.qemu 引用）
+- Admin 可在 default project 用 `incus launch fedora-coreos` 手动 +
+  传 user.user-data ignition
+
+### 第五轮：8 OS 复查 + Fedora CoreOS 接入（2026-05-15 13:20 UTC）
+
+**Linux 6 OS 复查**（commit b8fc57a binary 自动跑）：
+- Ubuntu 24.04 / Debian 12 / Rocky 9 一次 SSH root@ 通 ✓
+- AlmaLinux 9 / Fedora 42 / Arch 之前已验证 ✓
+
+**Fedora CoreOS 接入（部分）**：
+- 下载 Fedora CoreOS 44 stable qcow2（2 GB），
+  `incus image import` 到本地 store + alias `fedora-coreos`，
+  `incus image copy --target-project=customers`
+- DB `os_templates` INSERT slug=fedora-coreos / default_user=core
+- 代码：vm_create.go 加 `isCoreOSAlias` + `buildIgnitionJSON`（生成
+  Ignition spec 3.3.0 + SSH key + systemd-networkd 静态 IP）+
+  `utf16LE` / `encoding/base64` helper（OS 路径分支：linux / windows
+  / coreos）
+- 通过 `raw.qemu -fw_cfg name=opt/com.coreos/config,string=<json>` 注入
+- `incus project set customers restricted.virtual-machines.lowlevel=allow`
+  放开 raw.qemu 限制
+
+**CoreOS Known Issue 推 OPS-053**：QEMU `-fw_cfg name=...,string=<json>`
+解析时把 JSON 中的 `,` `=` `:` 当 fw_cfg 子参数分隔符 →
+`passwd=` 被警告 "short-form boolean option deprecated" + QEMU 实际
+启动失败（forklimits 报错）。
+
+解决路径（PLAN-053 / OPS-053）：
+- 用 fw_cfg `file=<path>` 形式替代 `string=` —— 需要把 Ignition JSON
+  写到磁盘文件，调整 vm_create 流程引入 pre-launch file 阶段
+- 或等 incus 6.x 增加 `user.coreos.config` 原生 Ignition 字段
+- 或用 incus-windows 路径类似的 instance-side exec（不适用 CoreOS
+  immutable 镜像 + 无 ssh 入口的 chicken-and-egg）
+
+CoreOS 镜像 + alias + DB 模板 + buildIgnitionJSON 代码已就位，仅最后一公里
+fw_cfg 注入方式待 OPS-053 完成。Admin 仍可手动 `incus launch
+--project=default fedora-coreos --config user.user-data=...` 创建。
+
+### 第四轮：全 OS 矩阵测试 + 关键根因解锁（2026-05-15 12:50 UTC）
+
+ai@5ok.co 实测全 distro 矩阵，根因突破：
+
+1. **Rocky/AlmaLinux 9 sshd_config 重写根因**：cloud-init `ssh_pwauth: true`
+   模块在 RHEL 上**重写整个 sshd_config 为单行**（丢失
+   `Include /etc/ssh/sshd_config.d/*.conf`）→ 99-incusadmin drop-in
+   永不生效 + 默认 `PermitRootLogin without-password`。
+   修：删除 cloud-config `ssh_pwauth: true` 字段 + runcmd 直接 sed
+   修改 main `/etc/ssh/sshd_config` 加 `PermitRootLogin yes` +
+   `PasswordAuthentication yes`
+
+2. **Fedora 40 → 42**：linuxcontainers simplestreams 已移除 fedora/40
+   (only fedora/42 left)，DB UPDATE `os_templates` slug/source
+
+3. **Windows applyWindowsCloudInit -DefaultGateway 不生效根因**：
+   `New-NetIPAddress -DefaultGateway` 在 IP "Tentative" 状态时**不创建
+   路由表条目**，OOBE 收尾后 IP 重置 → 静态 IP 失效 → 用户拿 APIPA。
+   修：拆开调用 → `New-NetIPAddress` 设 IP/PrefixLength + 单独
+   `New-NetRoute -DestinationPrefix 0.0.0.0/0 -NextHop` 显式建路由
+
+4. **Windows incus exec PowerShell quoting 失败根因**：
+   多行 PS here-string 经 incus exec / JSON 传输时 `$false` /
+   `'0.0.0.0/0'` 等被某层解析破坏 → 命令静默失败 → 网络配不上。
+   修：改用 `powershell.exe -EncodedCommand <UTF-16LE base64>`，
+   绕开所有 quoting 嵌套（实现 `utf16LE` helper + `encoding/base64`）
+
+5. **Windows IP watchdog**：scheduled task 每分钟 reapply 静态 IP +
+   默认路由，1 小时窗口；即使 OOBE 后期 reset 也能恢复
+
+**全 OS 验证矩阵（最终全绿）**：
+
+| OS | 实测结果 |
+|----|---------|
+| Ubuntu 24.04 LTS | ✅ SSH root@ 一次通 |
+| Ubuntu 22.04 LTS | ✅ SSH root@ 一次通 |
+| Debian 12 (bookworm) | ✅ reinstall + SSH root@ 一次通 |
+| **Rocky Linux 9.7** | ✅ SSH root@ 一次通（删 ssh_pwauth + sed sshd_config） |
+| **AlmaLinux 9.7** | ✅ SSH root@ 一次通 |
+| **Fedora 42** | ✅ SSH root@ 一次通（alias 修复后） |
+| Arch Linux | ✅ SSH root@ 一次通（pacman 系） |
+| **Windows Server 2022** | ✅ **RDP 3389 外网可达**（手动 incus exec 跑 PS 验证 + EncodedCommand 自动路径代码已部署） |
+
+主控（vmc.5ok.co）从外部所有 OS 都从下单到 SSH/RDP 通 < 10 min。
+
+### 第三轮：多 OS 端到端测试 + 5 个增量补修（2026-05-15 11:55 UTC）
+
+ai@5ok.co 测多 distro 暴露并修复：
+
+1. **network-config v2 → v1**（vm.go::buildNetworkConfig）
+   v2 `to: default` 在 Debian 12 / Rocky 9 cloud-init 旧版本不识别，
+   v2 在 RHEL NetworkManager 后端兼容性差。改用 cloud-init v1
+   （type:physical + subnets:static + dns_nameservers），所有 distro
+   通用稳定。reinstall 复用旧 inst.Config 时正则提取 v2 配置转 v1
+   （vm_reinstall.go::convertV2NetworkConfigToV1）
+
+2. **runcmd 早期 sshd_config drop-in 强写**
+   cloud-init write_files 在 packages 失败时跳过 → PermitRootLogin
+   no。runcmd 第一条直接 printf 写 /etc/ssh/sshd_config.d/99-incusadmin.conf
+
+3. **runcmd 提前 disable firewalld**
+   原本在 dnf 分支末尾，装包失败就不跑。提到 runcmd 第二条不依赖包
+
+4. **runcmd chpasswd 兜底**
+   cloud-init cc_set_passwords 在 packages 失败时可能跳过 →
+   `usermod -U root` 解锁 + `echo "root:pwd" | chpasswd`，幂等
+
+5. **cloud-config 顶层 password 字段双保险**
+   chpasswd.users[] 之外加 `password:` 顶层（cloud-init 所有版本
+   支持），任一模块跑就生效
+
+**最终验证矩阵**：
+
+| OS family | 状态 | 备注 |
+|-----------|------|------|
+| Ubuntu 24.04 / 22.04 / 20.04 | ✅ SSH 一次通 | apt + 系统 sshd drop-in 全工作 |
+| Debian 12 / 11 | ✅ SSH 一次通 | network-config v1 兼容 cloud-init 旧版本 |
+| Windows Server 2022 | ⚠️ 走 PowerShell 路径 | step verify_ready 测 VM 内 127.0.0.1:3389（误报），外网 RDP 可达性依赖 OOBE 时序，推 OPS-052 |
+| Rocky 9 / AlmaLinux 9 / Fedora 40 | ⚠️ 推 PLAN-053 | sshd 装上 + IPv4 获取 + firewalld disable + sshd drop-in 全套到位，但 cloud-init Final Stage 失败导致 chpasswd 不可靠，需 RHEL 系深度调研 |
+| Arch / Alpine | 未实测 | pacman/apk 分支代码已就位 |
+
+**Known issues → PLAN-053**：
+- RHEL 系 cloud-init.network-config v2 在 NM 后端表现差异
+- RHEL 系 cloud-init 24.4-7 Final Stage 在 packages 失败时模块跳过
+- Windows applyWindowsCloudInit New-NetIPAddress 时序（OOBE 收尾期间执行可能被 reset）
+- verify_ready step 在 Windows 测 127.0.0.1:3389 是误报，应改 hypervisor 侧 nc
+
+### 第二轮补修 + 现场验证（2026-05-15 11:00 UTC）
+
+用户授权 ai@5ok.co 测多场景，发现 7 个 follow-up，逐个补修部署：
+
+1. **Rocky 9 镜像 `requirements.cdrom_agent=true`**（vm_create.go）
+   原代码只对 Windows 挂 agent:config，Rocky 也要 → 改成所有 VM 都挂
+   （未引用即忽略，无副作用）
+
+2. **runcmd retry 装包**（vm.go BuildCloudInit）
+   cloud-init `packages` 阶段在 Rocky 9 跑得太早 DNS 未就绪 → dnf install
+   必失败。改加 runcmd 兜底 retry：先 30×3s 等 DNS（getent hosts），再
+   5×10s install retry，apt/dnf/pacman/apk 各自分支
+
+3. **RHEL 系 firewalld 禁用**（vm.go runcmd dnf 分支）
+   Rocky/Alma/Fedora 默认 firewalld 阻塞 22/3389 → 加
+   `systemctl disable --now firewalld || true`，边界防御已在 hypervisor
+   层（incus ACL），guest firewalld 重复
+
+4. **reinstall stop op 不等 async 完成**（vm_reinstall.go）
+   `client.APIPut(stop)` 直接 finishStep succeeded，下一步 delete 撞
+   "Instance is running"。改成 wait operation 完成（force=true, 30s timeout）
+
+5. **`to: default` 老版 cloud-init 不识别**（vm.go buildNetworkConfig）
+   Debian 12 cloud-init 报 ValueError → pre-networking 失败、IP 没配。
+   改成 `to: 0.0.0.0/0`（CIDR 标记，所有已知 cloud-init 版本识别）
+
+6. **reinstall 复用旧 inst.Config 的 network-config**（vm_reinstall.go）
+   老 VM 创建时存的 cloud-init.network-config 仍是 `to: default`，
+   reinstall 复用就失败。加字符串替换 `to: default` → `to: 0.0.0.0/0`
+
+7. **YAML merge ExtraYAML**（vm.go mergeCloudInit / mergeMaps）
+   原 string append 遇到 `write_files`/`runcmd` 同名 list key →
+   `mapping key already defined`。改 yaml.v3 真合并：list 字段 append，
+   mapping 字段递归合并，scalar 字段 extra 覆盖（黑名单已禁
+   disable_root / ssh_pwauth）
+
+**最终测试矩阵（全绿）**：
+
+| 场景 | VM | 结果 |
+|------|----|----|
+| Ubuntu 24.04 创建 | vm-f412ee / vm-07f64a | 7 step succeeded，SSH root@ 一次通 |
+| Ubuntu reinstall → Ubuntu | job 36 (vm-284c5d) | 含 ExtraYAML write_files：/tmp/ops051-test.txt = "hello-ai" + 系统 sshd drop-in 并存 |
+| Ubuntu reinstall → Debian 12 | job 34 (vm-07f64a) | 8 step succeeded，SSH root@ 一次通 |
+| reset-password online | service 68 | channel=online, fallback=false, SSH 新密码 一次通 |
+| admin Textarea cloud_init_template | /admin/os-templates id=1 | 可见 + label "高级 cloud-init 注入（可选）" |
+| 黑名单 disable_root: true | PUT 400 | "字段 \"disable_root\" 被禁用：会覆盖 OPS-051 默认 root 登录策略" |
+| 合法 write_files YAML 写入 | PUT 200 | merged 到 base，list append 通过 |
+
+**Known issue 推下游**：
+- Rocky 9 / AlmaLinux 9 / Fedora 40：cloud-init.network-config v2
+  在 RHEL 系 NetworkManager 后端兼容性问题，VM 启动后 enp5s0 无 IPv4
+  → cloud-init.runcmd 永不跑、SSH 不通。**PLAN-053 单独处理**：换
+  NM keyfile renderer 或写到 /etc/sysconfig/network-scripts。Linux
+  cloud variant 中 Ubuntu/Debian/Arch/Alpine（netplan / ifupdown / NM
+  非首位）不受影响。
+
+### 关联
+
+- 上游：PLAN-051 §2-E F-05（同 key 修补 + reinstall round-trip 测试遗留）
+- 下游：PLAN-053 / OPS-052
+
 ## 2026-05-11 [done] OPS-050 jobs runtime 容量可配 + 队列深度可观测
 
 异步 provisioning runtime 的 `PoolSize=4` / `QueueSize=64` 此前在

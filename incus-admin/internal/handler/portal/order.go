@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strconv"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -29,6 +31,9 @@ type OrderHandler struct {
 	jobRepo *repository.ProvisioningJobRepo
 	// OPS-021：quota 强制。nil 时跳过检查（向后兼容；管理员可后续显式注入）
 	quotas *repository.QuotaRepo
+	// PLAN-054 / INFRA-013：vm_subscriptions 写入。nil 时跳过订阅记账（兼容
+	// 测试环境 / 部分功能未启用）；生产应注入。
+	subs *repository.SubscriptionRepo
 }
 
 func NewOrderHandler(orders *repository.OrderRepo, products *repository.ProductRepo, vmSvc *service.VMService, vmRepo *repository.VMRepo, sshKeys *repository.SSHKeyRepo, clusters *cluster.Manager) *OrderHandler {
@@ -45,6 +50,12 @@ func (h *OrderHandler) WithJobs(rt *jobs.Runtime, jobRepo *repository.Provisioni
 // WithQuotas 注入 quota repo 启用购买前 quota 强制（OPS-021）。
 func (h *OrderHandler) WithQuotas(q *repository.QuotaRepo) *OrderHandler {
 	h.quotas = q
+	return h
+}
+
+// WithSubscriptions 注入 vm_subscriptions repo 启用 PLAN-054 计费订阅记账。
+func (h *OrderHandler) WithSubscriptions(s *repository.SubscriptionRepo) *OrderHandler {
+	h.subs = s
 	return h
 }
 
@@ -119,6 +130,9 @@ func (h *OrderHandler) Create(w http.ResponseWriter, r *http.Request) {
 		OSImage     string `json:"os_image"     validate:"omitempty,max=200"`
 		ClusterID   int64  `json:"cluster_id"   validate:"omitempty,gt=0"`
 		ClusterName string `json:"cluster_name" validate:"omitempty,safename"`
+		// PLAN-054 / INFRA-013：计费周期。omitempty 兼容历史调用（默认 monthly）。
+		// 仅接 daily / monthly；非法值由 oneof 拦在 400 validation_failed。
+		Period string `json:"period"       validate:"omitempty,oneof=daily monthly"`
 	}
 	if !decodeAndValidate(w, r, &req) {
 		return
@@ -131,6 +145,39 @@ func (h *OrderHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.OSImage == "" {
 		req.OSImage = "images:ubuntu/24.04/cloud"
+	}
+
+	// PLAN-054：period 默认 monthly（兼容现有前端 / cloud-gateway），并据此选
+	// 单价。period_supported 校验防止用户对纯月付商品下 daily 单；rate=nil 二次
+	// 校验兜底（admin 配置漏填 price_daily 等 corner case）。
+	period := req.Period
+	if period == "" {
+		period = model.BillingPeriodMonthly
+	}
+	if !slices.Contains(product.PeriodSupported, period) {
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
+			"errors": []map[string]string{{"field": "period", "reason": "unsupported"}},
+		})
+		return
+	}
+	var amount float64
+	switch period {
+	case model.BillingPeriodDaily:
+		if product.PriceDaily == nil {
+			writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
+				"errors": []map[string]string{{"field": "period", "reason": "rate_missing"}},
+			})
+			return
+		}
+		amount = *product.PriceDaily
+	default: // monthly
+		if product.PriceMonthly <= 0 {
+			writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
+				"errors": []map[string]string{{"field": "period", "reason": "rate_missing"}},
+			})
+			return
+		}
+		amount = product.PriceMonthly
 	}
 
 	clients := h.clusters.List()
@@ -151,7 +198,7 @@ func (h *OrderHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	order, err := h.orders.Create(r.Context(), userID, req.ProductID, clusterID, product.PriceMonthly, product.Currency)
+	order, err := h.orders.CreateWithPeriod(r.Context(), userID, req.ProductID, clusterID, amount, product.Currency, period)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
@@ -160,8 +207,9 @@ func (h *OrderHandler) Create(w http.ResponseWriter, r *http.Request) {
 	audit(r.Context(), r, "order.create", "order", order.ID, map[string]any{
 		"product_id": req.ProductID,
 		"cluster_id": clusterID,
-		"amount":     product.PriceMonthly,
+		"amount":     amount,
 		"currency":   product.Currency,
+		"period":     period,
 	})
 	writeJSON(w, http.StatusCreated, map[string]any{"order": order})
 }
@@ -258,8 +306,11 @@ func (h *OrderHandler) Pay(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.jobs == nil || h.jobRepo == nil {
-		// 兜底：未注入 jobs runtime 时回退到旧同步路径，保证未启用异步的部署仍可用
-		h.payWithSyncProvisioning(w, r, order, orderID, userID, client, product, vmName, osImage, sshKeys, defProject, ip, gateway, cidr, pool, network)
+		// OPS-051 / PLAN-052 Q3=A：删除同步兜底（payWithSyncProvisioning），
+		// 生产部署强制注入 jobs runtime（cmd/server/main.go startup gate）。
+		// 走到这里说明配置错误（clusterMgr == nil），直接退款 + 503 让运维定位。
+		h.rollbackPayment(r.Context(), order, ip, "jobs runtime not configured")
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "provisioning runtime unavailable; payment refunded"})
 		return
 	}
 
@@ -295,9 +346,21 @@ func (h *OrderHandler) Pay(w http.ResponseWriter, r *http.Request) {
 	}
 	attachIPToVM(r.Context(), ip, vm.ID)
 
+	// PLAN-054 / INFRA-013：VM 行写入成功后立即创建 vm_subscriptions。失败回退
+	// 全套退款（金额已扣、VM 行已存、IP 已 attach）—— 走 rollbackPayment + 强制
+	// 删 VM 行，保持订单 + 余额 + VM + sub 四方一致。
+	if err := h.createSubscriptionForOrder(r.Context(), r, order, product, vm.ID); err != nil {
+		slog.Error("create subscription failed", "order", orderID, "vm", vm.ID, "error", err)
+		_ = h.vmRepo.Delete(r.Context(), vm.ID)
+		h.rollbackPayment(r.Context(), order, ip, "subscription insert failed: "+err.Error())
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "subscription record failed, payment refunded"})
+		return
+	}
+
 	job, err := h.jobRepo.Create(r.Context(), model.JobKindVMCreate, userID, clusterID, &orderID, &vm.ID, vmName)
 	if err != nil {
 		slog.Error("create provisioning job failed", "order", orderID, "error", err)
+		h.cancelSubscriptionForRollback(r.Context(), vm.ID)
 		h.rollbackPayment(r.Context(), order, ip, "job create failed: "+err.Error())
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "internal error, payment refunded"})
 		return
@@ -319,6 +382,7 @@ func (h *OrderHandler) Pay(w http.ResponseWriter, r *http.Request) {
 	}); err != nil {
 		slog.Error("enqueue job failed", "order", orderID, "job_id", job.ID, "error", err)
 		_ = h.jobRepo.Finish(r.Context(), job.ID, model.JobStatusFailed, "enqueue failed: "+err.Error())
+		h.cancelSubscriptionForRollback(r.Context(), vm.ID)
 		h.rollbackPayment(r.Context(), order, ip, "enqueue failed")
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "internal error, payment refunded"})
 		return
@@ -341,74 +405,11 @@ func (h *OrderHandler) Pay(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// payWithSyncProvisioning 是 jobs runtime 未注入时的回退路径：维持原 sync 行为
-// 不变，避免没启用异步运行时的部署在升级期间断流。新部署应配置 jobs runtime。
-func (h *OrderHandler) payWithSyncProvisioning(w http.ResponseWriter, r *http.Request, order *model.Order, orderID, userID int64, client *cluster.Client, product *model.Product, vmName, osImage string, sshKeys []string, defProject, ip, gateway, cidr, pool, network string) {
-	result, err := h.vmSvc.Create(r.Context(), service.CreateVMParams{
-		ClusterName: client.Name,
-		Project:     defProject,
-		UserID:      userID,
-		VMName:      vmName,
-		CPU:         product.CPU,
-		MemoryMB:    product.MemoryMB,
-		DiskGB:      product.DiskGB,
-		OSImage:     osImage,
-		SSHKeys:     sshKeys,
-		IP:          ip,
-		Gateway:     gateway,
-		SubnetCIDR:  cidr,
-		StoragePool: pool,
-		Network:     network,
-	})
-	if err != nil {
-		slog.Error("auto-provision VM failed after payment", "order", orderID, "error", err)
-		h.rollbackPayment(r.Context(), order, ip, "vm provisioning failed: "+err.Error())
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "VM provisioning failed, payment refunded"})
-		return
-	}
-
-	_ = h.orders.UpdateStatus(r.Context(), orderID, model.OrderActive)
-
-	vm := &model.VM{
-		Name:      result.VMName,
-		ClusterID: h.clusters.IDByName(client.Name),
-		UserID:    userID,
-		OrderID:   &orderID,
-		Status:    model.VMStatusRunning,
-		CPU:       product.CPU,
-		MemoryMB:  product.MemoryMB,
-		DiskGB:    product.DiskGB,
-		OSImage:   osImage,
-		Node:      result.Node,
-		Password:  &result.Password,
-	}
-	if result.IP != "" {
-		vm.IP = &result.IP
-	}
-	if err := h.vmRepo.Create(r.Context(), vm); err != nil {
-		slog.Error("vm row insert failed", "order", orderID, "name", result.VMName, "error", err)
-	} else {
-		attachIPToVM(r.Context(), result.IP, vm.ID)
-	}
-
-	slog.Info("VM auto-provisioned after payment", "order", orderID, "vm", result.VMName)
-	audit(r.Context(), r, "order.pay", "order", orderID, map[string]any{
-		"vm_name": result.VMName,
-		"ip":      result.IP,
-		"amount":  order.Amount,
-	})
-	// Session-1 O1 / PLAN-051 §2-B 决策 D-09 = B：密码直返但加 Cache-Control:
-	// no-store + Pragma: no-cache，防止响应被浏览器/CDN 边缘缓存意外保留。
-	w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
-	w.Header().Set("Pragma", "no-cache")
-	writeJSON(w, http.StatusOK, map[string]any{
-		"status":   "provisioned",
-		"vm_name":  result.VMName,
-		"ip":       result.IP,
-		"password": result.Password,
-		"username": result.Username,
-	})
-}
+// OPS-051 / PLAN-052 Q3=A：payWithSyncProvisioning 已删除。生产部署强制注入
+// jobs runtime（cmd/server/main.go 在 clusterMgr == nil 时仍可启动 DB-only 模式，
+// 但 portal pay handler 走到 jobs == nil 分支会直接 503 + 退款，保护用户）。
+// PLAN-054 Phase G：sub 创建走 async 路径 createSubscriptionForOrder，不依赖
+// sync provisioning。
 
 func (h *OrderHandler) Cancel(w http.ResponseWriter, r *http.Request) {
 	orderID, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
@@ -584,4 +585,69 @@ func (h *OrderHandler) checkQuota(ctx context.Context, userID int64, product *mo
 		return fmt.Errorf("超出磁盘配额（当前 %d GB，新增 %d GB，上限 %d GB）", curDisk, product.DiskGB, q.MaxDiskGB)
 	}
 	return nil
+}
+
+// createSubscriptionForOrder PLAN-054 / INFRA-013：订单 pay 成功 + vm row 写
+// 入后插 vm_subscriptions。daily/monthly 单价从 product 取（同 Create 时的
+// 选择一致），paid_until = NOW + 周期。subs 未注入时直接 return nil，保持
+// 旧部署 / 测试环境零回归。
+func (h *OrderHandler) createSubscriptionForOrder(ctx context.Context, r *http.Request, order *model.Order, product *model.Product, vmID int64) error {
+	if h.subs == nil {
+		return nil
+	}
+	period := order.Period
+	if period == "" {
+		// 极少数 DB 漂移路径（migration 未跑全 / 历史订单）：兜底 monthly，与
+		// DB DEFAULT 一致，避免插 sub 时 CHECK 拒绝。
+		period = model.BillingPeriodMonthly
+	}
+	dur := model.BillingPeriodDuration(period)
+	if dur == 0 {
+		return fmt.Errorf("invalid period %q", period)
+	}
+	sub := &model.VMSubscription{
+		VMID:      vmID,
+		ProductID: order.ProductID,
+		UserID:    order.UserID,
+		Period:    period,
+		PaidUntil: time.Now().Add(dur),
+		Status:    model.SubscriptionStatusActive,
+	}
+	switch period {
+	case model.BillingPeriodDaily:
+		rate := product.PriceDaily
+		if rate == nil {
+			// 不应发生：Create 时已校验过；防御性兜底
+			fallback := order.Amount
+			rate = &fallback
+		}
+		sub.DailyRate = rate
+	case model.BillingPeriodMonthly:
+		rate := product.PriceMonthly
+		sub.MonthlyRate = &rate
+	}
+	inserted, err := h.subs.Insert(ctx, sub)
+	if err != nil {
+		return err
+	}
+	audit(ctx, r, "subscription_created", "subscription", inserted.ID, map[string]any{
+		"vm_id":      vmID,
+		"order_id":   order.ID,
+		"product_id": order.ProductID,
+		"period":     period,
+		"amount":     order.Amount,
+		"paid_until": inserted.PaidUntil,
+	})
+	return nil
+}
+
+// cancelSubscriptionForRollback 是 pay 失败 compensation 链里专给 sub 用的 best-
+// effort：subs 未注入或失败仅记日志，主路径已经在退款 / 释 IP，不应被 sub 阻塞。
+func (h *OrderHandler) cancelSubscriptionForRollback(ctx context.Context, vmID int64) {
+	if h.subs == nil {
+		return
+	}
+	if _, err := h.subs.CancelByVM(ctx, vmID); err != nil {
+		slog.Error("rollback: cancel sub failed", "vm_id", vmID, "error", err)
+	}
 }

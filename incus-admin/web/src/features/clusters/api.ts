@@ -63,6 +63,8 @@ export function useEvacuateNodeMutation(clusterName: string) {
     mutationFn: (nodeName: string) =>
       http.post(`/admin/clusters/${clusterName}/nodes/${nodeName}/evacuate`),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: clusterKeys.all }),
+    // WP-F：HA 疏散成功/失败统一由全局 MutationCache 兜底提示。
+    meta: { globalErrorToast: true, successToast: "ha.evacuateStartedToast" },
   });
 }
 
@@ -71,6 +73,7 @@ export function useRestoreNodeMutation(clusterName: string) {
     mutationFn: (nodeName: string) =>
       http.post(`/admin/clusters/${clusterName}/nodes/${nodeName}/restore`),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: clusterKeys.all }),
+    meta: { globalErrorToast: true, successToast: "ha.nodeRestoredToast" },
   });
 }
 

@@ -1,25 +1,8 @@
-// Map an Incus image alias (e.g. "images:ubuntu/24.04/cloud") to the cloud-init
-// default username configured by the official cloud images. We don't deploy
-// custom images here, so this static lookup is sufficient.
-const DEFAULT_USER_BY_DISTRO: Array<[RegExp, string]> = [
-  [/(^|[/:_-])debian([/:_-]|$)/i, "debian"],
-  [/(^|[/:_-])rocky/i, "rocky"],
-  [/(^|[/:_-])almalinux/i, "almalinux"],
-  [/(^|[/:_-])centos/i, "centos"],
-  [/(^|[/:_-])fedora/i, "fedora"],
-  [/(^|[/:_-])opensuse/i, "opensuse"],
-  [/(^|[/:_-])arch/i, "arch"],
-  [/(^|[/:_-])alpine/i, "alpine"],
-  [/(^|[/:_-])freebsd/i, "freebsd"],
-  [/(^|[/:_-])windows/i, "Administrator"],
-  [/(^|[/:_-])ubuntu/i, "ubuntu"],
-];
-
+// OPS-051 / PLAN-052 Q7：所有 Linux 镜像统一 root 登录。Windows 仍 Administrator。
+// 后端 os_templates.default_user 已 migrate root；前端 helper 与之对齐，避免
+// 用户在 UI 上看到 ubuntu/debian 等历史用户名误以为是登录账号。
 export function defaultUserForImage(image: string | undefined | null): string {
-  const v = (image ?? "").trim();
-  if (!v) return "ubuntu";
-  for (const [re, user] of DEFAULT_USER_BY_DISTRO) {
-    if (re.test(v)) return user;
-  }
-  return "ubuntu";
+  const v = (image ?? "").trim().toLowerCase();
+  if (v.includes("windows")) return "Administrator";
+  return "root";
 }

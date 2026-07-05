@@ -29,9 +29,20 @@ NIC_CLUSTER="eno2"      # Ceph Cluster 直连
 # VLAN
 VLAN_MGMT=10
 VLAN_CEPH_PUBLIC=20
+# VM 公网（VM 走的 /26 段）所在 VLAN。上游交换机把这个 VLAN tag 给 NIC_PRIMARY，
+# 节点必须建一个 pub.${VLAN_PUB} 子接口，绑进 br-pub 才能让 VM 收到上游网关的 ARP。
+# OPS-002 / OPS-046 教训：早期只建了 pub.<id> netplan vlan 但没绑桥，
+# Linux/Windows VM 全部 ARP gateway 收不到回包。
+VLAN_PUB=376
+
+# VM 公网段（与 VLAN_PUB 对应）。仅作 join-node.sh / 自检用，IP 实际由 ip_pools 表分配。
+VM_PUBLIC_NETWORK="202.151.179.0/26"
+VM_PUBLIC_GATEWAY="202.151.179.62"
 
 # 网桥
 BRIDGE_NAME="br-pub"
+# br-pub 的 external slave —— 必须是 pub.<VLAN_PUB> 子接口，不能是 raw NIC_PRIMARY。
+BRIDGE_EXTERNAL_IFACE="pub.${VLAN_PUB}"
 
 # ==================== Ceph 配置 ====================
 CEPH_CLUSTER_NAME="ceph"

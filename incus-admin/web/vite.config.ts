@@ -1,3 +1,4 @@
+/// <reference types="vitest" />
 import tailwindcss from "@tailwindcss/vite";
 import { tanstackRouter } from "@tanstack/router-plugin/vite";
 import react from "@vitejs/plugin-react";
@@ -30,5 +31,11 @@ export default defineConfig({
         changeOrigin: true,
       },
     },
+  },
+  // Vitest 配置：默认 node env（纯逻辑测试）；含 React 组件的 *.test.tsx 用
+  // jsdom（@vitest-environment jsdom 注释切换）。
+  test: {
+    environment: "node",
+    environmentMatchGlobs: [["**/*.test.tsx", "jsdom"]],
   },
 });

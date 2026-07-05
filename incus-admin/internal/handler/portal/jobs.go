@@ -106,7 +106,8 @@ func (h *JobsHandler) GetJob(w http.ResponseWriter, r *http.Request) {
 			}
 			if vm.Password != nil {
 				result["password"] = *vm.Password
-				result["username"] = "ubuntu"
+				// OPS-051 / PLAN-052 Q7：Linux 统一 root，Windows 仍 Administrator
+				result["username"] = defaultUserForVM(vm)
 			}
 			resp["result"] = result
 		}

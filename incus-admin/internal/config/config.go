@@ -19,6 +19,21 @@ type Config struct {
 	Monitor  MonitorConfig   `json:"monitor"`
 	AI       AIConfig        `json:"ai"`
 	Jobs     JobsConfig      `json:"jobs"`
+	// OPS-051 / PLAN-052：cloud-init 注入的 apt-cacher-ng proxy + 模板默认登录用户
+	// （root），便于 dev 环境留空跳过 proxy。
+	Provisioning ProvisioningConfig `json:"provisioning"`
+}
+
+// ProvisioningConfig 控制 vm-create 生成 cloud-init user-data 的横向参数。
+//
+//   - AptProxyURL：apt-cacher-ng / squid 等 HTTP cache 的全地址，例如
+//     http://139.162.24.177:3142/。留空 → 不注入 proxy（VM 直连上游）。
+//     cloud-init runcmd 有 fallback：proxy 不可达 5 秒内自动剥离。
+//   - DefaultLoginUser：Linux VM 强制建立的统一登录账号；默认 root（OPS-051
+//     Q7 决策）。镜像自带的 ubuntu/debian/rocky 用户保留但不再当默认。
+type ProvisioningConfig struct {
+	AptProxyURL      string `json:"apt_proxy_url"`     // env APT_CACHER_URL
+	DefaultLoginUser string `json:"default_login_user"` // env VM_DEFAULT_LOGIN_USER，默认 root
 }
 
 // JobsConfig 控制 PLAN-025 异步 provisioning runtime 的容量。
@@ -61,6 +76,13 @@ type ServerConfig struct {
 	// "production" so the safe-by-default path requires an explicit override
 	// on staging/dev deploys.
 	Env string `json:"env"`
+
+	// ProxySharedSecret 是 PLAN-055 决策#6 的可选（opt-in）前置代理信任加固开关。
+	// 默认空 → 行为与现网完全一致（不校验代理签名头，不影响任何现有部署）。
+	// 一旦设置：中间件要求受信反代在每个请求上注入 X-Proxy-Signature 头且其值
+	// 等于本密钥（constant-time 比对）；校验不通过的请求视为"未经受信代理"，
+	// 其携带的 X-Forwarded-For / 身份头一律不被采信。json:"-" 避免落日志/序列化泄漏。
+	ProxySharedSecret string `json:"-"`
 }
 
 type DatabaseConfig struct {
@@ -128,6 +150,18 @@ type IPPoolConfig struct {
 type BillingConfig struct {
 	StripeKey string `json:"stripe_key"`
 	Currency  string `json:"currency"`
+	// PLAN-054 / INFRA-013 计费引擎 toggle + 周期参数。
+	// Enabled=false 时启动跳过 charger / grace_expire worker（topup hook 也跳）。
+	// 默认 true：生产 + 测试都开。
+	Enabled bool `json:"enabled"`
+	// ChargerInterval 计费 worker 扫描周期。原始设计是 cron 0 0 * * *（每日
+	// 00:00 UTC）；catchup-safe 让我们退化为 hourly tick。默认 1h。
+	ChargerInterval time.Duration `json:"charger_interval"`
+	// GraceInterval suspended grace 过期 trash 周期。默认 1h，比 charger 错开
+	// 15min 跑避免同时锁 users.balance。
+	GraceInterval time.Duration `json:"grace_interval"`
+	// GraceDuration 余额不足 → suspended 后多久 trash。PLAN-054 §2 默认 72h。
+	GraceDuration time.Duration `json:"grace_duration"`
 }
 
 type MonitorConfig struct {
@@ -148,6 +182,8 @@ func Load() (*Config, error) {
 			SessionSecret:   mustEnv("SESSION_SECRET"),
 			SessionTTL:      24 * time.Hour,
 			Env:             envOr("INCUS_ADMIN_ENV", "production"),
+			// 默认空 = 关闭代理签名校验，保持现网默认行为不变（决策#6 opt-in）。
+			ProxySharedSecret: envOr("PROXY_SHARED_SECRET", ""),
 		},
 		Database: DatabaseConfig{
 			DSN:             mustEnv("DATABASE_URL"),
@@ -169,7 +205,11 @@ func Load() (*Config, error) {
 			PasswordEncryptionKey: envOr("PASSWORD_ENCRYPTION_KEY", ""),
 		},
 		Billing: BillingConfig{
-			Currency: envOr("BILLING_CURRENCY", "USD"),
+			Currency:        envOr("BILLING_CURRENCY", "USD"),
+			Enabled:         parseBoolOr("INCUS_ADMIN_BILLING_ENABLED", true),
+			ChargerInterval: parseDurationOr("INCUS_ADMIN_BILLING_CHARGER_INTERVAL", time.Hour),
+			GraceInterval:   parseDurationOr("INCUS_ADMIN_BILLING_GRACE_INTERVAL", time.Hour),
+			GraceDuration:   parseDurationOr("INCUS_ADMIN_BILLING_GRACE_DURATION", 72*time.Hour),
 		},
 		Monitor: MonitorConfig{
 			PrometheusURL:     envOr("PROMETHEUS_URL", ""),
@@ -190,6 +230,10 @@ func Load() (*Config, error) {
 		Jobs: JobsConfig{
 			PoolSize:  parseIntOr("JOBS_POOL_SIZE", 4),
 			QueueSize: parseIntOr("JOBS_QUEUE_SIZE", 64),
+		},
+		Provisioning: ProvisioningConfig{
+			AptProxyURL:      envOr("APT_CACHER_URL", ""),
+			DefaultLoginUser: envOr("VM_DEFAULT_LOGIN_USER", "root"),
 		},
 	}
 
@@ -237,6 +281,24 @@ func parseIntOr(key string, fallback int) int {
 		return fallback
 	}
 	return n
+}
+
+// parseBoolOr 解析布尔型 env。空 → fallback。识别 1/true/yes/on（不分大小写）
+// 为 true，0/false/no/off 为 false；其它 → fallback + stderr warn。
+func parseBoolOr(key string, fallback bool) bool {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		fmt.Fprintf(os.Stderr, "invalid bool for %s=%q; using default %v\n", key, v, fallback)
+		return fallback
+	}
 }
 
 func parseDurationOr(key string, fallback time.Duration) time.Duration {

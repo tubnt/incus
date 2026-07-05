@@ -16,6 +16,7 @@ ssh_pwauth: false
 
 package_update: true
 packages:
+  - openssh-server  # OPS-051: linuxcontainers cloud variant 不预装 sshd
   - qemu-guest-agent
 
 runcmd:

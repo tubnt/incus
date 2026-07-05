@@ -83,6 +83,29 @@ func (r *OSTemplateRepo) GetByID(ctx context.Context, id int64) (*model.OSTempla
 	return &t, nil
 }
 
+// GetBySource looks up the template whose source matches the given image alias
+// (e.g. "ubuntu/24.04/cloud"). Used by jobs/vm_create.go to pull the
+// admin-configured cloud_init_template + default_user for the image the
+// user picked. Returns nil if not found (caller falls back to defaults).
+//
+// OPS-051 / PLAN-052.
+func (r *OSTemplateRepo) GetBySource(ctx context.Context, source string) (*model.OSTemplate, error) {
+	var t model.OSTemplate
+	err := scanOSTemplate(
+		r.db.QueryRowContext(ctx,
+			`SELECT `+osTemplateColumns+` FROM os_templates WHERE source = $1 ORDER BY enabled DESC, sort_order ASC LIMIT 1`,
+			source),
+		&t,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &t, nil
+}
+
 func (r *OSTemplateRepo) GetBySlug(ctx context.Context, slug string) (*model.OSTemplate, error) {
 	var t model.OSTemplate
 	err := scanOSTemplate(

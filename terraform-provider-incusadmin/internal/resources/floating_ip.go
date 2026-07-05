@@ -7,6 +7,8 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
 	"github.com/incuscloud/terraform-provider-incusadmin/internal/client"
@@ -23,6 +25,7 @@ type fipResource struct{ c *client.Client }
 
 type fipModel struct {
 	ID          types.Int64  `tfsdk:"id"`
+	Cluster     types.String `tfsdk:"cluster"`
 	IP          types.String `tfsdk:"ip"`
 	VMID        types.Int64  `tfsdk:"vm_id"`
 	Status      types.String `tfsdk:"status"`
@@ -34,11 +37,22 @@ func (r *fipResource) Metadata(_ context.Context, _ resource.MetadataRequest, re
 }
 
 func (r *fipResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
+	requiresReplace := []planmodifier.String{stringplanmodifier.RequiresReplace()}
 	resp.Schema = schema.Schema{
-		Description: "Floating IP 资源（admin endpoint）。`vm_id` 变化时 attach/detach。",
+		Description: "Floating IP 资源（admin endpoint）。分配需指定 cluster + ip；`vm_id` 变化时 attach/detach。",
 		Attributes: map[string]schema.Attribute{
-			"id":          schema.Int64Attribute{Computed: true},
-			"ip":          schema.StringAttribute{Computed: true},
+			"id": schema.Int64Attribute{Computed: true},
+			// cluster + ip 为后端 Allocate 必填；分配后不可改（改则重建）。
+			"cluster": schema.StringAttribute{
+				Required:      true,
+				Description:   "所属 cluster 名",
+				PlanModifiers: requiresReplace,
+			},
+			"ip": schema.StringAttribute{
+				Required:      true,
+				Description:   "要认领的公网 IP（须属于该 cluster 的 Floating IP 池）",
+				PlanModifiers: requiresReplace,
+			},
 			"vm_id":       schema.Int64Attribute{Optional: true, Computed: true},
 			"status":      schema.StringAttribute{Computed: true},
 			"description": schema.StringAttribute{Optional: true, Computed: true},
@@ -58,10 +72,13 @@ func (r *fipResource) Create(ctx context.Context, req resource.CreateRequest, re
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	// 后端 Allocate 请求体：{ cluster(名), ip(必填), description }，响应 { floating_ip }。
 	var out struct {
 		FloatingIP client.FloatingIP `json:"floating_ip"`
 	}
 	if err := r.c.Do(ctx, "POST", "/api/admin/floating-ips", map[string]any{
+		"cluster":     plan.Cluster.ValueString(),
+		"ip":          plan.IP.ValueString(),
 		"description": plan.Description.ValueString(),
 	}, &out); err != nil {
 		resp.Diagnostics.AddError("allocate floating ip failed", err.Error())
@@ -70,6 +87,7 @@ func (r *fipResource) Create(ctx context.Context, req resource.CreateRequest, re
 	plan.ID = types.Int64Value(out.FloatingIP.ID)
 	plan.IP = types.StringValue(out.FloatingIP.IP)
 	plan.Status = types.StringValue(out.FloatingIP.Status)
+	plan.Description = types.StringValue(out.FloatingIP.Description)
 	if !plan.VMID.IsNull() && !plan.VMID.IsUnknown() && plan.VMID.ValueInt64() > 0 {
 		// admin attach: POST /admin/floating-ips/{id}/attach body {vm_id}
 		if err := r.c.Do(ctx, "POST", fmt.Sprintf("/api/admin/floating-ips/%d/attach", out.FloatingIP.ID),
@@ -98,12 +116,15 @@ func (r *fipResource) Read(ctx context.Context, req resource.ReadRequest, resp *
 		if f.ID == state.ID.ValueInt64() {
 			state.IP = types.StringValue(f.IP)
 			state.Status = types.StringValue(f.Status)
-			if f.VMID != nil {
-				state.VMID = types.Int64Value(*f.VMID)
+			// 后端绑定字段为 bound_vm_id。
+			if f.BoundVMID != nil {
+				state.VMID = types.Int64Value(*f.BoundVMID)
 			} else {
 				state.VMID = types.Int64Null()
 			}
 			state.Description = types.StringValue(f.Description)
+			// cluster 为 create-time 字段；list 响应仅含 cluster_id，无法反查名字，
+			// 保留 state 原值不覆盖。
 			resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 			return
 		}
@@ -136,7 +157,8 @@ func (r *fipResource) Update(ctx context.Context, req resource.UpdateRequest, re
 func (r *fipResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
 	var state fipModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
-	if err := r.c.Do(ctx, "DELETE", fmt.Sprintf("/api/admin/floating-ips/%d", state.ID.ValueInt64()), nil, nil); err != nil {
+	// T7 幂等：404（已不存在）视为释放成功。
+	if err := r.c.Do(ctx, "DELETE", fmt.Sprintf("/api/admin/floating-ips/%d", state.ID.ValueInt64()), nil, nil); err != nil && !client.IsNotFound(err) {
 		resp.Diagnostics.AddError("release failed", err.Error())
 	}
 }

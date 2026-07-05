@@ -62,7 +62,9 @@ export function JobProgress({
                         "text-caption mt-0.5 break-words",
                         step.status === "failed"
                           ? "text-status-error"
-                          : "text-text-tertiary",
+                          : step.status === "warning"
+                            ? "text-status-pending"
+                            : "text-text-tertiary",
                       )}
                     >
                       {step.detail}
@@ -85,6 +87,10 @@ function StepDot({ status }: { status: StepStatus }) {
       return <StatusDot status="success" />;
     case "failed":
       return <StatusDot status="error" />;
+    case "warning":
+      // OPS-051 / PLAN-052：smoke test 软失败用 pending 黄点（与 running 区分
+      // 因为 warning 是终态 —— 不脉动）
+      return <StatusDot status="pending" />;
     case "skipped":
       return <StatusDot status="disabled" />;
     case "pending":

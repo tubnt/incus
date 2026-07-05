@@ -97,21 +97,6 @@ func (r *FirewallRepo) GetGroupByID(ctx context.Context, id int64) (*model.Firew
 	return &g, nil
 }
 
-func (r *FirewallRepo) GetGroupBySlug(ctx context.Context, slug string) (*model.FirewallGroup, error) {
-	var g model.FirewallGroup
-	err := scanFirewallGroup(
-		r.db.QueryRowContext(ctx, `SELECT `+firewallGroupColumns+` FROM firewall_groups WHERE slug = $1 AND owner_id IS NULL`, slug),
-		&g,
-	)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	return &g, nil
-}
-
 func (r *FirewallRepo) CreateGroup(ctx context.Context, g *model.FirewallGroup) (*model.FirewallGroup, error) {
 	var out model.FirewallGroup
 	err := scanFirewallGroup(
@@ -215,32 +200,6 @@ func (r *FirewallRepo) ListRulesByGroups(ctx context.Context, groupIDs []int64) 
 	return out, rows.Err()
 }
 
-func (r *FirewallRepo) CreateRule(ctx context.Context, rule *model.FirewallRule) (*model.FirewallRule, error) {
-	var out model.FirewallRule
-	dir := rule.Direction
-	if dir == "" {
-		dir = "ingress"
-	}
-	err := scanFirewallRule(
-		r.db.QueryRowContext(ctx,
-			`INSERT INTO firewall_rules (group_id, direction, action, protocol, destination_port, source_cidr, description, sort_order)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-			 RETURNING `+firewallRuleColumns,
-			rule.GroupID, dir, rule.Action, rule.Protocol, rule.DestinationPort, rule.SourceCIDR, rule.Description, rule.SortOrder,
-		),
-		&out,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("create firewall_rule: %w", err)
-	}
-	return &out, nil
-}
-
-func (r *FirewallRepo) DeleteRule(ctx context.Context, id int64) error {
-	_, err := r.db.ExecContext(ctx, `DELETE FROM firewall_rules WHERE id = $1`, id)
-	return err
-}
-
 // ReplaceRules atomically swaps all rules for a group. Used by PATCH
 // /firewall/groups/{id} which accepts the full rule list at once — simpler
 // contract than per-rule PUT/DELETE.
@@ -274,7 +233,7 @@ func (r *FirewallRepo) ReplaceRules(ctx context.Context, groupID int64, rules []
 
 func (r *FirewallRepo) ListBindingsByVM(ctx context.Context, vmID int64) ([]model.FirewallGroup, error) {
 	rows, err := r.db.QueryContext(ctx,
-		`SELECT g.id, g.slug, g.name, g.description, g.created_at, g.updated_at
+		`SELECT g.id, g.slug, g.name, g.description, g.owner_id, g.created_at, g.updated_at
 		 FROM firewall_groups g
 		 JOIN vm_firewall_bindings b ON b.group_id = g.id
 		 WHERE b.vm_id = $1

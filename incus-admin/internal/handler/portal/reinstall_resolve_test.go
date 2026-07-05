@@ -5,10 +5,8 @@ import (
 	"testing"
 )
 
-// TestResolveReinstallTemplate covers the legacy os_image path and the
-// no-input rejection. The template_slug branch relies on osTemplateRepo being
-// wired (package-level), which isn't safe to set from a pure unit test; that
-// path is covered by integration/E2E tests against the real DB.
+// OPS-051 / PLAN-052 Q7：所有 Linux 镜像统一 root 登录，仅 Windows 仍
+// Administrator。本测试与 web/src/features/vms/default-user.test.ts 同步。
 func TestResolveReinstallTemplate(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -23,47 +21,33 @@ func TestResolveReinstallTemplate(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name:     "legacy images: prefix stripped, ubuntu default user",
+			name:     "legacy images: prefix stripped, root login",
 			osImage:  "images:ubuntu/24.04/cloud",
 			wantSrc:  "ubuntu/24.04/cloud",
-			wantUser: "ubuntu",
+			wantUser: "root",
 		},
 		{
-			name:     "legacy debian source picks debian user",
+			name:     "debian source: root login",
 			osImage:  "images:debian/12/cloud",
 			wantSrc:  "debian/12/cloud",
-			wantUser: "debian",
+			wantUser: "root",
 		},
 		{
-			name:     "legacy rocky source picks rocky user",
-			osImage:  "images:rockylinux/9/cloud",
-			wantSrc:  "rockylinux/9/cloud",
-			wantUser: "rocky",
+			name:     "windows local alias keeps Administrator",
+			osImage:  "windows-server-2022",
+			wantSrc:  "windows-server-2022",
+			wantUser: "Administrator",
 		},
 		{
-			name:     "legacy almalinux source picks almalinux user",
-			osImage:  "images:almalinux/9/cloud",
-			wantSrc:  "almalinux/9/cloud",
-			wantUser: "almalinux",
-		},
-		{
-			name:     "legacy arch source picks arch user",
-			osImage:  "images:archlinux/current/cloud",
-			wantSrc:  "archlinux/current/cloud",
-			wantUser: "arch",
-		},
-		{
-			name:     "raw source without images: prefix is passed through",
+			name:     "raw source without images: prefix passes through",
 			osImage:  "fedora/40/cloud",
 			wantSrc:  "fedora/40/cloud",
-			wantUser: "fedora",
+			wantUser: "root",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// osTemplateRepo is package-level; with it nil, the slug branch
-			// becomes a no-op and falls through to the legacy os_image path.
 			got, err := resolveReinstallTemplate(context.Background(), tt.slug, tt.osImage)
 			if tt.wantErr {
 				if err == nil {
@@ -84,22 +68,18 @@ func TestResolveReinstallTemplate(t *testing.T) {
 	}
 }
 
+// OPS-051 / PLAN-052 Q7：defaultUserForSource 简化为 root/Administrator 二分。
 func TestDefaultUserForSource(t *testing.T) {
 	cases := map[string]string{
-		"ubuntu/24.04/cloud":       "ubuntu",
-		"UBUNTU/22.04/cloud":       "ubuntu",
-		"debian/12/cloud":          "debian",
-		"rockylinux/9/cloud":       "rocky",
-		"almalinux/9/cloud":        "almalinux",
-		"centos/7/cloud":           "centos",
-		"fedora/40/cloud":          "fedora",
-		"opensuse/15/cloud":        "opensuse",
-		"archlinux/current/cloud":  "arch",
-		"alpine/3.19/cloud":        "alpine",
-		"freebsd/14/cloud":         "freebsd",
-		"windows-server-2022":      "Administrator",
-		"windows-11":               "Administrator",
-		"unknown/something":        "ubuntu",
+		"ubuntu/24.04/cloud":      "root",
+		"UBUNTU/22.04/cloud":      "root",
+		"debian/12/cloud":         "root",
+		"rockylinux/9/cloud":      "root",
+		"fedora/40/cloud":         "root",
+		"alpine/3.19/cloud":       "root",
+		"unknown/something":       "root",
+		"windows-server-2022":     "Administrator",
+		"windows-11":              "Administrator",
 	}
 	for src, wantUser := range cases {
 		if got := defaultUserForSource(src); got != wantUser {

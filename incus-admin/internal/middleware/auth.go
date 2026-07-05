@@ -6,11 +6,14 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -40,9 +43,10 @@ type TokenValidator func(ctx context.Context, token string) (userID int64, err e
 type ShadowVerifier func(cookieValue string) (actorID int64, actorEmail string, targetID int64, targetEmail string, err error)
 
 var (
-	tokenValidator  TokenValidator
-	emergencySecret string
-	shadowVerifier  ShadowVerifier
+	tokenValidator    TokenValidator
+	emergencySecret   string
+	shadowVerifier    ShadowVerifier
+	proxySharedSecret string
 )
 
 func SetTokenValidator(v TokenValidator) {
@@ -55,6 +59,54 @@ func SetEmergencySecret(secret string) {
 
 func SetShadowVerifier(v ShadowVerifier) {
 	shadowVerifier = v
+}
+
+// SetProxySharedSecret 接线 PLAN-055 决策#6 的可选前置代理信任加固开关。
+// 空字符串（默认）= 关闭：ProxyAuth 完全跳过签名校验，行为与现网一致。
+func SetProxySharedSecret(secret string) {
+	proxySharedSecret = secret
+}
+
+// untrustedProxyHeaders 列出仅应由受信前置代理注入、客户端绝不可伪造的头。
+// 当 PROXY_SHARED_SECRET 已开启且请求未通过签名校验时，这些头会被剥离，
+// 使下游只信任直连 RemoteAddr（IP 场景回退直连），且伪造的身份头无法冒充登录。
+//
+// 注意：故意不含 Authorization / Cookie —— Bearer token 与 emergency/shadow
+// cookie 都是自带 HMAC/token 的自证明凭据，不依赖"代理是否可信"，剥离它们
+// 反而会误伤合法直连的 API/应急通道。
+var untrustedProxyHeaders = []string{
+	"X-Forwarded-For",      // 客户端真实 IP（realClientIP / 限流 key 依赖）
+	"X-Real-Ip",            // chi RealIP 的备选来源
+	"X-Auth-Request-Email", // oauth2-proxy 注入的登录身份
+	"X-Forwarded-Email",    // oauth2-proxy 身份的兼容别名
+}
+
+// proxyHeadersTrusted 判定本请求携带的代理头是否可信。
+//
+//   - proxySharedSecret 为空（默认）：始终返回 true —— 加固关闭，零行为变化。
+//   - 已开启：要求 X-Proxy-Signature 头存在且与共享密钥 constant-time 相等。
+//
+// 采用"静态共享密钥直接比对"而非动态 HMAC，是因为签名由反代（nginx/Caddy 等）
+// 用一行静态 proxy_set_header 注入即可，运维成本最低，符合决策#6 的 opt-in 定位。
+func proxyHeadersTrusted(r *http.Request) bool {
+	if proxySharedSecret == "" {
+		return true
+	}
+	sig := r.Header.Get("X-Proxy-Signature")
+	if sig == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(sig), []byte(proxySharedSecret)) == 1
+}
+
+// stripUntrustedProxyHeaders 在签名校验失败时剥离可伪造的代理头（保守方案：
+// 不直接拒绝请求，避免运维刚开启开关、反代尚未配好签名时把现网打挂；但绝不
+// 采信伪造头——IP 回退直连 RemoteAddr，冒充的身份头被清空后 oauth2-proxy
+// header 认证自然回落 401）。
+func stripUntrustedProxyHeaders(r *http.Request) {
+	for _, h := range untrustedProxyHeaders {
+		r.Header.Del(h)
+	}
 }
 
 // verifyEmergencyCookie 校验 emergency cookie。两种格式兼容：
@@ -95,10 +147,11 @@ func verifyEmergencyCookie(cookieValue string) (email string, ok bool) {
 		}
 		return emailV, true
 	case 2:
-		// pma-cr M-1 / PLAN-051 §2-B：旧格式 grace deadline。EMERGENCY_LEGACY_DEADLINE
-		// 为 RFC3339 时间戳；过该时间后旧格式（无 TTL）一律拒绝。空值表示当前
-		// 还在 grace 期（向后兼容）。建议运维一次性配 +30 天，到期后删除该 env，
-		// 自然进入"仅新格式"模式。
+		// pma-cr M-1 / PLAN-051 §2-B + PLAN-055 §6：旧格式 grace deadline。
+		// EMERGENCY_LEGACY_DEADLINE 为 RFC3339 时间戳；过该时间后旧格式（无 TTL）
+		// 一律拒绝。未配置时不再永久有效，而是回退到 processStart + 24h 的代码级
+		// 硬上限（见 getLegacyDeadline）。建议运维一次性配 +30 天，到期后删除该
+		// env，自然进入"仅新格式"模式。
 		if deadline := getLegacyDeadline(); !deadline.IsZero() && time.Now().After(deadline) {
 			slog.Warn("emergency cookie legacy format rejected after deadline", "deadline", deadline)
 			return "", false
@@ -122,28 +175,58 @@ func verifyEmergencyCookie(cookieValue string) (email string, ok bool) {
 var (
 	legacyDeadlineOnce sync.Once
 	legacyDeadlineVal  time.Time
+	// processStart 记录进程启动时刻，用于给旧格式 emergency cookie 一个代码级
+	// 默认硬上限（见 getLegacyDeadline）。
+	processStart = time.Now()
 )
 
-// getLegacyDeadline 解析 EMERGENCY_LEGACY_DEADLINE env（RFC3339）；空值或解析
-// 失败返 zero time（grace 阶段，旧格式仍有效）。
+// legacyDefaultTTL 是旧格式 emergency cookie（email|hmac，无自带 TTL）在未显式
+// 配置 EMERGENCY_LEGACY_DEADLINE 时的代码级默认硬上限：进程启动后 24h 内旧格式
+// 仍可接受，之后一律拒绝。旧格式 cookie 本身不含签发时间，无法做 per-cookie TTL，
+// 因此以"进程启动 + 固定窗口"作为兜底上界，杜绝"未配 deadline → 旧格式永久有效"
+// 的隐患（PLAN-055 / OPS-052 §6）。运维如需更长 grace，显式配置
+// EMERGENCY_LEGACY_DEADLINE 覆盖此默认。
+const legacyDefaultTTL = 24 * time.Hour
+
+// getLegacyDeadline 解析 EMERGENCY_LEGACY_DEADLINE env（RFC3339），结果缓存。
+// 空值或解析失败时不再返回 zero time（那会让旧格式永久有效），而是回退到
+// processStart + legacyDefaultTTL 的代码级硬上限。纯计算逻辑抽到
+// computeLegacyDeadline 便于单测。
 func getLegacyDeadline() time.Time {
 	legacyDeadlineOnce.Do(func() {
 		raw := strings.TrimSpace(os.Getenv("EMERGENCY_LEGACY_DEADLINE"))
-		if raw == "" {
-			return
-		}
-		t, err := time.Parse(time.RFC3339, raw)
-		if err != nil {
-			slog.Warn("EMERGENCY_LEGACY_DEADLINE parse failed; treating as no deadline (legacy still accepted)", "raw", raw, "error", err)
-			return
-		}
-		legacyDeadlineVal = t
+		legacyDeadlineVal = computeLegacyDeadline(raw, processStart)
 	})
 	return legacyDeadlineVal
 }
 
+// computeLegacyDeadline 是 getLegacyDeadline 的纯函数核心：
+//   - raw 为合法 RFC3339 → 返回该时间。
+//   - raw 为空或解析失败 → 返回 start + legacyDefaultTTL（代码级硬上限），
+//     绝不返回 zero time，杜绝"未配 deadline → 旧格式永久有效"。
+func computeLegacyDeadline(raw string, start time.Time) time.Time {
+	if raw == "" {
+		return start.Add(legacyDefaultTTL)
+	}
+	t, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		slog.Warn("EMERGENCY_LEGACY_DEADLINE parse failed; falling back to code-level default cap (process start + 24h)", "raw", raw, "error", err)
+		return start.Add(legacyDefaultTTL)
+	}
+	return t
+}
+
 func ProxyAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// PLAN-055 决策#6：可选的前置代理信任加固（opt-in）。默认关闭时
+		// proxyHeadersTrusted 恒为 true，整段短路，行为与现网完全一致。
+		// 开启后：签名校验不通过 → 剥离伪造的 X-Forwarded-For / 身份头，
+		// 与 WP-A 的 TRUSTED_PROXIES 语义叠加（本层只做签名闸，不改其网段判定）。
+		if !proxyHeadersTrusted(r) {
+			slog.Warn("proxy signature check failed; stripping untrusted proxy headers", "remote", r.RemoteAddr, "path", r.URL.Path)
+			stripUntrustedProxyHeaders(r)
+		}
+
 		// Shadow session cookie takes precedence over every other auth path.
 		// When present and valid, we treat the request as originating from
 		// the *target* user (so handler business logic is scoped correctly)
@@ -214,6 +297,56 @@ func ProxyAuth(next http.Handler) http.Handler {
 	})
 }
 
+// RequireBearer 为 /v1/* 提供 Bearer-only 鉴权。与 ProxyAuth 的区别：
+//
+//   - 不接受 oauth2-proxy header / shadow cookie / emergency cookie
+//   - 只接受 Authorization: Bearer ica_xxx
+//   - 失败时返 401 + StructuredError (`{"errors":[{"field":"","reason":"unauthorized"}]}`)
+//
+// 通过后写入 CtxUserID + CtxAuthMethod="api_token"，与 ProxyAuth 的 Bearer 分支
+// 保持一致，下游 handler 可继续用 CtxUserID 取用户。
+func RequireBearer(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if tokenValidator == nil {
+			slog.Error("RequireBearer used but tokenValidator unset — refusing all v1 requests")
+			writeBearerErr(w, http.StatusServiceUnavailable, "token_validator_unset")
+			return
+		}
+		auth := r.Header.Get("Authorization")
+		if !strings.HasPrefix(auth, "Bearer ") {
+			writeBearerErr(w, http.StatusUnauthorized, "missing_bearer")
+			return
+		}
+		token := strings.TrimPrefix(auth, "Bearer ")
+		if !strings.HasPrefix(token, "ica_") {
+			writeBearerErr(w, http.StatusUnauthorized, "invalid_token")
+			return
+		}
+		userID, err := tokenValidator(r.Context(), token)
+		if err != nil || userID <= 0 {
+			slog.Warn("v1 bearer auth failed", "error", err, "path", r.URL.Path)
+			writeBearerErr(w, http.StatusUnauthorized, "invalid_token")
+			return
+		}
+		ctx := context.WithValue(r.Context(), CtxUserID, userID)
+		ctx = context.WithValue(ctx, CtxAuthMethod, "api_token")
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+// writeBearerErr 写入与 v1 包一致的 StructuredError 响应体。
+// 不引用 v1 包以避免 middleware → v1 的反向依赖；用 encoding/json 而非
+// 字符串拼接，避免后续新增 reason 含特殊字符时被 JSON 注入。
+func writeBearerErr(w http.ResponseWriter, status int, reason string) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"errors": []map[string]string{
+			{"field": "", "reason": reason},
+		},
+	})
+}
+
 func RequireRole(role string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -226,6 +359,47 @@ func RequireRole(role string) func(http.Handler) http.Handler {
 			next.ServeHTTP(w, r.WithContext(r.Context()))
 		})
 	}
+}
+
+// roleUpdateRoute 匹配 PUT /api/admin/users/{id}/role —— 单条改角色端点。
+var roleUpdateRoute = regexp.MustCompile(`^/api/admin/users/(\d+)/role$`)
+
+// RejectSelfRoleChange 阻止管理员修改自己的角色（自我提权 / 自我降权）。
+// PLAN-055 / OPS-052 §2：仅拦截 PUT /api/admin/users/{id}/role；当路径 {id}
+// 等于当前操作者（shadow 会话下取 CtxActorID，否则取 CtxUserID）时返回 403。
+// 非该路由 / 非 PUT 一律透传。step-up 由 RequireRecentAuthOnSensitive 另行强制。
+func RejectSelfRoleChange(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut {
+			next.ServeHTTP(w, r)
+			return
+		}
+		m := roleUpdateRoute.FindStringSubmatch(r.URL.Path)
+		if m == nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+		targetID, err := strconv.ParseInt(m[1], 10, 64)
+		if err != nil {
+			// 正则已保证是数字，理论不会到这；保守透传给 handler 出 400。
+			next.ServeHTTP(w, r)
+			return
+		}
+		// 操作者身份：shadow 会话下 CtxUserID 是被冒名的目标用户，真实操作者在
+		// CtxActorID；非 shadow 时 CtxActorID 为空，回退 CtxUserID。
+		selfID, _ := r.Context().Value(CtxActorID).(int64)
+		if selfID == 0 {
+			selfID, _ = r.Context().Value(CtxUserID).(int64)
+		}
+		if selfID > 0 && selfID == targetID {
+			slog.Warn("self role change rejected", "user_id", selfID, "path", r.URL.Path)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"error":"self_role_change_forbidden","message":"You cannot change your own role."}`))
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func UserFromEmail(userLookup func(ctx context.Context, email string) (int64, string, error), roleLookup func(ctx context.Context, userID int64) (string, error)) func(http.Handler) http.Handler {

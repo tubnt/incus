@@ -1,0 +1,477 @@
+# PLAN-053 cloud-gateway /v1 适配层（INFRA-012）
+
+- **status**: draft
+- **createdAt**: 2026-05-26
+- **task**: INFRA-012
+
+## 0. 摘要
+
+把 incus-admin 包装为 cloud-gateway 标准的 cloud provider —— 用户创建 API token，
+AI 通过 MCP 工具调度自己账下 VM；不动 portal/admin 现有 API，只增加 `/v1/*` 适配层。
+
+## 1. 现状 vs cloud-gateway 标准
+
+| 项                   | 现状                                          | 标准要求                                                      | 修复           |
+| -------------------- | --------------------------------------------- | ------------------------------------------------------------- | -------------- |
+| Bearer token         | ✅ ica_ + Authorization header                | Bearer Token                                                  | -              |
+| Token CRUD + TTL     | ✅ /api-tokens + 1h–90d                       | create/list/revoke/expire                                     | -              |
+| 限流 + IETF headers  | ✅ token bucket 5 rps + burst 30              | ≥100 rpm + Retry-After                                        | 给 /v1/* 单独桶 |
+| 审计                 | ✅ PLAN-019 全覆盖                            | (token_id, action, ip, ts, success)                           | 确认 token_id 写入 |
+| OpenAPI spec         | ✅ /api/openapi.yaml + /api/docs              | OpenAPI 3.0                                                   | 补 /v1/* 段     |
+| 实例 CRUD            | ✅ /portal/services                           | /instances                                                    | DTO 映射        |
+| 创建实例             | 订单流 (POST /orders + POST /orders/{id}/pay) | POST /instances 一步                                          | 内部串单 (Phase B) |
+| catalog              | /products + /os-templates                     | /types + /images                                              | alias + 字段映射 |
+| region               | clusters 表（无 country/city）                | /regions + capabilities                                       | 扩 clusters 表  |
+| 错误响应             | `{"error":"..."}`                             | `{"errors":[{"field","reason"}]}`                             | 包装层          |
+| 分页响应             | `?limit&offset` + `{products,total,...}`      | `?page&page_size` + `{data,page,pages,total}`                 | 包装层          |
+| Idempotency-Key      | ❌                                            | 写操作可选                                                    | 新增（推荐做）  |
+
+## 2. 决策（已拍）
+
+1. **/v1 适配层方案**（不走 X 重写 / Y 折中）
+2. **POST /v1/instances**：完整 orders 流 + auto pay，`source=api` 标记
+3. **DELETE**：trash + 30s undo（status=`deleting`），无 `?force=true`
+4. **region metadata**：扩 `clusters` 表加 `country` / `city` / `region_status` / `capabilities`
+5. **cloud-gateway provider 代码**：外部 repo 按 OpenAPI spec 实现，不在本 repo
+
+## 3. Phase 划分
+
+### Phase A：v1 路由骨架 + 基础设施（~0.5 天）
+
+- 新增 `internal/handler/v1/` 包，挂 `/v1/*` chi router
+- 复用 `middleware.Auth` + 新建 `middleware.RateLimitV1`（单独桶 100 rpm/token）
+- 错误包装 helper：`writeErr(w, 400, "field", "required")` → `{errors:[...]}`
+- 分页包装 helper：`writePage(w, data, page, pages, total)`
+- 注册到 `internal/server/server.go`：`r.Route("/v1", h.V1.Routes)`
+
+### Phase B：read-only endpoints（~1 天）
+
+| 端点 | DTO 映射 |
+| --- | --- |
+| `GET /v1/account` | `/auth/me` → `{id, email, balance, currency}` |
+| `GET /v1/instances` | services 列表 → instances；`name→label`，`product_id→type`，`cluster_id→region`，`os_template→image` |
+| `GET /v1/instances/{id}` | 同上单条 |
+| `GET /v1/types` | products active → `{id, label, vcpus, memory_mb, disk_gb, bandwidth_tb, price.monthly}` |
+| `GET /v1/regions` | clusters + 新字段 → `{id, country, city, status, capabilities}` |
+| `GET /v1/images` | os-templates → `{id, label, os, version, arch}` |
+| `GET /v1/ssh-keys` | ssh-keys → `{id, label, fingerprint, public_key}` |
+
+### Phase C：clusters 表 region metadata migration（~0.5 天）
+
+- 新 migration `027_cluster_region_metadata.sql`（PLAN-053 原文写 022，但仓库实际占用至 026；落地用 027）：
+  - `ALTER TABLE clusters ADD COLUMN country TEXT` （nullable，待运维填）
+  - `ALTER TABLE clusters ADD COLUMN city TEXT` （nullable，待运维填）
+  - `ALTER TABLE clusters ADD COLUMN region_status TEXT NOT NULL DEFAULT 'available'` + CHECK (available|unavailable|maintenance)
+  - `ALTER TABLE clusters ADD COLUMN capabilities JSONB NOT NULL DEFAULT '["instances"]'`
+- 默认值 cover 所有现状（country/city NULL = 待填，region_status='available'，capabilities=["instances"]），不写回填 SQL
+- 仍走 sqlx，**不要手写 migration**（按 PMA 规则 #10 用 ORM 工具生成）
+
+### Phase D：POST /v1/instances 一键创建（~1 天）
+
+- 路由：`POST /v1/instances`
+- 入参：`{region, type, image, label, root_pass, ssh_keys, tags, user_data, period?}`
+- 流程：
+  1. 校验 `region` 在 clusters 表，`type` 是 active product，`image` 是 os-template
+  2. 校验余额 ≥ product.price_monthly（一期只支持 monthly，`period` 字段忽略）
+  3. 内部调 `OrderService.Create` → `OrderService.PayWithBalance`（自动）
+  4. 走 `jobs.Runtime` 异步 provisioning
+  5. **同步返 201**，body 含 instance 对象（status=`pending`）+ `Location` header 指向 `/v1/instances/{id}`
+- `source=api` 写入 audit + order metadata
+- 余额不足 → 402 + `{errors:[{field:"balance", reason:"insufficient"}]}`
+
+### Phase E：DELETE + actions + Idempotency-Key（~1 天）
+
+- `DELETE /v1/instances/{id}` → trash，status=`deleting`
+- `POST /v1/instances/{id}/reboot|shutdown|boot` → 复用 `vm.VMAction`
+- `Idempotency-Key` middleware：
+  - DB 表 `idempotency_keys` —— migration `029_idempotency_keys.sql`（实际编号；
+    025/026 alert + 027 cluster region 占用，本表落在 028 billing 之后）
+    schema: `key TEXT PRIMARY KEY, user_id, method, path, status_code, response_body BYTEA, request_hash, created_at`
+  - 24h TTL（cleanup worker 复用 audit_cleanup 套路）
+  - 命中 key → 比对 request_hash → 一致回放缓存响应，异 payload 返 422
+  - 未命中 → 走业务，写入 key + status_code + response_body
+  - 只对 POST/DELETE 生效
+
+### Phase F：OpenAPI spec + 单测 + 文档（~0.5–1 天）
+
+- `internal/handler/openapi/openapi.yaml` 新增 `/v1/*` paths，tag=`cloud-gateway`
+- 错误响应 schema：`StructuredError`
+- 分页响应 schema：`PaginatedResponse`
+- 单测：每个 endpoint 至少 happy path + 1 错误 path
+- CI 跑 `swag fmt --check` + `bun run typecheck` + `go test ./...`
+- README 新增 "cloud-gateway integration" 段：endpoint 列表 + curl example + token 生成步骤
+
+## 4. 工作量估算
+
+| Phase | 估时 |
+| ----- | --- |
+| A 骨架 | 0.5 天 |
+| B read-only | 1 天 |
+| C migration | 0.5 天 |
+| D POST 创建 | 1 天 |
+| E DELETE + Idempotency | 1 天 |
+| F OpenAPI + 单测 + 文档 | 0.5–1 天 |
+| **合计** | **4.5–5 天** |
+
+## 5. 风险
+
+1. **DTO 漂移**：services / products schema 改动时 v1 mapper 不会自动跟。**对策**：写单测覆盖映射；同一 PR 同步改两边
+2. **Idempotency-Key 性能**：高并发下 DB 唯一约束冲突。**对策**：先 SELECT 再 INSERT，冲突回缓存；24h 自动 cleanup
+3. **`POST /v1/instances` 异步语义**：返 201 时 status=`pending`，AI 需轮询。需在 OpenAPI 文档明确说明
+4. **限流穿透**：`/v1/*` 单独桶若配置太宽会把 cluster 打挂。**对策**：100 rpm/token 是上限，可改 env 配置 + 监控
+5. **关闭 stateful trash 行为**：cloud-gateway 标准的 DELETE 是 critical 不可恢复；我们用 trash，AI 在 30s 内重新 GET 会看到 status=`deleting`（不是 404）。需在 OpenAPI 明确说明
+
+## 6. 与 INFRA-013 关系
+
+PLAN-053 一期**只支持 monthly**（沿用现有计费）。
+INFRA-013 / PLAN-054 落地"按天付费 billing engine"后：
+
+- `/v1/types` 响应加 `prices.daily`
+- `POST /v1/instances` 接受 `period: "daily" | "monthly"`，默认按用户决策
+- `/v1/account` 加 `estimated_runway_days` 字段
+
+scope 是 **二选一**（见 INFRA-012 task），等用户拍板。
+
+## 7. 验证
+
+- 本地：`bun run typecheck && go test ./... && go build ./cmd/server`
+- E2E：起 incus-admin → 创 token → curl 跑完 11 端点（顺路给 cloud-gateway 团队的 curl example）
+- 灰度：先在测试 cluster 开 `/v1/*`，验证 1–2 周再开生产
+
+## 8. 实施进度
+
+| Phase | 状态 | 落地点 |
+| ----- | --- | ------ |
+| A 骨架 | ✅ 完成（L3-A 2hvsynkt） | `internal/handler/v1/` 12 占位端点 + StructuredError + 分页 helper + 双桶限流 + RequireBearer + 22 单测 |
+| B read-only | ✅ 完成（L3-D 06w1ajv9） | 7 endpoint 接真实 repo + DTO mapper + 19 单测；新增 VMRepo.ListByUserPaged / SSHKeyRepo.ListByUserPaged |
+| C cluster region migration | ✅ 完成（L3-B q21mhhyk） | `db/migrations/027_cluster_region_metadata.sql` + model.Cluster Country/City/RegionStatus/Capabilities + cluster_repo 4 SELECT 路径回填 |
+| D POST /v1/instances | ✅ 完成（L3-G dfen0y7p） | `internal/handler/v1/instances_write.go` 一步购买 + `portal/order_v1.go` `OrderHandler.CreatePayProvision`（复用现有 rollbackPayment / createSubscriptionForOrder / cancelSubscriptionForRollback / allocateIP / attachIPToVM / quota check，不重复订单流）；source=api 写入 audit |
+| E DELETE + actions | ✅ 完成（L3-G dfen0y7p） | `internal/handler/v1/instances_write.go` DELETE（trash + 30s undo）+ POST /{reboot,shutdown,boot}；`portal/order_v1.go` `VMHandler.V1TrashByID` / `V1ActionByID`（owner 失败一律 404 防资源存在性泄露）；20 个新单测 |
+| E Idempotency schema | ✅ schema 完成（L3-C 640vr0dt） | `db/migrations/029_idempotency_keys.sql` + `model.IdempotencyKey` + `repository.IdempotencyRepo` skeleton |
+| E Idempotency middleware | ✅ 完成（L3-H z2dtqjmt） | `middleware.Idempotency` + `IdempotencyStore` 接口 + `worker.RunIdempotencyCleanup` (24h TTL/每小时第7分) + repo Put/Get(uid) 业务化 + 18 单测；自动挂在 /v1 POST/DELETE 写端点之上 |
+| F OpenAPI + 单测 + 文档 | ✅ 完成（L3-J wm5iv91f 2026-05-26） | openapi.yaml 增 12 /v1 operation + 4 共享 schemas + 9 v1 components；`docs/cloud-gateway.md` + `scripts/e2e-cloud-gateway.sh`；/v1/account + estimated_runway_days；openapi_test.go 2 个断言 |
+
+### Phase A 骨架（2026-05-26 完成 · campaign cloud-gateway-20260526202415）
+
+- ✅ `internal/handler/v1/` 包：
+  - `handler.go` — `Handler` 结构体 + `New()` 构造函数（Phase A 无依赖；后续阶段按需注入）
+  - `router.go` — `Routes(r chi.Router)` 挂载 11 个端点占位（7 read-only + 4 写，写端点拆出 reboot/shutdown/boot 共 5 个；EndpointCount=12）；占位统一返 `501` + `{"errors":[{"field":"","reason":"not_implemented"}]}`
+  - `errors.go` — `FieldError{Field,Reason}` + `writeErr/writeErrs`；空 errs 兜底为 `unknown`，避免空数组歧义
+  - `pagination.go` — `parsePagination` 默认 page=1 / page_size=25、上限 100；非法/越界返 `*paginationErr`；`writePage` 自动算 `pages = ceil(total/page_size)`，total<0 钳到 0
+- ✅ `internal/middleware/ratelimit_v1.go`：
+  - 自实现 token bucket（capacity=burst，refill=rpm/60）；
+    每 token 一桶 → 用户互不影响
+  - 写操作（POST/PUT/PATCH/DELETE）额外过独立 write 桶；
+    write 桶顶住时退回 main 桶 token，避免读写互相饿死
+  - 命中 429 时：IETF `RateLimit-Limit/Remaining/Reset` + `Retry-After` + StructuredError
+  - env：`INCUS_ADMIN_RATELIMIT_V1_RPM`（默认 100）+ `INCUS_ADMIN_RATELIMIT_V1_BURST`（默认 30）
+  - 10 分钟清理 idle 桶，防止 map 无限增长
+- ✅ `internal/middleware/auth.go` 新增 `RequireBearer`：Bearer-only 鉴权
+  （不接受 oauth2-proxy header / shadow cookie / emergency cookie），
+  失败返 401 StructuredError（reason: `missing_bearer` / `invalid_token`），
+  `tokenValidator` 未设置返 503（reason: `token_validator_unset`），
+  通过后写入 `CtxUserID + CtxAuthMethod=api_token`
+- ✅ `internal/server/server.go`：
+  - 新增 `Handlers.V1 RouteRegistrar`
+  - 在 ProxyAuth Group **之外** 挂载 `/v1`：
+    `r.Use(middleware.RequireBearer)` → `r.Use(middleware.RateLimitV1FromEnv())` → `h.V1.Routes(r)`
+  - 启动日志：`slog.Info("v1 routes registered", "endpoints", v1handler.EndpointCount)`
+- ✅ `cmd/server/main.go`：`Handlers.V1 = v1handler.New()`
+- ✅ 单测：
+  - `handler/v1/errors_test.go`：writeErr / writeErrs / 空数组兜底 / notImplemented
+  - `handler/v1/pagination_test.go`：缺省 / 边界 100 / >100 / 非整数 / 负值 / writePage 计算（0、101→5）
+  - `handler/v1/router_test.go`：11 端点全部 501 + Content-Type + StructuredError；与 EndpointCount 同步校验
+  - `middleware/ratelimit_v1_test.go`：burst 30 全放行 / 31 个 429 + headers / 多用户隔离 / 写桶独立 / env defaults
+  - `middleware/ratelimit_v1_test.go` 同文件覆盖 RequireBearer：tokenValidator nil / 缺 header / 非 ica_ / 合法 token
+- ✅ `go build ./...` 全绿；`go test ./...` 全绿；`golangci-lint run ./internal/handler/v1/... ./internal/middleware/... ./internal/server/...` 零警告（main.go 的 `rowserrcheck` 是 pre-existing 不在本 Phase 范围）
+
+#### Phase A 范围内**未做**（按设计）
+
+- 任何具体业务实现（DTO mapping → Phase B；POST /instances → Phase D；DELETE+actions → Phase E）
+- Idempotency-Key middleware（Phase E）
+- OpenAPI yaml 更新（Phase F）
+- region metadata migration（Phase C）
+
+### Phase C clusters region metadata（2026-05-26 完成 · L3-B q21mhhyk）
+
+- ✅ `db/migrations/027_cluster_region_metadata.sql`：4 列 ADD COLUMN IF NOT EXISTS；
+  region_status NOT NULL DEFAULT 'available' + CHECK；
+  capabilities NOT NULL DEFAULT '["instances"]'::jsonb；
+  不写回填 SQL（默认值 cover 现状）
+- ✅ `model.Cluster`：Country/City（json omitempty, nullable）+
+  RegionStatus + CapabilitiesJSON([]byte) + Capabilities([]string) 拆字段，
+  与现有 IPPoolsJSON 模式对齐
+- ✅ `model` 加 3 个 RegionStatus 常量 + `DefaultClusterCapabilities = ["instances"]`
+- ✅ `repository/cluster.go`：抽 `clusterBaseColumns` / `scanBase` / `finalizeRegion`；
+  GetByName/GetByID/List/ListFull 4 条 SELECT 全部 COALESCE 兜底；CreateFull 不写新列
+- ✅ 集成测试：docker postgres:16 真连验证 4 条 SELECT 路径 + CHECK 拒绝 bogus；
+  本地 testcontainers 因 sandbox 网络限制 skip（与 ci_pitfalls 一致，CI 不受影响）
+- ✅ `go build ./...` + 全量 `go test ./...` 全绿
+
+#### Phase C 范围内**未做**（按设计）
+
+- /v1/regions endpoint 本体（Phase B / L3-D 负责）
+- admin UI 编辑 country/city/region_status（后续单独 task）
+- pre-existing：cluster_repo 对 display_name 不做 COALESCE（schema 允许 NULL）；
+  非本 phase 引入，建议后续单 issue 处理
+
+### Phase B read-only endpoints（2026-05-26 完成 · L3-D 06w1ajv9）
+
+- ✅ `internal/handler/v1/handler.go` 重写 `Handler` + `Deps`：注入
+  Users / VMs / Products / Clusters / OSTemplates / SSHKeys / Orders 7 个
+  read-only repo 接口；任一缺失时该端点显式 500 + `slog.Error`，避免
+  nil-deref panic（test 用 sqlmock 不必关心，直接传 `Deps{}` 也能跑）
+- ✅ `internal/handler/v1/dto.go`：6 个 DTO（Account / Instance / Type /
+  Region / Image / SSHKey）+ `toXxxDTO` mapper；Type 拆出 `PricesDTO`
+  方便 INFRA-013 daily 价补字段；Image 用 `parseSourceOSVersion` 把
+  `ubuntu/24.04/cloud` 拆成 `os=ubuntu, version=24.04`；ip6 / tags 预留空
+  以兼容 cloud-gateway schema
+- ✅ `internal/handler/v1/readonly.go` 实装 7 个端点：
+  - `GET /v1/account` → `UserRepo.GetByID(ctx.UserID)` + 余额 + USD
+  - `GET /v1/instances` → `VMRepo.ListByUserPaged` + 一次 `ClusterRepo.List`
+    建 `cluster_id→name` 反查表 + 每行 `OrderRepo.GetByID` 解析 product_id；
+    支持 `?page=&page_size=`；过滤 deleted/gone/trashed 与 portal 口径一致
+  - `GET /v1/instances/{id}` → `VMRepo.GetByID` + ownership 校验：非本人 /
+    trashed / deleted / gone 一律 404（不区分 403 / 404，防资源存在性泄露）
+  - `GET /v1/types` → `ProductRepo.ListActive` + 内存分页（products N<50）
+  - `GET /v1/regions` → `ClusterRepo.List` + 内存分页；capabilities nil → 兜底 ["instances"]
+  - `GET /v1/images` → `OSTemplateRepo.ListEnabled` + source 拆 os/version
+  - `GET /v1/ssh-keys` → `SSHKeyRepo.ListByUserPaged`，限当前 user
+- ✅ `internal/repository/vm.go` +`ListByUserPaged(userID, limit, offset)`：
+  过滤逻辑与 ListByUser 对齐（deleted/gone/trashed 全排），limit<=0 不分页；
+  返回前确保 slice 非 nil（JSON 输出 `[]` 不是 `null`）
+- ✅ `internal/repository/sshkey.go` +`ListByUserPaged(userID, limit, offset)`：
+  同上语义，slice 初始即 `make(..., 0)` 避免 nil
+- ✅ `internal/handler/v1/router.go`：7 个 read-only 路由从 `notImplemented`
+  切到真实 handler；POST/DELETE/actions 5 个 write 端点保留 501 占位
+- ✅ `cmd/server/main.go`：`v1handler.New(Deps{...})` 传齐 7 个 repo
+- ✅ 单测（`readonly_test.go` 19 个）：
+  - 各端点 happy path + 错误 path（用户不存在 404 / repo 错 500 /
+    分页越界空 / 非法 page_size 422）
+  - InstanceByID owner 校验 3 路径（本人 / 非本人 / trashed）+ 非整数 id → 404
+  - Instances cluster name 反查 + product_id 反查 + IP4 / Tags 字段映射
+  - 通用 unauthorized（缺 CtxUserID → 401）+ MissingDeps（空 Deps → 7 端点全 500）
+- ✅ `go build ./...` + `go test ./...` 全绿；
+  `golangci-lint run ./internal/handler/v1/...` 0 issues
+- ✅ `router_test.go` 拆出 `TestRoutes_WriteEndpointsStill501`：read-only 7 +
+  write 5 = EndpointCount=12 同步校验
+
+#### Phase B 范围内**未做**（按设计）
+
+- POST /v1/instances 创建（Phase D / L3-G 负责，复用 OrderService + Idempotency）
+- DELETE / reboot / shutdown / boot 写操作（Phase E / L3-H 负责）
+- OpenAPI yaml 增 `/v1/*` 段（Phase F / L3-J 负责）
+- pre-existing：repo 层 IP 字段单列 `ip`（VM 没有 ip6 列），DTO 暂 `ip6=""`；
+  独立 ipv6 列若要做需新 migration，非本 Phase 范围
+
+### Phase E schema —— Idempotency-Key + billing （2026-05-26 完成 · L3-C 640vr0dt 与 PLAN-054 Phase F 同批落地）
+
+- ✅ `db/migrations/028_billing_subscriptions.sql`：products 加 price_daily + period_supported；
+  orders 加 period（CHECK daily|monthly）；新表 vm_subscriptions + billing_charges +
+  UNIQUE(sub_id, charge_date) 防重扣 + 3 索引
+- ✅ `db/migrations/029_idempotency_keys.sql`：key PRIMARY KEY + 24h cleanup index +
+  request_hash 列（同 key 异 payload 检测）
+- ✅ `model`：Product +PriceDaily/PeriodSupported；Order +Period；
+  新结构 VMSubscription / BillingCharge / IdempotencyKey + 常量集
+- ✅ `repository`：subscription_repo / charge_repo / idempotency_repo skeleton；
+  product / order repo SELECT 列 helper 抽出避免后续漂移
+
+#### Phase E schema 范围内**未做**（按设计）
+
+- Idempotency-Key middleware 本体（L3-H 负责）
+- 订单流 period hook + sub 行写入（L3-E 负责）
+- billing worker（L3-F 负责）
+
+### Phase E middleware（2026-05-26 完成 · L3-H z2dtqjmt 与 schema 同日落地）
+
+- ✅ `internal/middleware/idempotency.go`：
+  - `IdempotencyStore` 接口：Get(ctx, key, userID) / Put(ctx, model.IdempotencyKey)；
+    repo 直接实现，单测注入 in-memory fake
+  - 只对 POST/DELETE 生效；缺 `Idempotency-Key` header 直通；其它方法直通
+  - key 形状校验：长度 16..255 + charset `[A-Za-z0-9._-]`，违规 422 `{field:"Idempotency-Key", reason:"invalid"}`
+  - request_hash = SHA-256(method + path + sorted query + canonical body)；
+    JSON body 解码后再 `json.Marshal`（encoding/json 对 map[string]any 字段输出有序，
+    递归生效）→ 不同字段顺序的同语义 payload 命中同一条缓存；非 JSON / 空 body 退回原 byte
+  - body 读出后 `io.NopCloser(bytes.NewReader(...))` 回灌 r.Body 供下游 ReadAll
+  - 命中 + hash 一致 → 回放 status_code + response_body + `Idempotent-Replay: true` 头
+  - 命中 + hash 不一致 → 422 `{field:"Idempotency-Key", reason:"mismatch", message:"same key, different payload"}`
+  - 未命中 → 包 `captureWriter` 跑下游 → 仅在 2xx / 4xx 缓存；5xx 不缓存（让 client 重试拿到恢复后的后端）
+  - 缓存写用 `context.Background()` + 3s 超时的 detached ctx：client 关连接不影响缓存落盘
+  - Put 失败只 slog.Warn 不阻塞响应（client 仍拿到完整业务结果，最差等同 client 不带 key）
+- ✅ `internal/repository/idempotency_repo.go`：skeleton 业务化
+  - Get 加 `AND user_id = $2` 防 cross-user replay（PRIMARY KEY 全局唯一仍兼容）
+  - Insert → Put：`ON CONFLICT (key) DO NOTHING`，race 场景先到先得
+  - DeleteOlderThan 不变（cleanup worker 调用）
+- ✅ `internal/worker/idempotency_cleanup.go`：
+  - 7 分钟暖机 + 1h ticker（语义对齐 cron `7 * * * *`；不引入 cron 库）
+  - cutoff = NOW() - 24h；删除失败只 slog 不退出 loop；ctx cancel 干净退出
+  - tickEvery 参数注入支持单测毫秒级 fire（同 `RunHealingExpireStale` 模式）
+- ✅ `internal/server/server.go`：`Handlers.Idempotency middleware.IdempotencyStore`；
+  在 RequireBearer + RateLimitV1 之后挂 `middleware.Idempotency(h.Idempotency)`；
+  nil 时 /v1 仍可启动（仅丢失幂等能力，不影响读端点）
+- ✅ `cmd/server/main.go`：`idempotencyRepo := repository.NewIdempotencyRepo(db)` →
+  `go worker.RunIdempotencyCleanup(workerCtx, idempotencyRepo, time.Hour)` →
+  `Handlers{... Idempotency: idempotencyRepo}`
+- ✅ 单测：
+  - `middleware/idempotency_test.go` 18 个：no-key 直通 / 非 POST/DELETE 直通 /
+    miss-then-replay / mismatch 422 / invalid 形状 422（多组）/ 5xx 不缓存 /
+    4xx 缓存 + 重放 / 缺 UserID 401 / Get 错 500 / Put 错被吞 /
+    cross-user scoping miss / body 还原下游 / 字段乱序同语义同 hash /
+    query 顺序无关 / nil store 直通 / fingerprint 一致性 / 非 JSON body 原样 / 空 body
+  - `worker/idempotency_cleanup_test.go` 4 个：nil cleaner 立刻退出 / 快速 tick + cutoff=now-24h ±1s /
+    error 不杀循环 / runOnce 单次直调
+  - `repository/billing_integration_test.go` `TestIdempotencyRepo_RoundTrip` 扩：
+    Put/Get(uid) 改名 + cross-user miss + ON CONFLICT DO NOTHING 不抛错
+- ✅ `go build ./...` 全绿；`go test ./...` 全绿；
+  `golangci-lint run --new-from-rev=HEAD ./...` 0 issues（pre-existing rowserrcheck/gosec 不在本 Phase 范围）
+
+#### Phase E middleware 决策记录
+
+1. **5xx 不缓存 / 4xx 缓存**：5xx 多为暂时态（DB 挂 / 上游 timeout），client 重试应打到恢复后的后端；
+   4xx 缓存避免 client 反复打错请求耗费 quota
+2. **Query string 也进 hash**：sorted query keys 进 SHA-256，避免 `?a=1&b=2` 与 `?b=2&a=1` 被当作异 payload；
+   同名多值保留原顺序（`a=1&a=2 ≠ a=2&a=1` 符合 RFC）
+3. **ON CONFLICT (key) DO NOTHING**：first writer wins；第二个并发请求拿到自己的响应，下次 GET 才会回放 A 的；
+   规避 UPSERT 覆盖语义的歧义
+4. **Put 用 detached ctx + 3s timeout**：client 断开 (ctx.Cancel) 不应让缓存丢失，
+   否则下次同 key 命中场景白白失效；3s 上限防止 DB 慢 query 卡 goroutine
+
+#### Phase E middleware 范围内**未做**（按设计）
+
+- 把 middleware 接到 `POST /v1/instances` / `DELETE /v1/instances/{id}` 业务端点（L3-G / L3-I）
+- OpenAPI 描述 `Idempotency-Key` header + `Idempotent-Replay` 响应头（Phase F / L3-J）
+- 端点级豁免名单（一期对所有 /v1 写端点统一启用；client 不传 key 即 no-op）
+
+### Phase D + E DELETE/actions 完成（2026-05-26 · L3-G dfen0y7p）
+
+- ✅ `internal/handler/portal/order_v1.go`：
+  - `OrderHandler.CreatePayProvision(r, V1ProvisionRequest) (*V1ProvisionResult, *V1ProvisionError)`
+    把 Create + Pay 合一：复用 `orders.CreateWithPeriod` / `PayWithBalance` /
+    `UpdateStatus`、包级 `allocateIP` / `attachIPToVM`、handler 自身的
+    `checkQuota` / `rollbackPayment` / `createSubscriptionForOrder` /
+    `cancelSubscriptionForRollback`，避免与 portal `/orders/{id}/pay` 路径
+    产生第二份订单流逻辑；
+  - 余额预检查（读 users.balance）兜底 PayWithBalance 的中文错误字符串匹配，
+    明确返 402 reason=insufficient_balance；
+  - source=api 进 audit 元数据；
+  - `VMHandler.V1TrashByID(r, userID, vmID) *V1ProvisionError`：复用 portal TrashService
+    主路径（vmSvc.Trash + vmRepo.MarkTrashed + cancelSubscriptionOnTrash），
+    owner 失败 / trashed / deleted / gone 一律 404 防泄露；
+  - `VMHandler.V1ActionByID(r, userID, vmID, action) *V1ProvisionError`：
+    boot/reboot/shutdown 映射到 Incus start/restart/stop，复用 vmSvc.ChangeState +
+    vmRepo.UpdateStatus；
+  - 共用 `V1ProvisionError{Status, Field, Reason, Msg}` 让 v1 handler 走
+    StructuredError 包装，不复制 HTTP 响应。
+- ✅ `internal/handler/v1/handler.go`：Deps 加 8 字段 ——
+  ClustersByName / OSTemplatesBySlug / ProductsBySlug / SSHKeysOwner +
+  OrderProvision / VMTrash / VMAction（接口注入，便于测试 fake）；
+  productReader 接口加 GetByID 给 POST 流 type 解析；
+- ✅ `internal/handler/v1/instances_write.go`：
+  - `POST /v1/instances` 校验顺序与 PLAN-053 §1 一致 ——
+    region → type → period → image → ssh_keys → label，任一失败立即 422；
+    region 不存在或非 available 都返 reason=region_unavailable（防泄露）；
+    type 支持 numeric id / 数字字符串 / slug 三种形态；
+    ssh_keys 支持 [int] / ["str"] 两种 JSON 形态；
+  - 委托 `OrderProvision.CreatePayProvision` 走订单流；
+    成功返 201 + `Location: /v1/instances/{id}` header + body 含 InstanceDTO
+    （status=pending）+ order_id + job_id；
+  - DELETE /v1/instances/{id} 走 `VMTrash.V1TrashByID` → 202 +
+    `{id, status:"deleting"}`；不开 ?force=true；
+  - POST /v1/instances/{id}/{boot,reboot,shutdown} 走 `VMAction.V1ActionByID`
+    → 202 + `{id, status:"<action>ing"}`；
+  - 响应写入走标准 ResponseWriter（不 hijack），给 L3-H Idempotency-Key
+    middleware 零侵入接入预留空间。
+- ✅ `internal/handler/v1/router.go`：5 个 write 端点从 `notImplemented` 切到
+  真实 handler；EndpointCount=12 仍保持（同步校验仍在 router_test.go）。
+- ✅ `cmd/server/main.go`：v1handler.New(Deps{}) 注入 8 个新依赖
+  （clusterRepo / osTemplateRepo / productRepo / sshKeyRepo / orderHandler /
+  portalVMHandler）。
+- ✅ 单测（`instances_write_test.go` 20 个）：
+  - POST happy path / numeric type / 字符串 ssh_keys id / 余额不足（fake
+    OrderProvision 返 V1ProvisionError） / region not_found / region maintenance /
+    period not supported / type not_found / image disabled / ssh_keys 越权 /
+    缺字段 region/type/image / label 非法 / 缺 user_id 401 / 缺 Deps 500 /
+    cluster DB 错；
+  - DELETE happy / 非自己 404 / 非整数 id / 缺 Deps；
+  - actions reboot+shutdown+boot 三个 happy + owner fail；
+  - 单元测试覆盖 parseInstanceID 边界 + validateInstanceLabel 字符集；
+- ✅ `go build ./...` + `go test ./...` 全绿；
+  `golangci-lint run ./internal/handler/v1/... ./internal/middleware/...
+  ./internal/server/...` 0 issues；
+  portal pkg 的 8 个 pre-existing 警告均与本 PR 无关（metrics/vm/clustermgmt/jobs
+  历史遗留）。
+
+#### Phase D + E DELETE/actions 范围内**未做**（按设计）
+
+- Idempotency-Key middleware（L3-H 负责）
+- OpenAPI yaml /v1/* 段（L3-J 负责）
+- /v1/instances POST 后 cloud-gateway UI（L3-I 负责）
+
+### Phase F OpenAPI + 文档 + E2E（2026-05-26 完成 · L3-J wm5iv91f · 与 PLAN-054 Phase J 同批落地）
+
+- ✅ `internal/handler/openapi/openapi.yaml`：
+  - 顶层加 `cloud-gateway` tag（描述 Bearer 鉴权 / 限流 / 错误 / 分页 / Idempotency / 异步语义）
+  - 新增 12 个 `/v1` operation（10 path）：account / instances(list+create) /
+    instances/{id}(get+delete) / instances/{id}/{boot,reboot,shutdown} /
+    types / regions / images / ssh-keys；所有写端点接 `V1IdempotencyKey` 参数
+    + `Idempotent-Replay` 响应头
+  - components.parameters 新增 `V1InstanceID` / `V1Page` / `V1PageSize` /
+    `V1IdempotencyKey`
+  - components.responses 新增 `V1Unauthorized` / `V1Forbidden` / `V1NotFound` /
+    `V1PaymentRequired` / `V1Unprocessable` / `V1RateLimited` / `V1Internal`
+    （带 IETF RateLimit + Retry-After 头）
+  - components.schemas 新增 9 个：`StructuredError` / `PaginatedResponse` /
+    `AccountDTO` / `InstanceDTO` / `TypeDTO` / `RegionDTO` / `ImageDTO` /
+    `SSHKeyDTO` / `InstanceCreateRequest` / `InstanceActionResponse` —— 与
+    handler/v1/dto.go 字段名 1:1
+  - `docs/openapi/openapi.yaml` 与 handler 内嵌版同源 (cp 同步) —— 外部读
+    docs 副本即可拿到完整 spec，免启动 server
+- ✅ `internal/handler/openapi/openapi_test.go`：
+  - `TestSpec_ContainsCloudGatewayEndpoints` —— 24 条 grep-level 断言
+    （10 path + 9 schema + 2 header + tag + runway 字段）
+  - `TestSpec_V1OperationCount` —— 解析 yaml 缩进结构验 10 path + 12 op
+    （避免引 yaml lib 依赖）
+- ✅ `/v1/account` 加 `estimated_runway_days`（PLAN-054 Phase J 后端落地）：
+  - `dto.go` AccountDTO +EstimatedRunwayDays *float64 (omitempty)
+  - `dto.go` computeRunwayDays(balance, subs) 与前端
+    `web/src/features/billing/subscriptions-api.ts` 同算法：daily 累加 rate /
+    monthly 累加 rate/30，balance/dailyBurn；balance<=0 / 无 active sub /
+    burn==0 / rate 全空 → nil（不输出字段）
+  - `handler.go` Deps +Subscriptions subscriptionReader（nil 容忍：端点正常
+    工作只是不返字段，向后兼容）
+  - `readonly.go` Account 路径在拿到 user 后 ListByUser(uid, active) 折算
+    runway；sub 取错只 slog.Warn 不阻断响应（让 portal 余额查询不依赖 sub
+    表健康度）
+  - `cmd/server/main.go` Deps 接 subRepo
+  - `readonly_test.go` +7 个 case：daily-only / monthly-mixed / no-active /
+    balance-zero / rate-nil / sub-repo-err 不致命 / nil-dep 不致命；含 raw
+    body grep 防字段意外输出
+- ✅ `docs/cloud-gateway.md` 新建（incus-admin 无 README.md，按任务"按现状选"）：
+  - 12 端点表 + OpenAPI spec 链接
+  - token 生成步骤（/api-tokens 页）
+  - 鉴权 / 限流 / 错误 reason 表 / 分页 / Idempotency 规范
+  - 12 端点完整 curl example + 4 错误路径（余额 / region / period / idem）
+  - POST /v1/instances 请求 + 201 响应 schema
+  - 计费周期 + runway 字段说明
+  - cloud-gateway provider 契约要点（4 条）
+  - 本地启动跑通指引
+- ✅ `scripts/e2e-cloud-gateway.sh` 新建：
+  - 12 端点 + 5 错误路径 + Idempotency replay + 限流（手动开关）的可重跑脚本
+  - `INCUSADMIN_E2E_CREATE=1` 才走真创建链路；默认只读路径，可在 CI/无沙箱
+    DB 的环境跑
+  - `INCUSADMIN_E2E_RATELIMIT=1` 才打满限流（150 次 burst，CI 默认跳过）
+  - `INCUSADMIN_REGION` / `INCUSADMIN_TYPE_SLUG` / `INCUSADMIN_IMAGE_SLUG`
+    覆盖自动选择；jq 不存在时降级到 grep 解 JSON，无外部依赖
+  - 输出对齐过往脚本风格（`step` / `ok` / `ko` + 退出码 0/1/2）
+- ✅ `go build ./...` + `go test ./...` 全绿；
+  `golangci-lint run ./internal/handler/v1/... ./internal/handler/openapi/...`
+  0 issues（main.go 8 个 pre-existing 警告均与本 phase 无关）
+
+#### Phase F 范围内**未做**（按设计）
+
+- cloud-gateway provider 实现（外部 repo，按本 spec 接入）
+- /api/openapi.json runtime yaml→json 转换（继续维持 zero-dep；
+  client gen 用 `yq -o=json` 或直接吃 yaml）
+- Playwright E2E（任务明确不强制；e2e-cloud-gateway.sh 可手动跑）
+- 限流 / Idempotency 跨 server 重启的持久化测试（已有 worker cleanup + repo
+  单测覆盖，留给 OPS 后续 chaos test）

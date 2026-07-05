@@ -17,6 +17,10 @@ interface SecretRevealProps {
   className?: string;
   /** 自动复盖延时（ms，默认 8000；传 0 关闭） */
   autoMaskMs?: number;
+  /** OPS-051 / PLAN-052 Q7：DonePanel 凭据明文显示模式 —— 始终展示明文 +
+   * 一键复制，省略 Eye 按钮（用户决策：私有云场景肩窥风险低于"复制不上"
+   * 的功能挫败）。其它一次性 secret（如 shadow login URL）保持默认 mask. */
+  alwaysReveal?: boolean;
 }
 
 export function SecretReveal({
@@ -25,9 +29,10 @@ export function SecretReveal({
   inline = true,
   className,
   autoMaskMs = 8000,
+  alwaysReveal = false,
 }: SecretRevealProps) {
   const { t } = useTranslation();
-  const [revealed, setRevealed] = useState(false);
+  const [revealed, setRevealed] = useState(alwaysReveal);
   const [copied, setCopied] = useState(false);
   const maskTimerRef = useRef<number | null>(null);
 
@@ -84,16 +89,18 @@ export function SecretReveal({
       >
         {display}
       </code>
-      <button
-        type="button"
-        aria-label={revealed
-          ? t("secret.hide", { defaultValue: "隐藏" })
-          : t("secret.reveal", { defaultValue: "显示" })}
-        onClick={revealed ? mask : reveal}
-        className="text-text-tertiary hover:text-foreground transition-colors"
-      >
-        {revealed ? <EyeOff size={14} /> : <Eye size={14} />}
-      </button>
+      {alwaysReveal ? null : (
+        <button
+          type="button"
+          aria-label={revealed
+            ? t("secret.hide", { defaultValue: "隐藏" })
+            : t("secret.reveal", { defaultValue: "显示" })}
+          onClick={revealed ? mask : reveal}
+          className="text-text-tertiary hover:text-foreground transition-colors"
+        >
+          {revealed ? <EyeOff size={14} /> : <Eye size={14} />}
+        </button>
+      )}
       <button
         type="button"
         aria-label={copied

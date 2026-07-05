@@ -37,6 +37,39 @@ func (r *SSHKeyRepo) ListByUser(ctx context.Context, userID int64) ([]model.SSHK
 	return keys, rows.Err()
 }
 
+// ListByUserPaged 是 ListByUser 的分页版本（PLAN-053 Phase B /v1/ssh-keys 用）。
+// limit<=0 表示不限制。返回 (rows, total, err)，rows 永不为 nil 以便 JSON 输出 `[]`。
+func (r *SSHKeyRepo) ListByUserPaged(ctx context.Context, userID int64, limit, offset int) ([]model.SSHKey, int64, error) {
+	var total int64
+	if err := r.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM ssh_keys WHERE user_id = $1`, userID,
+	).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count ssh keys: %w", err)
+	}
+
+	query := `SELECT id, user_id, name, public_key, fingerprint, created_at FROM ssh_keys
+		WHERE user_id = $1 ORDER BY id DESC`
+	args := []any{userID}
+	if limit > 0 {
+		query += ` LIMIT $2 OFFSET $3`
+		args = append(args, limit, offset)
+	}
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	keys := make([]model.SSHKey, 0)
+	for rows.Next() {
+		var k model.SSHKey
+		if err := rows.Scan(&k.ID, &k.UserID, &k.Name, &k.PublicKey, &k.Fingerprint, &k.CreatedAt); err != nil {
+			return nil, 0, err
+		}
+		keys = append(keys, k)
+	}
+	return keys, total, rows.Err()
+}
+
 func (r *SSHKeyRepo) Create(ctx context.Context, userID int64, name, publicKey, fingerprint string) (*model.SSHKey, error) {
 	var k model.SSHKey
 	err := r.db.QueryRowContext(ctx,

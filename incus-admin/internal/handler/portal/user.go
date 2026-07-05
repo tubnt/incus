@@ -1,6 +1,7 @@
 package portal
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -11,6 +12,14 @@ import (
 	"github.com/incuscloud/incus-admin/internal/middleware"
 	"github.com/incuscloud/incus-admin/internal/repository"
 )
+
+// BillingReactivator PLAN-054 / INFRA-013：充值入账后被即时调用以解挂用户的
+// suspended 订阅。实现端 service/billing.Service.ReactivateOnTopUp（adapter
+// 在 cmd/server/main.go）。failure 不阻塞 topup 主响应：handler 后台 goroutine
+// 调用 + log。
+type BillingReactivator interface {
+	ReactivateOnTopUp(ctx context.Context, userID int64) error
+}
 
 // MaxTopUpPerRequest 单次充值上限（单位与 balance 相同，默认 10000）。
 // 防止误操作或账户被盗后一次性转走巨额资金。
@@ -25,10 +34,19 @@ const topUpWindow = 24 * time.Hour
 
 type UserHandler struct {
 	repo *repository.UserRepo
+	// reactivator PLAN-054：充值入账后即时尝试解挂用户的 suspended 订阅。
+	// nil 时跳过（兼容旧部署 / 未启用计费引擎的环境）。
+	reactivator BillingReactivator
 }
 
 func NewUserHandler(repo *repository.UserRepo) *UserHandler {
 	return &UserHandler{repo: repo}
+}
+
+// WithBillingReactivator 注入 topup 解挂 hook（PLAN-054 / INFRA-013）。
+func (h *UserHandler) WithBillingReactivator(r BillingReactivator) *UserHandler {
+	h.reactivator = r
+	return h
 }
 
 func (h *UserHandler) AdminRoutes(r chi.Router) {
@@ -136,6 +154,17 @@ func (h *UserHandler) TopUpBalance(w http.ResponseWriter, r *http.Request) {
 	}
 	slog.Info("balance topped up", "user_id", id, "amount", req.Amount)
 	audit(r.Context(), r, "user.topup", "user", id, map[string]any{"amount": req.Amount})
+	// PLAN-054 / INFRA-013：充值入账后立刻尝试解挂 suspended 订阅。后台跑 +
+	// 独立 ctx（不绑 HTTP request 生命周期），失败仅 log。
+	if h.reactivator != nil {
+		go func(userID int64) {
+			bgCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if err := h.reactivator.ReactivateOnTopUp(bgCtx, userID); err != nil {
+				slog.Error("reactivate on topup failed", "user_id", userID, "error", err)
+			}
+		}(id)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
 }
 

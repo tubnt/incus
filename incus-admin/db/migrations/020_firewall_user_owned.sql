@@ -1,3 +1,4 @@
+-- +goose Up
 -- PLAN-035: user-owned firewall groups
 --
 -- 模型从"admin 模板 + 用户应用"扩展为"admin 共享组 + 用户私有组"双轨：
@@ -30,3 +31,13 @@ ALTER TABLE quotas
     ADD COLUMN IF NOT EXISTS max_firewall_groups INT NOT NULL DEFAULT 5;
 ALTER TABLE quotas
     ADD COLUMN IF NOT EXISTS max_firewall_rules_per_group INT NOT NULL DEFAULT 20;
+
+-- +goose Down
+ALTER TABLE quotas DROP COLUMN IF EXISTS max_firewall_rules_per_group;
+ALTER TABLE quotas DROP COLUMN IF EXISTS max_firewall_groups;
+DROP INDEX IF EXISTS idx_firewall_groups_owner;
+DROP INDEX IF EXISTS firewall_groups_owner_slug_key;
+ALTER TABLE firewall_groups DROP COLUMN IF EXISTS owner_id;
+-- 注意：不自动恢复 011 的 firewall_groups_slug_key 全局唯一约束——
+-- 用户私有组允许跨用户重名 slug，直接重建唯一约束可能因重复值失败。
+-- 如需回到 019 语义，运维应先去重再手动 ADD CONSTRAINT。

@@ -17,19 +17,42 @@ func NewOrderRepo(db *sql.DB) *OrderRepo {
 	return &OrderRepo{db: db}
 }
 
+// 列定义集中：所有 SELECT 走 orderSelectCols，PLAN-054 给 orders 加 period
+// 后避免散落的 SELECT 漏写。Scan 顺序由 scanOrderRow 兜底，扫描错位是
+// d6aee02 教训的重点防御点。
+const orderSelectCols = `id, user_id, product_id, cluster_id, status, amount,
+	COALESCE(currency, 'USD'), period, expires_at, created_at`
+
+func scanOrderRow(row interface{ Scan(...any) error }, o *model.Order) error {
+	return row.Scan(
+		&o.ID, &o.UserID, &o.ProductID, &o.ClusterID, &o.Status, &o.Amount,
+		&o.Currency, &o.Period, &o.ExpiresAt, &o.CreatedAt,
+	)
+}
+
+// Create 兼容现行调用方：period 取 DB DEFAULT 'monthly'；新调用走 CreateWithPeriod。
 func (r *OrderRepo) Create(ctx context.Context, userID, productID, clusterID int64, amount float64, currency string) (*model.Order, error) {
+	return r.CreateWithPeriod(ctx, userID, productID, clusterID, amount, currency, model.BillingPeriodMonthly)
+}
+
+// CreateWithPeriod PLAN-054 / INFRA-013 新签名：显式传 period。L3-E 订单流改造时
+// 调它替代 Create；旧调用方 Create() 自动落 'monthly'，行为不变。
+func (r *OrderRepo) CreateWithPeriod(ctx context.Context, userID, productID, clusterID int64, amount float64, currency, period string) (*model.Order, error) {
 	if currency == "" {
 		currency = "USD"
 	}
+	if period == "" {
+		period = model.BillingPeriodMonthly
+	}
 	expiresAt := time.Now().AddDate(0, 1, 0)
 	var o model.Order
-	err := r.db.QueryRowContext(ctx,
-		`INSERT INTO orders (user_id, product_id, cluster_id, status, amount, currency, expires_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7)
-		 RETURNING id, user_id, product_id, cluster_id, status, amount, COALESCE(currency, 'USD'), expires_at, created_at`,
-		userID, productID, clusterID, model.OrderPending, amount, currency, expiresAt,
-	).Scan(&o.ID, &o.UserID, &o.ProductID, &o.ClusterID, &o.Status, &o.Amount, &o.Currency, &o.ExpiresAt, &o.CreatedAt)
-	if err != nil {
+	row := r.db.QueryRowContext(ctx,
+		`INSERT INTO orders (user_id, product_id, cluster_id, status, amount, currency, period, expires_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		 RETURNING `+orderSelectCols,
+		userID, productID, clusterID, model.OrderPending, amount, currency, period, expiresAt,
+	)
+	if err := scanOrderRow(row, &o); err != nil {
 		return nil, fmt.Errorf("create order: %w", err)
 	}
 	return &o, nil
@@ -37,9 +60,9 @@ func (r *OrderRepo) Create(ctx context.Context, userID, productID, clusterID int
 
 func (r *OrderRepo) GetByID(ctx context.Context, id int64) (*model.Order, error) {
 	var o model.Order
-	err := r.db.QueryRowContext(ctx,
-		`SELECT id, user_id, product_id, cluster_id, status, amount, COALESCE(currency, 'USD'), expires_at, created_at FROM orders WHERE id = $1`, id,
-	).Scan(&o.ID, &o.UserID, &o.ProductID, &o.ClusterID, &o.Status, &o.Amount, &o.Currency, &o.ExpiresAt, &o.CreatedAt)
+	row := r.db.QueryRowContext(ctx,
+		`SELECT `+orderSelectCols+` FROM orders WHERE id = $1`, id)
+	err := scanOrderRow(row, &o)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -51,7 +74,7 @@ func (r *OrderRepo) GetByID(ctx context.Context, id int64) (*model.Order, error)
 
 func (r *OrderRepo) ListByUser(ctx context.Context, userID int64) ([]model.Order, error) {
 	rows, err := r.db.QueryContext(ctx,
-		`SELECT id, user_id, product_id, cluster_id, status, amount, COALESCE(currency, 'USD'), expires_at, created_at FROM orders WHERE user_id = $1 ORDER BY id DESC`, userID)
+		`SELECT `+orderSelectCols+` FROM orders WHERE user_id = $1 ORDER BY id DESC`, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -59,7 +82,7 @@ func (r *OrderRepo) ListByUser(ctx context.Context, userID int64) ([]model.Order
 	var orders []model.Order
 	for rows.Next() {
 		var o model.Order
-		if err := rows.Scan(&o.ID, &o.UserID, &o.ProductID, &o.ClusterID, &o.Status, &o.Amount, &o.Currency, &o.ExpiresAt, &o.CreatedAt); err != nil {
+		if err := scanOrderRow(rows, &o); err != nil {
 			return nil, err
 		}
 		orders = append(orders, o)
@@ -79,7 +102,7 @@ func (r *OrderRepo) ListPaged(ctx context.Context, limit, offset int) ([]model.O
 		return nil, 0, fmt.Errorf("count orders: %w", err)
 	}
 
-	query := `SELECT id, user_id, product_id, cluster_id, status, amount, COALESCE(currency, 'USD'), expires_at, created_at FROM orders ORDER BY id DESC`
+	query := `SELECT ` + orderSelectCols + ` FROM orders ORDER BY id DESC`
 	args := []any{}
 	if limit > 0 {
 		query += ` LIMIT $1 OFFSET $2`
@@ -95,7 +118,7 @@ func (r *OrderRepo) ListPaged(ctx context.Context, limit, offset int) ([]model.O
 	orders := make([]model.Order, 0)
 	for rows.Next() {
 		var o model.Order
-		if err := rows.Scan(&o.ID, &o.UserID, &o.ProductID, &o.ClusterID, &o.Status, &o.Amount, &o.Currency, &o.ExpiresAt, &o.CreatedAt); err != nil {
+		if err := scanOrderRow(rows, &o); err != nil {
 			return nil, 0, err
 		}
 		orders = append(orders, o)

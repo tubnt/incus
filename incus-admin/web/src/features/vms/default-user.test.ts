@@ -1,39 +1,27 @@
 import { describe, expect, it } from "vitest";
 import { defaultUserForImage } from "./default-user";
 
+// OPS-051 / PLAN-052 Q7：所有 Linux 统一 root 登录；Windows 仍 Administrator。
 describe("defaultUserForImage", () => {
-  it("matches Ubuntu cloud image", () => {
-    expect(defaultUserForImage("images:ubuntu/24.04/cloud")).toBe("ubuntu");
-    expect(defaultUserForImage("images:ubuntu/22.04")).toBe("ubuntu");
+  it("returns root for all Linux cloud variants", () => {
+    expect(defaultUserForImage("images:ubuntu/24.04/cloud")).toBe("root");
+    expect(defaultUserForImage("images:debian/12/cloud")).toBe("root");
+    expect(defaultUserForImage("images:rockylinux/9/cloud")).toBe("root");
+    expect(defaultUserForImage("images:almalinux/9/cloud")).toBe("root");
+    expect(defaultUserForImage("images:fedora/40/cloud")).toBe("root");
+    expect(defaultUserForImage("images:archlinux/cloud")).toBe("root");
+    expect(defaultUserForImage("images:alpine/3.19")).toBe("root");
   });
 
-  it("matches Debian", () => {
-    expect(defaultUserForImage("images:debian/12/cloud")).toBe("debian");
-  });
-
-  it("matches Rocky / AlmaLinux / CentOS / Fedora", () => {
-    expect(defaultUserForImage("images:rockylinux/9/cloud")).toBe("rocky");
-    expect(defaultUserForImage("images:almalinux/9/cloud")).toBe("almalinux");
-    expect(defaultUserForImage("images:centos/9-Stream/cloud")).toBe("centos");
-    expect(defaultUserForImage("images:fedora/40/cloud")).toBe("fedora");
-  });
-
-  it("matches openSUSE / Arch / Alpine / FreeBSD", () => {
-    expect(defaultUserForImage("images:opensuse/15.5/cloud")).toBe("opensuse");
-    expect(defaultUserForImage("images:archlinux/cloud")).toBe("arch");
-    expect(defaultUserForImage("images:alpine/3.19")).toBe("alpine");
-    expect(defaultUserForImage("images:freebsd/14.0")).toBe("freebsd");
-  });
-
-  it("matches Windows aliases (custom local images)", () => {
+  it("returns Administrator for Windows aliases", () => {
     expect(defaultUserForImage("images:windows-server-2022")).toBe("Administrator");
-    expect(defaultUserForImage("images:windows-11")).toBe("Administrator");
+    expect(defaultUserForImage("windows-11")).toBe("Administrator");
   });
 
-  it("falls back to ubuntu for empty / unknown", () => {
-    expect(defaultUserForImage("")).toBe("ubuntu");
-    expect(defaultUserForImage(null)).toBe("ubuntu");
-    expect(defaultUserForImage(undefined)).toBe("ubuntu");
-    expect(defaultUserForImage("custom:my-image")).toBe("ubuntu");
+  it("falls back to root for empty / unknown", () => {
+    expect(defaultUserForImage("")).toBe("root");
+    expect(defaultUserForImage(null)).toBe("root");
+    expect(defaultUserForImage(undefined)).toBe("root");
+    expect(defaultUserForImage("custom:my-image")).toBe("root");
   });
 });

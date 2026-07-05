@@ -392,6 +392,7 @@
   --size-row-actions-menu: 12rem;   /* 192px - 行操作 dropdown */
   --size-topbar-user: 11.25rem;     /* 180px - 顶栏用户菜单触发器 */
   --size-input-narrow: 10rem;       /* 160px - 紧凑输入（如 TTL select） */
+  --size-input-medium: 16rem;       /* 256px - 中等下拉（如用户筛选 select） */
 
   /* 自适应宽度 token：在 mobile 占近满屏，在 desktop 限定上限。统一替代
      `w-[min(92vw,Xrem)]` arbitrary value。 */

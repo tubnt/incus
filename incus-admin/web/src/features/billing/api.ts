@@ -11,6 +11,9 @@ export interface Order {
   status: string;
   amount: number;
   currency?: string;
+  // PLAN-054 / INFRA-013：计费周期。新订单从 daily/monthly 二选一；
+  // 历史订单后端默认 'monthly'，前端按 monthly 显示。
+  period?: "daily" | "monthly";
   expires_at: string | null;
   created_at: string;
 }
@@ -103,6 +106,8 @@ export function useCreateOrderMutation() {
       os_image?: string;
       cluster_id?: number;
       cluster_name?: string;
+      // PLAN-054 / INFRA-013：daily/monthly。未传时后端默认 monthly。
+      period?: "daily" | "monthly";
     }) => http.post<{ order: Order }>("/portal/orders", params),
   });
 }

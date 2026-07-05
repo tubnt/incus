@@ -13,25 +13,46 @@ import (
 	"github.com/incuscloud/incus-admin/internal/repository"
 )
 
-// validateCloudInitTemplate 校验 cloud-init template 至少是合法 YAML，且顶级
-// key 在白名单内。Session-1 O6 / PLAN-051 §2-B 决策 D-11 = B：仅做 YAML 解析
-// + 顶级 key 类型 sanity 检查（写非法 YAML 让用户看到清楚错误，不限 runcmd
-// 内容）。空字符串放行（== "用 incus 默认 cloud-init"）。
+// dangerousCloudInitTopKeys 列出禁止 admin / AI 写入的顶层字段。这些字段
+// 一旦出现就会覆盖 BuildCloudInit 的系统强制行为（统一 root 登录 + sshd
+// PermitRootLogin + openssh-server 必装）。OPS-051 / PLAN-052 §E。
 //
-// 顶级允许的 key：cloud-config v2 标准字段集子集；其它自定义 key（user-data
-// 文件嵌入用） 走 user.* 前缀也允许，但要 known list 内。
+// 设计取舍：黑名单 vs 白名单
+//   - 黑名单覆盖窄、易理解、不限制 admin/AI 创造（packages / runcmd / write_files
+//     / users 等"追加型"字段都不禁）
+//   - 白名单则需要随 cloud-init 上游字段表演进，维护代价高
+//
+// 黑名单 = 任何"反向移除系统默认"的字段：
+//   - disable_root: true             → 与 OPS-051 root 化冲突
+//   - ssh_pwauth: false              → 破坏初始密码登录
+//   - chpasswd 顶层 expire/list       → 干扰 BuildCloudInit 的 root 密码注入
+//
+// 注：users[] 顶层即使被覆盖，cloud-init 上游行为是合并而非替换；ExtraYAML
+// 中追加 user 不会移除 root，所以不进黑名单。
+var dangerousCloudInitTopKeys = map[string]string{
+	"disable_root": "禁止：会覆盖 OPS-051 默认 root 登录策略",
+	"ssh_pwauth":   "禁止：会覆盖密码登录开关（用户拿到的初始密码会失效）",
+}
+
+// validateCloudInitTemplate 校验 admin / AI 写入的 os_templates.cloud_init_template。
+// 空字符串放行（默认行为 == 走 BuildCloudInit 系统模板）。
+//
+// OPS-051 / PLAN-052：扩展自 PLAN-051 §2-B 仅 yaml 解析校验 → 加 dangerous
+// 顶层字段黑名单 + 首行 #cloud-config 提示（cloud-init datasource 要求）。
 func validateCloudInitTemplate(s string) error {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return nil
 	}
-	// cloud-config 必须以 "#cloud-config" 头一行开始（cloud-init 协议要求）
-	// 但模板可能含 Go template 占位符；不强制头一行，仅确保剩下能解析为 YAML。
-	var node yaml.Node
-	if err := yaml.Unmarshal([]byte(s), &node); err != nil {
+	var doc map[string]any
+	if err := yaml.Unmarshal([]byte(s), &doc); err != nil {
 		return fmt.Errorf("invalid YAML: %w", err)
 	}
-	// 不强制 schema 校验内容；YAML 解析通过即认为合法。
+	for k := range doc {
+		if reason, hit := dangerousCloudInitTopKeys[k]; hit {
+			return fmt.Errorf("字段 %q 被禁用：%s", k, reason)
+		}
+	}
 	return nil
 }
 

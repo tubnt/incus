@@ -3,6 +3,7 @@ package portal
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -640,12 +641,25 @@ func (h *FirewallHandler) PortalCreateGroup(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// quota 校验：组数 + 单组规则数
+	// quota 校验：组数 + 单组规则数。
+	// WP-E fail-closed：GetByUserID 现约定缺行返 (nil,nil)、真 DB 错误才返 err。
+	// 原实现 `if err == nil` 在 DB 抖动时静默跳过校验（fail-open），硬上限可被绕过。
+	// 现改为 DB 错误直接 503 拒绝；缺配额行（q==nil）才视为不限并放行。
 	if h.quotas != nil {
 		q, err := h.quotas.GetByUserID(r.Context(), userID)
-		if err == nil && q != nil {
+		if err != nil {
+			slog.Error("firewall quota lookup failed; refusing create to protect hard limits", "user_id", userID, "error", err)
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "quota service unavailable"})
+			return
+		}
+		if q != nil {
 			if q.MaxFirewallGroups > 0 {
-				cnt, _ := h.repo.CountGroupsByUser(r.Context(), userID)
+				cnt, err := h.repo.CountGroupsByUser(r.Context(), userID)
+				if err != nil {
+					slog.Error("firewall group count failed; refusing create to protect hard limits", "user_id", userID, "error", err)
+					writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "quota service unavailable"})
+					return
+				}
 				if cnt >= q.MaxFirewallGroups {
 					writeJSON(w, http.StatusForbidden, map[string]any{
 						"error": fmt.Sprintf("firewall group quota exceeded: %d/%d", cnt, q.MaxFirewallGroups),
@@ -793,9 +807,15 @@ func (h *FirewallHandler) PortalReplaceRules(w http.ResponseWriter, r *http.Requ
 	if !decodeAndValidate(w, r, &req) {
 		return
 	}
+	// WP-E fail-closed：DB 错误拒绝而非放行；缺配额行（q==nil）视为不限。
 	if h.quotas != nil {
 		q, err := h.quotas.GetByUserID(r.Context(), userID)
-		if err == nil && q != nil && q.MaxFirewallRulesPerGroup > 0 && len(req.Rules) > q.MaxFirewallRulesPerGroup {
+		if err != nil {
+			slog.Error("firewall quota lookup failed; refusing rule replace to protect hard limits", "user_id", userID, "error", err)
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "quota service unavailable"})
+			return
+		}
+		if q != nil && q.MaxFirewallRulesPerGroup > 0 && len(req.Rules) > q.MaxFirewallRulesPerGroup {
 			writeJSON(w, http.StatusForbidden, map[string]any{
 				"error": fmt.Sprintf("rule count exceeds per-group quota: %d/%d", len(req.Rules), q.MaxFirewallRulesPerGroup),
 			})
@@ -1074,3 +1094,9 @@ func (h *FirewallHandler) PortalBindBatch(w http.ResponseWriter, r *http.Request
 func (h *FirewallHandler) PortalUnbindBatch(w http.ResponseWriter, r *http.Request) {
 	h.portalRunBatch(r, w, "unbind")
 }
+
+// OPS-051 / PLAN-052 §G：reconcile endpoint 推迟到 OPS-052 backlog（需要
+// 多个新 repo/cluster manager 方法 + 跨 cluster N+1 优化）。现有代码已经在
+// portal/firewall.go BindVM / AdminBindVM / applyUserDefaultFirewallGroups
+// 三处 attach 路径中同步写 DB binding（Q8 预防侧已闭环）。历史漂移仅
+// vm-08f9d5 一例（已删），不需要本期回填。

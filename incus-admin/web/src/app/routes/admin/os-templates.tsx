@@ -20,7 +20,7 @@ import { Button } from "@/shared/components/ui/button";
 import { Card } from "@/shared/components/ui/card";
 import { useConfirm } from "@/shared/components/ui/confirm-dialog";
 import { EmptyState } from "@/shared/components/ui/empty-state";
-import { Input } from "@/shared/components/ui/input";
+import { Input, Textarea } from "@/shared/components/ui/input";
 import { Label } from "@/shared/components/ui/label";
 import {
   Select,
@@ -60,7 +60,7 @@ const EMPTY_FORM: OSTemplateFormData = {
   source: "",
   protocol: "simplestreams",
   server_url: "https://images.linuxcontainers.org",
-  default_user: "ubuntu",
+  default_user: "root",
   cloud_init_template: "",
   supports_rescue: false,
   enabled: true,
@@ -373,7 +373,7 @@ function TemplateForm({
               id="ostpl-user"
               value={form.default_user}
               onChange={(e) => set("default_user", e.target.value)}
-              placeholder="ubuntu"
+              placeholder="root"
             />
           </div>
           <div className="flex flex-col gap-1.5">
@@ -414,6 +414,33 @@ function TemplateForm({
               value={form.sort_order}
               onChange={(e) => set("sort_order", +e.target.value)}
             />
+          </div>
+          <div className="flex flex-col gap-1.5 col-span-2">
+            <Label htmlFor="ostpl-cloud-init">
+              {t(
+                "admin.osTemplates.cloudInitTemplate",
+                "高级 cloud-init 注入（可选）",
+              )}
+            </Label>
+            <Textarea
+              id="ostpl-cloud-init"
+              value={form.cloud_init_template}
+              onChange={(e) =>
+                set("cloud_init_template", e.target.value)
+              }
+              placeholder={
+                "# 可选：粘贴额外 cloud-config 字段（如 packages / write_files / runcmd）\n# 系统已强制 openssh-server + root + sshd_config，请勿覆盖\n# 例：\n# packages:\n#   - htop\n# write_files:\n#   - path: /etc/motd\n#     content: hello"
+              }
+              rows={6}
+              className="font-mono text-caption"
+              maxLength={8192}
+            />
+            <span className="text-caption text-text-tertiary">
+              {t(
+                "admin.osTemplates.cloudInitHint",
+                "禁止 disable_root / ssh_pwauth: false。其它字段追加合并到系统模板。预留 AI 生成接入位。",
+              )}
+            </span>
           </div>
           <div className="flex items-center gap-4 col-span-2 pt-1">
             <div className="flex items-center gap-2">

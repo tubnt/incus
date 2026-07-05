@@ -30,10 +30,29 @@ type Cluster struct {
 	StoragePool    string `json:"storage_pool,omitempty" db:"storage_pool"`
 	Network        string `json:"network,omitempty" db:"network"`
 	// IPPoolsJSON 是 config.IPPoolConfig 数组的序列化形式；repo 层 unmarshal
-	IPPoolsJSON string    `json:"-" db:"ip_pools_json"`
-	CreatedAt   time.Time `json:"created_at" db:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at" db:"updated_at"`
+	IPPoolsJSON string `json:"-" db:"ip_pools_json"`
+	// PLAN-053 Phase C / INFRA-012：region metadata（cloud-gateway /v1/regions 必需）
+	// country / city 留空表示未填；region_status 与 status 解耦，仅用于对外开放下单口径。
+	// capabilities 一期固定 ["instances"]。
+	Country      string `json:"country,omitempty" db:"country"`
+	City         string `json:"city,omitempty" db:"city"`
+	RegionStatus string `json:"region_status" db:"region_status"`
+	// CapabilitiesJSON 是 capabilities JSONB 列的原始字节；repo 层负责 unmarshal 到 Capabilities。
+	CapabilitiesJSON []byte    `json:"-" db:"capabilities"`
+	Capabilities     []string  `json:"capabilities" db:"-"`
+	CreatedAt        time.Time `json:"created_at" db:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at" db:"updated_at"`
 }
+
+const (
+	RegionStatusAvailable   = "available"
+	RegionStatusUnavailable = "unavailable"
+	RegionStatusMaintenance = "maintenance"
+)
+
+// DefaultClusterCapabilities 与 migration 027 中 JSONB DEFAULT 对齐；
+// repo 层 unmarshal 失败 / 列为 NULL 时回退到这个值。
+var DefaultClusterCapabilities = []string{"instances"}
 
 type VM struct {
 	ID                  int64      `json:"id" db:"id"`
@@ -70,10 +89,17 @@ type Product struct {
 	DiskGB       int     `json:"disk_gb" db:"disk_gb"`
 	BandwidthTB  int     `json:"bandwidth_tb" db:"bandwidth_tb"`
 	PriceMonthly float64 `json:"price_monthly" db:"price_monthly"`
-	Currency     string  `json:"currency" db:"currency"`
-	Access       string  `json:"access" db:"access"`
-	Active       bool    `json:"active" db:"active"`
-	SortOrder    int     `json:"sort_order" db:"sort_order"`
+	// PLAN-054 / INFRA-013：按天单价。nil 表示不支持 daily 周期。
+	// NUMERIC(10,4) → float64 接收；账单计算严禁累加浮点结果，由 worker
+	// 走 NUMERIC SQL 表达式做扣费。
+	PriceDaily *float64 `json:"price_daily,omitempty" db:"price_daily"`
+	// PeriodSupported 是 TEXT[]，至少含一个值（DB 层 DEFAULT ARRAY['monthly']）。
+	// repo 层用 pgTextSlice 适配 PG array 反序列化。
+	PeriodSupported []string `json:"period_supported" db:"period_supported"`
+	Currency        string   `json:"currency" db:"currency"`
+	Access          string   `json:"access" db:"access"`
+	Active          bool     `json:"active" db:"active"`
+	SortOrder       int      `json:"sort_order" db:"sort_order"`
 }
 
 type Quota struct {
@@ -108,15 +134,18 @@ type IPAddress struct {
 }
 
 type Order struct {
-	ID        int64      `json:"id" db:"id"`
-	UserID    int64      `json:"user_id" db:"user_id"`
-	ProductID int64      `json:"product_id" db:"product_id"`
-	ClusterID int64      `json:"cluster_id" db:"cluster_id"`
-	Status    string     `json:"status" db:"status"`
-	Amount    float64    `json:"amount" db:"amount"`
-	Currency  string     `json:"currency" db:"currency"`
-	ExpiresAt *time.Time `json:"expires_at,omitempty" db:"expires_at"`
-	CreatedAt time.Time  `json:"created_at" db:"created_at"`
+	ID        int64   `json:"id" db:"id"`
+	UserID    int64   `json:"user_id" db:"user_id"`
+	ProductID int64   `json:"product_id" db:"product_id"`
+	ClusterID int64   `json:"cluster_id" db:"cluster_id"`
+	Status    string  `json:"status" db:"status"`
+	Amount    float64 `json:"amount" db:"amount"`
+	Currency  string  `json:"currency" db:"currency"`
+	// PLAN-054 / INFRA-013：计费周期，'daily' | 'monthly'。
+	// DB DEFAULT 'monthly'：历史订单 ALTER 后自动归 monthly，行为 100% 不变。
+	Period     string     `json:"period" db:"period"`
+	ExpiresAt  *time.Time `json:"expires_at,omitempty" db:"expires_at"`
+	CreatedAt  time.Time  `json:"created_at" db:"created_at"`
 }
 
 type Transaction struct {
@@ -254,6 +283,56 @@ type OSTemplate struct {
 	UpdatedAt         time.Time `json:"updated_at" db:"updated_at"`
 }
 
+// VMSubscription PLAN-054 / INFRA-013：单台 VM 的计费订阅。
+// monthly：现行一次性付费同时插一行 sub 记账（paid_until = NOW + 30d）。
+// daily：扣 1 天费用 + 创建 sub（paid_until = NOW + 24h）。
+// 余额不足走 suspended → grace_until → cancelled 三态。
+type VMSubscription struct {
+	ID           int64      `json:"id" db:"id"`
+	VMID         int64      `json:"vm_id" db:"vm_id"`
+	ProductID    int64      `json:"product_id" db:"product_id"`
+	UserID       int64      `json:"user_id" db:"user_id"`
+	Period       string     `json:"period" db:"period"`
+	DailyRate    *float64   `json:"daily_rate,omitempty" db:"daily_rate"`
+	MonthlyRate  *float64   `json:"monthly_rate,omitempty" db:"monthly_rate"`
+	PaidUntil    time.Time  `json:"paid_until" db:"paid_until"`
+	Status       string     `json:"status" db:"status"`
+	SuspendedAt  *time.Time `json:"suspended_at,omitempty" db:"suspended_at"`
+	GraceUntil   *time.Time `json:"grace_until,omitempty" db:"grace_until"`
+	CreatedAt    time.Time  `json:"created_at" db:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at" db:"updated_at"`
+}
+
+// BillingCharge PLAN-054 / INFRA-013：单次日扣记账。
+// UNIQUE (subscription_id, charge_date) 保证 worker 重跑幂等。
+// status: 'paid'（落账 + transactions 行）/ 'insufficient'（余额不足）/
+// 'skipped'（窗口外或人工干预）。
+type BillingCharge struct {
+	ID             int64     `json:"id" db:"id"`
+	SubscriptionID int64     `json:"subscription_id" db:"subscription_id"`
+	ChargeDate     time.Time `json:"charge_date" db:"charge_date"`
+	Amount         float64   `json:"amount" db:"amount"`
+	Status         string    `json:"status" db:"status"`
+	TransactionID  *int64    `json:"transaction_id,omitempty" db:"transaction_id"`
+	CreatedAt      time.Time `json:"created_at" db:"created_at"`
+}
+
+// IdempotencyKey PLAN-053 / INFRA-012：cloud-gateway 标准写操作幂等缓存。
+// middleware 命中 key 直接回放 status_code + response_body；24h TTL 由 cleanup
+// worker 回收。RequestHash 用于检测「同 key 异 payload」攻击场景。
+// JSON 序列化故意排除 response_body / request_hash（标 `json:"-"`），避免
+// admin 审计页意外把缓存响应字节泄露到前端。
+type IdempotencyKey struct {
+	Key          string    `json:"key" db:"key"`
+	UserID       int64     `json:"user_id" db:"user_id"`
+	Method       string    `json:"method" db:"method"`
+	Path         string    `json:"path" db:"path"`
+	StatusCode   int       `json:"status_code" db:"status_code"`
+	ResponseBody []byte    `json:"-" db:"response_body"`
+	RequestHash  string    `json:"-" db:"request_hash"`
+	CreatedAt    time.Time `json:"created_at" db:"created_at"`
+}
+
 // ProvisioningJob 是一次 VM 创建/重装的异步执行单元。
 // 失败 / 进程崩溃后由 worker sweeper 兜底退款，refund_done_at 是幂等 guard。
 type ProvisioningJob struct {
@@ -306,10 +385,19 @@ const (
 	OrderExpired      = "expired"
 	OrderCancelled    = "cancelled"
 
-	IPAvailable = "available"
-	IPAssigned  = "assigned"
-	IPReserved  = "reserved"
-	IPCooldown  = "cooldown"
+	// PLAN-054 / INFRA-013 计费周期。orders.period / vm_subscriptions.period 共用。
+	BillingPeriodDaily   = "daily"
+	BillingPeriodMonthly = "monthly"
+
+	// PLAN-054 / INFRA-013 订阅状态。
+	SubscriptionStatusActive    = "active"
+	SubscriptionStatusSuspended = "suspended"
+	SubscriptionStatusCancelled = "cancelled"
+
+	// PLAN-054 / INFRA-013 单次扣费状态。
+	BillingChargePaid         = "paid"
+	BillingChargeInsufficient = "insufficient"
+	BillingChargeSkipped      = "skipped"
 
 	// PLAN-025 / INFRA-007 provisioning job
 	JobKindVMCreate    = "vm.create"
@@ -337,4 +425,23 @@ const (
 	StepStatusSucceeded = "succeeded"
 	StepStatusFailed    = "failed"
 	StepStatusSkipped   = "skipped"
+	// OPS-051 / PLAN-052：smoke test 软失败（cloud-init / verify_ready 超时）
+	// 不让 job=failed（避免误退款 + 删 VM），但用户在 UI 上能看到 warning step
+	// + 详情 detail，可手动重试或删 VM 重开。
+	StepStatusWarning = "warning"
 )
+
+// BillingPeriodDuration 返回一个完整周期对应的 time.Duration。
+// daily → 24h，monthly → 30d。worker 续费推 paid_until 与 restore 重置
+// paid_until 共用此函数，避免两处硬编码漂移。未知 period 返 0（调用方应
+// 已在 handler 层用 oneof 校验拦下，进到这里属逻辑错误）。
+func BillingPeriodDuration(period string) time.Duration {
+	switch period {
+	case BillingPeriodDaily:
+		return 24 * time.Hour
+	case BillingPeriodMonthly:
+		return 30 * 24 * time.Hour
+	default:
+		return 0
+	}
+}

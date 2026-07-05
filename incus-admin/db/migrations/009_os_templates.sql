@@ -1,3 +1,4 @@
+-- +goose Up
 -- PLAN-021 Phase A: os_templates
 -- Moves the OS image catalog from hardcoded TypeScript (web/src/features/vms/os-image-picker.tsx)
 -- into the database so admin can add new images without a code change.
@@ -35,3 +36,6 @@ INSERT INTO os_templates (slug, name, source, default_user, sort_order) VALUES
     ('fedora-40',     'Fedora 40',        'fedora/40/cloud',    'fedora', 80),
     ('archlinux',     'Arch Linux',       'archlinux/current/cloud', 'arch', 90)
 ON CONFLICT (slug) DO NOTHING;
+
+-- +goose Down
+DROP TABLE IF EXISTS os_templates;

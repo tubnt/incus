@@ -70,6 +70,11 @@ func (r *ProvisioningJobRepo) SetVMID(ctx context.Context, id, vmID int64) error
 }
 
 // Finish 把 job 推到终态。errMsg 为空表示成功。
+//
+// P1-1：WHERE 加 status IN ('queued','running') 守卫，只允许非终态 → 终态的
+// 单向跃迁。防两类竞态：worker 正常 finalize 与 sweeper recoverStale 同时对一
+// 行写终态（谁先谁赢，后者 0 行、不覆盖）；以及重复 finish 把 succeeded 覆盖成
+// partial。命中 0 行不视为错误（幂等 no-op），补偿路径自身幂等/best-effort。
 func (r *ProvisioningJobRepo) Finish(ctx context.Context, id int64, status string, errMsg string) error {
 	var errPtr *string
 	if errMsg != "" {
@@ -78,8 +83,8 @@ func (r *ProvisioningJobRepo) Finish(ctx context.Context, id int64, status strin
 	_, err := r.db.ExecContext(ctx,
 		`UPDATE provisioning_jobs
 		 SET status = $1, error = $2, completed_at = NOW()
-		 WHERE id = $3`,
-		status, errPtr, id,
+		 WHERE id = $3 AND status IN ($4, $5)`,
+		status, errPtr, id, model.JobStatusQueued, model.JobStatusRunning,
 	)
 	return err
 }
@@ -251,14 +256,18 @@ func (r *ProvisioningJobRepo) ListSteps(ctx context.Context, jobID int64, afterS
 	return steps, rows.Err()
 }
 
-// FindStaleRunning 列出 started_at 早于 cutoff 仍在 running 状态的 job。
+// FindStaleRunning 列出进入运行态早于 cutoff 仍在 queued/running 的 job。
 // worker 启动时调一次（catch crashed jobs），运行期 sweeper 每 5min 调一次。
+//
+// P1-1：过期判定用 COALESCE(started_at, created_at) 而非 created_at。running job
+// 的真实起跑时刻是 started_at；用 created_at 会把"排队很久才起跑、实际刚跑没多
+// 久"的 job 误判为过期而中途 sweep 掉。queued job 尚无 started_at，回退 created_at。
 func (r *ProvisioningJobRepo) FindStaleRunning(ctx context.Context, cutoff time.Time) ([]model.ProvisioningJob, error) {
 	rows, err := r.db.QueryContext(ctx,
 		`SELECT id, kind, user_id, cluster_id, order_id, vm_id, target_name,
 		        status, error, refund_done_at, created_at, started_at, completed_at
 		 FROM provisioning_jobs
-		 WHERE status IN ($1, $2) AND created_at < $3
+		 WHERE status IN ($1, $2) AND COALESCE(started_at, created_at) < $3
 		 ORDER BY id ASC`,
 		model.JobStatusQueued, model.JobStatusRunning, cutoff,
 	)

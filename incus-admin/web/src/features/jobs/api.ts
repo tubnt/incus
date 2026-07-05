@@ -2,7 +2,9 @@ import { useQuery } from "@tanstack/react-query";
 import { http } from "@/shared/lib/http";
 
 export type JobStatus = "queued" | "running" | "succeeded" | "failed" | "partial";
-export type StepStatus = "pending" | "running" | "succeeded" | "failed" | "skipped";
+// OPS-051 / PLAN-052：'warning' = smoke test 软失败（cloud-init 超时 / 22 端口
+// 未监听），job 仍 succeeded，UI 以橙色提示用户重试。
+export type StepStatus = "pending" | "running" | "succeeded" | "failed" | "skipped" | "warning";
 
 export interface ProvisioningJobStep {
   id: number;
@@ -69,6 +71,9 @@ export const stepLabelKey: Record<string, string> = {
   wait_create: "jobs.step.waitCreate",
   start_instance: "jobs.step.startInstance",
   wait_start: "jobs.step.waitStart",
+  // OPS-051 / PLAN-052
+  wait_cloud_init: "jobs.step.waitCloudInit",
+  verify_ready: "jobs.step.verifyReady",
   finalize: "jobs.step.finalize",
   // vm.reinstall
   fetch_instance: "jobs.step.fetchInstance",

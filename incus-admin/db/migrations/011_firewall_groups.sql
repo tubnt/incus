@@ -1,3 +1,4 @@
+-- +goose Up
 -- PLAN-021 Phase E: firewall groups (security groups)
 --
 -- Thin DB model on top of Incus network ACLs. One firewall_group row ==
@@ -85,3 +86,8 @@ INSERT INTO firewall_rules (group_id, action, protocol, destination_port, source
 SELECT g.id, 'allow', 'tcp', '3306,5432', '172.16.0.0/12', 'db from LAN /12', 40
 FROM firewall_groups g WHERE g.slug = 'database-lan'
 ON CONFLICT DO NOTHING;
+
+-- +goose Down
+DROP TABLE IF EXISTS vm_firewall_bindings;
+DROP TABLE IF EXISTS firewall_rules;
+DROP TABLE IF EXISTS firewall_groups;

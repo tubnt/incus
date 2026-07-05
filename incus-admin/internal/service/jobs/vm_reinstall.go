@@ -5,6 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
+	"strings"
+	"time"
 
 	"github.com/incuscloud/incus-admin/internal/model"
 	"github.com/incuscloud/incus-admin/internal/service"
@@ -55,14 +58,27 @@ func (e *vmReinstallExecutor) Run(ctx context.Context, rt *Runtime, job *model.P
 	rt.finishStep(ctx, job.ID, 0, stepFetchInstance, model.StepStatusSucceeded, "")
 
 	// step 1: stop（best-effort，已 stopped 不报错）
+	// OPS-051 测试发现：原版只发 stop PUT 不等 async op 完成，下一步 delete
+	// 立刻撞 "Instance is running" race。这里同步等 stop op 完成（force=true
+	// + timeout=30，最坏 30s），失败转 skipped 不阻塞重装链。
 	rt.step(ctx, job.ID, 1, stepStop, model.StepStatusRunning, "停止当前实例")
 	stopBody, _ := json.Marshal(map[string]any{"action": "stop", "timeout": 30, "force": true})
-	if _, err := client.APIPut(ctx, fmt.Sprintf("/1.0/instances/%s/state?project=%s", job.TargetName, params.Project), bytes.NewReader(stopBody)); err != nil {
-		// 已 stop / 不存在 → 继续；详细原因写到 step detail
-		rt.finishStep(ctx, job.ID, 1, stepStop, model.StepStatusSkipped, err.Error())
+	stopResp, stopErr := client.APIPut(ctx, fmt.Sprintf("/1.0/instances/%s/state?project=%s", job.TargetName, params.Project), bytes.NewReader(stopBody))
+	if stopErr != nil {
+		rt.finishStep(ctx, job.ID, 1, stepStop, model.StepStatusSkipped, stopErr.Error())
 	} else {
+		if stopResp != nil && stopResp.Type == "async" {
+			var op struct{ ID string }
+			if uerr := json.Unmarshal(stopResp.Metadata, &op); uerr == nil && op.ID != "" {
+				if werr := client.WaitForOperation(ctx, op.ID); werr != nil {
+					rt.finishStep(ctx, job.ID, 1, stepStop, model.StepStatusWarning, "wait stop op: "+werr.Error())
+					goto afterStop
+				}
+			}
+		}
 		rt.finishStep(ctx, job.ID, 1, stepStop, model.StepStatusSucceeded, "")
 	}
+afterStop:
 
 	// step 2: delete + 等删完
 	rt.step(ctx, job.ID, 2, stepDelete, model.StepStatusRunning, "删除原实例")
@@ -93,12 +109,43 @@ func (e *vmReinstallExecutor) Run(ctx context.Context, rt *Runtime, job *model.P
 
 	// step 3: recreate（生成新密码 / cloud-init）
 	password := service.GeneratePassword()
-	cloudInit := service.BuildCloudInit(password, nil)
+	// OPS-051 / PLAN-052：与 vm_create 一致 —— OS-aware + 统一 root +
+	// apt proxy + 合并 cloud_init_template。
+	loginUser := rt.deps.DefaultLoginUser
+	if loginUser == "" {
+		loginUser = "root"
+	}
+	extraYAML := ""
+	if rt.deps.OSTemplates != nil {
+		if tpl, terr := rt.deps.OSTemplates.GetBySource(ctx, params.ImageSource); terr == nil && tpl != nil {
+			extraYAML = tpl.CloudInitTemplate
+			if tpl.DefaultUser != "" {
+				loginUser = tpl.DefaultUser
+			}
+		}
+	}
+	cloudInit := service.BuildCloudInit(service.CloudInitInput{
+		OSFamily:    service.ClassifyOSFamily(params.ImageSource),
+		LoginUser:   loginUser,
+		Password:    password,
+		SSHKeys:     nil, // 重装路径不带 ssh_keys（admin 重装统一）
+		AptProxyURL: rt.deps.AptProxyURL,
+		ExtraYAML:   extraYAML,
+	})
 	service.StripVolatileConfig(inst.Config)
-	// Session-2 F-05 / PLAN-051 §2-E：与 vm.go 重置同步—— 用 Incus 标准
+	// Session-2 F-05 / PLAN-051 §2-E：与 vm_create 同步—— 用 Incus 标准
 	// cloud-init key，legacy `user.cloud-init` 不被识别。
 	delete(inst.Config, "user.cloud-init")
 	inst.Config["cloud-init.user-data"] = cloudInit
+	// OPS-051 测试发现：老 VM 的 cloud-init.network-config 是 v2 格式，
+	// 在 RHEL 系 NetworkManager 后端兼容性差（enp5s0 拿不到 IPv4）。
+	// 重装时从老 v2 配置正则提取 ip/cidr/gateway，调 BuildNetworkConfig 重生
+	// v1 格式（所有 distro 通用）。解析失败保留原样不阻塞重装链。
+	if nc, ok := inst.Config["cloud-init.network-config"]; ok {
+		if v1cfg := convertV2NetworkConfigToV1(nc); v1cfg != "" {
+			inst.Config["cloud-init.network-config"] = v1cfg
+		}
+	}
 
 	body := map[string]any{
 		"name": job.TargetName,
@@ -168,6 +215,40 @@ func (e *vmReinstallExecutor) Run(ctx context.Context, rt *Runtime, job *model.P
 	}
 	rt.finishStep(ctx, job.ID, 5, stepStartReinstall, model.StepStatusSucceeded, "")
 
+	// OPS-051 / PLAN-052 step 6 wait_cloud_init + step 7 verify_ready
+	// （仅 Linux；Windows reinstall 路径暂未启用，与 vm_create 对齐）
+	rt.step(ctx, job.ID, 6, stepWaitCloudInit, model.StepStatusRunning, "等待 cloud-init 完成（重新安装 SSH 服务）")
+	ciCtx, ciCancel := context.WithTimeout(ctx, 5*time.Minute)
+	ciRet, ciErr := client.ExecNonInteractive(ciCtx, params.Project, job.TargetName,
+		[]string{"cloud-init", "status", "--wait"})
+	ciCancel()
+	switch {
+	case ciErr != nil:
+		rt.finishStep(ctx, job.ID, 6, stepWaitCloudInit, model.StepStatusWarning,
+			fmt.Sprintf("cloud-init exec 失败 (err=%v)；重装已完成，请稍后重试 SSH", ciErr))
+	case ciRet != 0:
+		rt.finishStep(ctx, job.ID, 6, stepWaitCloudInit, model.StepStatusWarning,
+			fmt.Sprintf("cloud-init 退出码 %d；重装已完成，请等 1-2 分钟后重试 SSH", ciRet))
+	default:
+		rt.finishStep(ctx, job.ID, 6, stepWaitCloudInit, model.StepStatusSucceeded, "")
+	}
+
+	rt.step(ctx, job.ID, 7, stepVerifyReady, model.StepStatusRunning, "验证 SSH/22 端口监听")
+	verifyCtx, verifyCancel := context.WithTimeout(ctx, 10*time.Second)
+	verifyRet, verifyErr := client.ExecNonInteractive(verifyCtx, params.Project, job.TargetName,
+		[]string{"sh", "-c", "ss -ltn | grep -qE ':22[[:space:]]'"})
+	verifyCancel()
+	switch {
+	case verifyErr != nil:
+		rt.finishStep(ctx, job.ID, 7, stepVerifyReady, model.StepStatusWarning,
+			fmt.Sprintf("SSH 探活 exec 失败 (err=%v)；重装已完成，请稍后试", verifyErr))
+	case verifyRet != 0:
+		rt.finishStep(ctx, job.ID, 7, stepVerifyReady, model.StepStatusWarning,
+			fmt.Sprintf("SSH/22 端口尚未监听 (exit=%d)；重装已完成，请等 cloud-init 完成", verifyRet))
+	default:
+		rt.finishStep(ctx, job.ID, 7, stepVerifyReady, model.StepStatusSucceeded, "")
+	}
+
 	// 写新密码（reinstall 用户最关心的产物）
 	if job.VMID != nil {
 		_ = rt.deps.VMs.UpdatePassword(ctx, *job.VMID, password)
@@ -194,4 +275,34 @@ func (e *vmReinstallExecutor) Rollback(ctx context.Context, rt *Runtime, job *mo
 	if taken := rt.takeParams(job.ID); taken != nil && taken.Credential != nil {
 		taken.Credential.Wipe()
 	}
+}
+
+// convertV2NetworkConfigToV1 把老 VM 存的 cloud-init network-config v2
+// 转成 v1（OPS-051：RHEL 系 NM 后端 v2 兼容性差）。简单正则提取
+// addresses / via，不解析 yaml.Node。提取失败返回 "" 让调用方保留原值。
+func convertV2NetworkConfigToV1(v2 string) string {
+	if !strings.Contains(v2, "version: 2") {
+		return "" // 不是 v2 或已经 v1，原样保留
+	}
+	// 匹配 "- A.B.C.D/N" addresses 第一条 + "via A.B.C.D" gateway
+	ipRe := regexp.MustCompile(`addresses:\s*\n\s*-\s*([0-9.]+/\d+)`)
+	gwRe := regexp.MustCompile(`via:\s*([0-9.]+)`)
+	ipMatch := ipRe.FindStringSubmatch(v2)
+	gwMatch := gwRe.FindStringSubmatch(v2)
+	if len(ipMatch) < 2 || len(gwMatch) < 2 {
+		return ""
+	}
+	addr := ipMatch[1]
+	gw := gwMatch[1]
+	return fmt.Sprintf(`version: 1
+config:
+  - type: physical
+    name: enp5s0
+    subnets:
+      - type: static
+        address: %s
+        gateway: %s
+        dns_nameservers:
+          - 1.1.1.1
+          - 8.8.8.8`, addr, gw)
 }
